@@ -34,7 +34,7 @@ Windows の行には zig と cargo-zigbuild が要ります。
 Apple の行は検査しないので、CI の macOS のランナーで確かめます。
 テストが失敗してもスクリプトは失敗しないので、出力を見て確かめてください。
 
-GitHub Actions の CI（`.github/workflows/ci.yml`）も、master への push とプルリクエストで同じ検査を流します。
+GitHub Actions の CI（`.github/workflows/ci.yml`）も、main への push とプルリクエストで同じ検査を流します。
 CI ではテストの失敗も失敗として扱います。
 Apple の行は macOS のランナーでそのまま、Windows の行は ubuntu-latest から zig で検査します。
 
