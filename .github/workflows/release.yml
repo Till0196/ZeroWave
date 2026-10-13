@@ -103,6 +103,12 @@ jobs:
         working-directory: deck
         run: cargo packager --profile dist --target "$TARGET" --formats ${{ matrix.package }} --out-dir ../target/packages
 
+      - name: Sign the app
+        if: matrix.package == 'app'
+        run: |
+          codesign --force --sign - target/packages/ZeroWave.app
+          codesign --verify --strict target/packages/ZeroWave.app
+
       - name: Zip the app
         if: matrix.package == 'app'
         run: ditto -c -k --keepParent target/packages/ZeroWave.app "release/ZeroWave-$TARGET.app.zip"
