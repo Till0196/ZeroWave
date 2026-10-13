@@ -25,7 +25,7 @@ jobs:
             runner: macos-15
             package: app
           - target: x86_64-apple-darwin
-            runner: macos-15-intel
+            runner: macos-15
             package: app
           - target: x86_64-unknown-linux-gnu
             zigbuild: x86_64-unknown-linux-gnu.2.28
@@ -64,8 +64,16 @@ jobs:
           tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION" >> "$GITHUB_PATH"
 
-      - name: Install cargo-zigbuild
+      - name: Restore cargo-zigbuild
+        id: zigbuild
         if: matrix.zigbuild
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-zigbuild
+          key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-${{ env.ZIGBUILD_VERSION }}
+
+      - name: Install cargo-zigbuild
+        if: matrix.zigbuild && steps.zigbuild.outputs.cache-hit != 'true'
         run: cargo install --locked "cargo-zigbuild@$ZIGBUILD_VERSION"
 
       - name: Build
@@ -94,8 +102,16 @@ jobs:
           fi
           rm -r "$ARCHIVE"
 
-      - name: Install cargo-packager
+      - name: Restore cargo-packager
+        id: packager
         if: matrix.package
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-packager
+          key: cargo-packager-${{ runner.os }}-${{ runner.arch }}-${{ env.PACKAGER_VERSION }}
+
+      - name: Install cargo-packager
+        if: matrix.package && steps.packager.outputs.cache-hit != 'true'
         run: cargo install --locked "cargo-packager@$PACKAGER_VERSION"
 
       - name: Package
