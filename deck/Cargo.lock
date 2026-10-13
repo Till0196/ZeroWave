@@ -133,35 +133,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "anyrender"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1755d0ef8e00e87b6b825dfbe5a35d34d3b302e97e80a48e93f9cd361fbada06"
-dependencies = [
- "kurbo",
- "peniko",
- "raw-window-handle",
- "smallvec",
-]
-
-[[package]]
-name = "anyrender_vello_cpu"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a09d9356dd2b2f032345711a350c0e2326a854cb5070f899265bc80fb33884b1"
-dependencies = [
- "anyrender",
- "bytemuck",
- "color",
- "debug_timer",
- "glifo 0.4.0",
- "kurbo",
- "peniko",
- "vello_common 0.3.0",
- "vello_cpu 0.3.0",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -422,7 +393,7 @@ dependencies = [
 [[package]]
 name = "coax"
 version = "0.1.0"
-source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
+source = "git+https://github.com/Till0196/coax-rs#00372bc49a1df60a696dcfa8a1589ee348f263f4"
 
 [[package]]
 name = "cobs"
@@ -794,12 +765,6 @@ name = "dasp_sample"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c87e182de0887fd5361989c677c4e8f5000cd9491d6d563161a8f3a5519fc7f"
-
-[[package]]
-name = "debug_timer"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da220af51a1a335e9a930beaaef53d261e41ea9eecfb3d973a3ddae1a7284b9c"
 
 [[package]]
 name = "digest"
@@ -1341,6 +1306,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "log",
  "peniko",
+ "png",
  "skrifa",
  "smallvec",
  "vello_common 0.3.0",
@@ -1616,10 +1582,10 @@ dependencies = [
 [[package]]
 name = "isdb"
 version = "0.1.0"
-source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
+source = "git+https://github.com/Till0196/coax-rs#00372bc49a1df60a696dcfa8a1589ee348f263f4"
 dependencies = [
  "encoding_rs",
- "miniz_oxide 0.8.9",
+ "miniz_oxide 0.9.1",
  "mmttlv",
  "mpegts",
 ]
@@ -1938,7 +1904,7 @@ dependencies = [
 [[package]]
 name = "mmttlv"
 version = "0.1.0"
-source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
+source = "git+https://github.com/Till0196/coax-rs#00372bc49a1df60a696dcfa8a1589ee348f263f4"
 dependencies = [
  "mpegts",
 ]
@@ -1956,7 +1922,7 @@ dependencies = [
 [[package]]
 name = "mpegts"
 version = "0.1.0"
-source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
+source = "git+https://github.com/Till0196/coax-rs#00372bc49a1df60a696dcfa8a1589ee348f263f4"
 
 [[package]]
 name = "muda"
@@ -3816,6 +3782,7 @@ dependencies = [
  "bytemuck",
  "glifo 0.4.0",
  "hashbrown 0.17.1",
+ "png",
  "vello_common 0.3.0",
 ]
 
@@ -4993,21 +4960,19 @@ dependencies = [
 name = "zwsdk"
 version = "0.1.0"
 dependencies = [
- "anyrender",
- "anyrender_vello_cpu",
  "bytemuck",
  "coax",
- "kurbo",
+ "glifo 0.4.0",
  "memmap2",
  "parlance",
  "parley",
- "peniko",
  "ring",
  "rustls",
  "serde",
  "serde_json",
  "skrifa",
  "tracing",
+ "vello_cpu 0.3.0",
  "wasmtime",
  "webpki-roots",
 ]

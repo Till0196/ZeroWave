@@ -39,35 +39,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
-name = "anyrender"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1755d0ef8e00e87b6b825dfbe5a35d34d3b302e97e80a48e93f9cd361fbada06"
-dependencies = [
- "kurbo",
- "peniko",
- "raw-window-handle",
- "smallvec",
-]
-
-[[package]]
-name = "anyrender_vello_cpu"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a09d9356dd2b2f032345711a350c0e2326a854cb5070f899265bc80fb33884b1"
-dependencies = [
- "anyrender",
- "bytemuck",
- "color",
- "debug_timer",
- "glifo",
- "kurbo",
- "peniko",
- "vello_common",
- "vello_cpu",
-]
-
-[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -442,12 +413,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "debug_timer"
-version = "0.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da220af51a1a335e9a930beaaef53d261e41ea9eecfb3d973a3ddae1a7284b9c"
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -741,6 +706,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "log",
  "peniko",
+ "png",
  "skrifa",
  "smallvec",
  "vello_common",
@@ -2218,6 +2184,7 @@ dependencies = [
  "bytemuck",
  "glifo",
  "hashbrown 0.17.1",
+ "png",
  "vello_common",
 ]
 
@@ -3064,21 +3031,19 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 name = "zwsdk"
 version = "0.1.0"
 dependencies = [
- "anyrender",
- "anyrender_vello_cpu",
  "bytemuck",
  "coax",
- "kurbo",
+ "glifo",
  "memmap2",
  "parlance",
  "parley",
- "peniko",
  "ring",
  "rustls",
  "serde",
  "serde_json",
  "skrifa",
  "tracing",
+ "vello_cpu",
  "wasmtime",
  "webpki-roots",
 ]

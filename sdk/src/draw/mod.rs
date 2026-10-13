@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! canvas 2D の API でレンダリングして画像にする。ピクセルの読み書きは持たない。
+//! 命令を記録しておき、vello_cpu で画像にする。
 
 use std::sync::Arc;
 
@@ -10,11 +11,64 @@ use parley::fontique::{
     Blob, Collection, CollectionOptions, FamilyId, FontInfoOverride, GenericFamily, SourceCache,
 };
 
-use anyrender::{PaintScene, Scene};
-use kurbo::{Affine, BezPath, Point, Rect, Shape, Stroke, Vec2};
 pub use parley::FontContext;
 use parley::{FontFamily, FontWeight, LayoutContext, PositionedLayoutItem, StyleProperty};
-use peniko::{BlendMode, Color, Compose, Fill, Mix};
+use vello_cpu::kurbo::{self, Affine, BezPath, Diagonal2, Point, Rect, Shape, Stroke, Vec2};
+use vello_cpu::peniko::{self, BlendMode, Color, Compose, Fill, FontData, Mix};
+
+/// 図形をパスにするときの許容誤差。
+const TOLERANCE: f64 = 0.1;
+
+/// 記録した描画の命令。
+#[derive(Debug, Clone)]
+enum Op {
+    Fill {
+        transform: Affine,
+        colour: Color,
+        path: BezPath,
+    },
+    Stroke {
+        transform: Affine,
+        colour: Color,
+        stroke: Stroke,
+        path: BezPath,
+    },
+    Layer {
+        transform: Affine,
+        clip: BezPath,
+        blend: BlendMode,
+        alpha: f32,
+    },
+    Clip {
+        transform: Affine,
+        clip: BezPath,
+    },
+    Pop,
+    Glyphs(Box<Glyphs>),
+    Scene {
+        transform: Affine,
+        scene: Scene,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct Glyphs {
+    font: FontData,
+    size: f32,
+    coords: Vec<i16>,
+    embolden: Vec2,
+    stroke: Option<Stroke>,
+    colour: Color,
+    transform: Affine,
+    glyph_transform: Option<Affine>,
+    glyphs: Vec<vello_cpu::Glyph>,
+}
+
+/// 記録した命令の並び。
+#[derive(Debug, Clone, Default)]
+pub struct Scene {
+    ops: Arc<Vec<Op>>,
+}
 
 pub struct Fonts {
     fcx: FontContext,
@@ -133,7 +187,7 @@ impl Default for State {
 
 #[derive(Debug)]
 pub struct Canvas {
-    scene: Scene,
+    ops: Vec<Op>,
     width: f64,
     height: f64,
     pub state: State,
@@ -154,7 +208,7 @@ const STACK_MOST: usize = 4096;
 impl Canvas {
     pub fn new(width: f64, height: f64) -> Self {
         Self {
-            scene: Scene::new(),
+            ops: Vec::new(),
             width: width.max(0.0),
             height: height.max(0.0),
             state: State::default(),
@@ -197,7 +251,7 @@ impl Canvas {
     }
 
     pub fn reset(&mut self) {
-        self.scene.reset();
+        self.ops.clear();
         self.weight = 0;
         self.open_layers = 0;
         self.clips = 0;
@@ -207,21 +261,23 @@ impl Canvas {
     }
 
     pub fn scene_for(&self, width: f64, height: f64) -> Scene {
-        let mut out = Scene::new();
         if self.width <= 0.0 || self.height <= 0.0 {
-            return out;
+            return Scene::default();
         }
         let transform = Affine::scale_non_uniform(width / self.width, height / self.height);
-        out.append_scene(self.scene.clone(), transform);
+        let mut ops = vec![Op::Scene {
+            transform,
+            scene: Scene {
+                ops: Arc::new(self.ops.clone()),
+            },
+        }];
         // コピー先で対になるように開いたままのレイヤーは閉じる。
-        for _ in 0..self.open_layers {
-            out.pop_layer();
-        }
-        out
+        ops.extend(std::iter::repeat_n(Op::Pop, self.open_layers));
+        Scene { ops: Arc::new(ops) }
     }
 
-    fn paint_of(&self, colour: Color) -> anyrender::Paint {
-        anyrender::Paint::Solid(colour.multiply_alpha(self.state.alpha))
+    fn paint_of(&self, colour: Color) -> Color {
+        colour.multiply_alpha(self.state.alpha)
     }
 
     pub fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
@@ -229,10 +285,11 @@ impl Canvas {
             return;
         }
         let rect = Rect::new(x, y, x + w, y + h);
-        let paint = self.paint_of(self.state.fill);
-        let transform = self.state.transform;
-        self.scene
-            .fill(Fill::NonZero, transform, &paint, None, &rect);
+        self.ops.push(Op::Fill {
+            transform: self.state.transform,
+            colour: self.paint_of(self.state.fill),
+            path: rect.into_path(TOLERANCE),
+        });
     }
 
     pub fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
@@ -240,10 +297,12 @@ impl Canvas {
             return;
         }
         let rect = Rect::new(x, y, x + w, y + h);
-        let paint = self.paint_of(self.state.stroke);
-        let transform = self.state.transform;
-        let stroke = Stroke::new(self.state.line_width);
-        self.scene.stroke(&stroke, transform, &paint, None, &rect);
+        self.ops.push(Op::Stroke {
+            transform: self.state.transform,
+            colour: self.paint_of(self.state.stroke),
+            stroke: Stroke::new(self.state.line_width),
+            path: rect.into_path(TOLERANCE),
+        });
     }
 
     pub fn clear_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
@@ -259,25 +318,20 @@ impl Canvas {
         if !self.spend(1) {
             return;
         }
-        let rect = Rect::new(x, y, x + w, y + h);
+        let rect = Rect::new(x, y, x + w, y + h).into_path(TOLERANCE);
         let transform = self.state.transform;
-        self.scene.push_layer(
-            Fill::NonZero,
-            BlendMode::new(Mix::Normal, Compose::Clear),
-            1.0,
+        self.ops.push(Op::Layer {
             transform,
-            &rect,
-            None,
-            None,
-        );
-        self.scene.fill(
-            Fill::NonZero,
+            clip: rect.clone(),
+            blend: BlendMode::new(Mix::Normal, Compose::Clear),
+            alpha: 1.0,
+        });
+        self.ops.push(Op::Fill {
             transform,
-            &anyrender::Paint::Solid(Color::BLACK),
-            None,
-            &rect,
-        );
-        self.scene.pop_layer();
+            colour: Color::BLACK,
+            path: rect,
+        });
+        self.ops.push(Op::Pop);
     }
 
     pub fn measure_text(&self, fonts: &mut Fonts, text: &str) -> Line {
@@ -333,14 +387,8 @@ impl Canvas {
         } else {
             self.state.fill
         };
-        let paint = anyrender::Paint::Solid(colour);
-        let alpha = self.state.alpha;
-        let stroke_style = Stroke::new(self.state.line_width);
-        let style: peniko::StyleRef<'_> = if stroke {
-            (&stroke_style).into()
-        } else {
-            Fill::NonZero.into()
-        };
+        let colour = colour.multiply_alpha(self.state.alpha);
+        let stroke = stroke.then(|| Stroke::new(self.state.line_width));
         for line in layout.lines() {
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
@@ -360,24 +408,25 @@ impl Canvas {
                     .synthesis()
                     .skew()
                     .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
-                let glyphs = glyph_run.positioned_glyphs().map(|glyph| anyrender::Glyph {
-                    id: glyph.id as _,
-                    x: glyph.x,
-                    y: glyph.y,
-                });
-                self.scene.draw_glyphs(
-                    font,
+                let glyphs = glyph_run
+                    .positioned_glyphs()
+                    .map(|glyph| vello_cpu::Glyph {
+                        id: glyph.id,
+                        x: glyph.x,
+                        y: glyph.y,
+                    })
+                    .collect();
+                self.ops.push(Op::Glyphs(Box::new(Glyphs {
+                    font: font.clone(),
                     size,
-                    true,
-                    bytemuck::cast_slice(run.normalized_coords()),
+                    coords: bytemuck::cast_slice(run.normalized_coords()).to_vec(),
                     embolden,
-                    style,
-                    &paint,
-                    alpha,
+                    stroke: stroke.clone(),
+                    colour,
                     transform,
                     glyph_transform,
                     glyphs,
-                );
+                })));
             }
         }
     }
@@ -405,17 +454,17 @@ impl Canvas {
             * Affine::scale_non_uniform(dw / sw, dh / sh)
             * Affine::translate((-sx, -sy));
         let clip = Rect::new(dx, dy, dx + dw, dy + dh);
-        self.scene.push_layer(
-            Fill::NonZero,
-            BlendMode::new(Mix::Normal, Compose::SrcOver),
-            self.state.alpha,
+        self.ops.push(Op::Layer {
             transform,
-            &clip,
-            None,
-            None,
-        );
-        self.scene.append_scene(scene, placed);
-        self.scene.pop_layer();
+            clip: clip.into_path(TOLERANCE),
+            blend: BlendMode::new(Mix::Normal, Compose::SrcOver),
+            alpha: self.state.alpha,
+        });
+        self.ops.push(Op::Scene {
+            transform: placed,
+            scene,
+        });
+        self.ops.push(Op::Pop);
     }
 
     pub fn draw_canvas_at(&mut self, from: &Canvas, dx: f64, dy: f64, size: Option<(f64, f64)>) {
@@ -504,28 +553,33 @@ impl Canvas {
         if !self.spend(self.path.elements().len() + 1) {
             return;
         }
-        let paint = self.paint_of(self.state.fill);
-        let (transform, path) = (self.state.transform, self.path.clone());
-        self.scene
-            .fill(Fill::NonZero, transform, &paint, None, &path);
+        self.ops.push(Op::Fill {
+            transform: self.state.transform,
+            colour: self.paint_of(self.state.fill),
+            path: self.path.clone(),
+        });
     }
 
     pub fn stroke(&mut self) {
         if !self.spend(self.path.elements().len() + 1) {
             return;
         }
-        let paint = self.paint_of(self.state.stroke);
-        let (transform, path) = (self.state.transform, self.path.clone());
-        let stroke = Stroke::new(self.state.line_width);
-        self.scene.stroke(&stroke, transform, &paint, None, &path);
+        self.ops.push(Op::Stroke {
+            transform: self.state.transform,
+            colour: self.paint_of(self.state.stroke),
+            stroke: Stroke::new(self.state.line_width),
+            path: self.path.clone(),
+        });
     }
 
     pub fn clip(&mut self) {
         if !self.spend(self.path.elements().len() + 1) {
             return;
         }
-        let (transform, path) = (self.state.transform, self.path.clone());
-        self.scene.push_clip_layer(Fill::NonZero, transform, &path);
+        self.ops.push(Op::Clip {
+            transform: self.state.transform,
+            clip: self.path.clone(),
+        });
         self.open_layers += 1;
         self.clips += 1;
     }
@@ -543,7 +597,7 @@ impl Canvas {
             return false;
         };
         for _ in 0..self.clips {
-            self.scene.pop_layer();
+            self.ops.push(Op::Pop);
             self.open_layers = self.open_layers.saturating_sub(1);
         }
         self.clips = clips;
@@ -630,7 +684,7 @@ pub fn render(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
 
 #[derive(Default)]
 pub struct Renderer {
-    inner: Option<(u32, u32, anyrender_vello_cpu::VelloCpuImageRenderer)>,
+    inner: Option<(u16, u16, vello_cpu::RenderContext, vello_cpu::Resources)>,
 }
 
 impl std::fmt::Debug for Renderer {
@@ -641,27 +695,34 @@ impl std::fmt::Debug for Renderer {
 
 impl Renderer {
     pub fn render_into(&mut self, scene: &Scene, width: u32, height: u32, out: &mut Vec<u8>) {
-        use anyrender::ImageRenderer;
         out.clear();
+        let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
+            return;
+        };
         if width == 0 || height == 0 {
             return;
         }
-        let renderer = match &mut self.inner {
-            Some((w, h, renderer)) if *w == width && *h == height => renderer,
+        let (ctx, resources) = match &mut self.inner {
+            Some((w, h, ctx, resources)) if *w == width && *h == height => (ctx, resources),
             slot => {
-                *slot = Some((
+                let made = slot.insert((
                     width,
                     height,
-                    anyrender_vello_cpu::VelloCpuImageRenderer::new(width, height),
+                    vello_cpu::RenderContext::new(width, height),
+                    vello_cpu::Resources::new(),
                 ));
-                &mut slot.as_mut().expect("just set").2
+                (&mut made.2, &mut made.3)
             }
         };
-        renderer.reset();
-        renderer.render_to_vec(
-            |painter| painter.append_scene(scene.clone(), Affine::IDENTITY),
-            out,
-        );
+        ctx.reset();
+        play(ctx, resources, &scene.ops, Affine::IDENTITY);
+        ctx.flush();
+        out.resize(usize::from(width) * usize::from(height) * 4, 0);
+        let Some(pixmap) = vello_cpu::PixmapMut::new(width, height, out) else {
+            out.clear();
+            return;
+        };
+        ctx.render(pixmap, resources);
         for px in out.as_chunks_mut::<4>().0 {
             let alpha = px[3];
             if alpha == 0 {
@@ -672,6 +733,85 @@ impl Renderer {
                         / u16::from(alpha))
                     .min(255) as u8;
                 }
+            }
+        }
+    }
+}
+
+/// 記録した命令を vello_cpu に流す。`outer` は重ねた記録の外側の変換。
+fn play(
+    ctx: &mut vello_cpu::RenderContext,
+    resources: &mut vello_cpu::Resources,
+    ops: &[Op],
+    outer: Affine,
+) {
+    for op in ops {
+        match op {
+            Op::Fill {
+                transform,
+                colour,
+                path,
+            } => {
+                ctx.set_transform(outer * *transform);
+                ctx.set_fill_rule(Fill::NonZero);
+                ctx.set_paint(*colour);
+                ctx.reset_paint_transform();
+                ctx.fill_path(path);
+            }
+            Op::Stroke {
+                transform,
+                colour,
+                stroke,
+                path,
+            } => {
+                ctx.set_transform(outer * *transform);
+                ctx.set_stroke(stroke.clone());
+                ctx.set_paint(*colour);
+                ctx.reset_paint_transform();
+                ctx.stroke_path(path);
+            }
+            Op::Layer {
+                transform,
+                clip,
+                blend,
+                alpha,
+            } => {
+                ctx.set_transform(outer * *transform);
+                ctx.set_fill_rule(Fill::NonZero);
+                ctx.push_layer(Some(clip), Some(*blend), Some(*alpha), None, None);
+            }
+            Op::Clip { transform, clip } => {
+                ctx.set_transform(outer * *transform);
+                ctx.set_fill_rule(Fill::NonZero);
+                ctx.push_clip_layer(clip);
+            }
+            Op::Pop => ctx.pop_layer(),
+            Op::Glyphs(run) => {
+                ctx.set_transform(outer * run.transform);
+                ctx.set_paint(run.colour);
+                ctx.reset_paint_transform();
+                if let Some(stroke) = &run.stroke {
+                    ctx.set_stroke(stroke.clone());
+                }
+                let glyphs = run.glyphs.iter().copied();
+                let builder = ctx
+                    .glyph_run(resources, &run.font)
+                    .font_size(run.size)
+                    .hint(true)
+                    .normalized_coords(&run.coords)
+                    .glyph_transform(run.glyph_transform.unwrap_or_default());
+                let _ = match &run.stroke {
+                    Some(_) => builder.stroke_glyphs(glyphs),
+                    None => builder
+                        .font_embolden(glifo::FontEmbolden::new(Diagonal2::new(
+                            run.embolden.x,
+                            run.embolden.y,
+                        )))
+                        .fill_glyphs(glyphs),
+                };
+            }
+            Op::Scene { transform, scene } => {
+                play(ctx, resources, &scene.ops, outer * *transform);
             }
         }
     }
@@ -797,6 +937,71 @@ mod tests {
         assert_eq!(pixel(&rgba, 100, 25, 50), [255, 0, 0, 255]);
         assert_eq!(pixel(&rgba, 100, 75, 25), [0, 0, 255, 255]);
         assert_eq!(pixel(&rgba, 100, 75, 75)[3], 0);
+    }
+
+    #[test]
+    fn a_clip_limits_what_is_painted_until_restore() {
+        let mut canvas = Canvas::new(100.0, 100.0);
+        canvas.save();
+        canvas.begin_path();
+        canvas.rect(0.0, 0.0, 50.0, 50.0);
+        canvas.clip();
+        canvas.state.fill = colour("#00ff00");
+        canvas.fill_rect(0.0, 0.0, 100.0, 100.0);
+        assert!(canvas.restore());
+        canvas.state.fill = colour("#0000ff");
+        canvas.fill_rect(60.0, 60.0, 40.0, 40.0);
+        let rgba = render(&canvas.scene_for(100.0, 100.0), 100, 100);
+        assert_eq!(pixel(&rgba, 100, 25, 25), [0, 255, 0, 255]);
+        assert_eq!(pixel(&rgba, 100, 75, 25)[3], 0, "切り抜きの外");
+        assert_eq!(
+            pixel(&rgba, 100, 80, 80),
+            [0, 0, 255, 255],
+            "restore の後は切り抜かない"
+        );
+    }
+
+    #[test]
+    fn clear_rect_and_global_alpha() {
+        let mut canvas = Canvas::new(100.0, 100.0);
+        canvas.state.fill = colour("#ff0000");
+        canvas.fill_rect(0.0, 0.0, 100.0, 100.0);
+        canvas.clear_rect(0.0, 0.0, 50.0, 100.0);
+        canvas.state.alpha = 0.5;
+        canvas.state.fill = colour("#0000ff");
+        canvas.fill_rect(0.0, 50.0, 50.0, 50.0);
+        let rgba = render(&canvas.scene_for(100.0, 100.0), 100, 100);
+        assert_eq!(pixel(&rgba, 100, 25, 25)[3], 0, "消した所");
+        assert_eq!(pixel(&rgba, 100, 75, 25), [255, 0, 0, 255]);
+        let half = pixel(&rgba, 100, 25, 75);
+        assert_eq!(half[..3], [0, 0, 255]);
+        assert!((126..=129).contains(&half[3]), "{half:?}");
+    }
+
+    #[test]
+    fn text_is_painted_with_the_global_alpha() {
+        let faces = crate::fonts::Faces::find();
+        if faces.sans.is_none() {
+            return;
+        }
+        let mut fonts = Fonts::new(font_context(&faces));
+        let mut canvas = Canvas::new(100.0, 40.0);
+        canvas.state.font = String::from("bold 32px sans-serif");
+        canvas.state.baseline = Baseline::Top;
+        canvas.fill_text(&mut fonts, "■", 0.0, 0.0);
+        canvas.state.alpha = 0.5;
+        canvas.fill_text(&mut fonts, "■", 60.0, 0.0);
+        let rgba = render(&canvas.scene_for(100.0, 40.0), 100, 40);
+        let most = |from: u32| {
+            (0..40)
+                .flat_map(|y| (from..from + 40).map(move |x| (x, y)))
+                .map(|(x, y)| pixel(&rgba, 100, x, y)[3])
+                .max()
+                .unwrap_or(0)
+        };
+        assert_eq!(most(0), 255, "文字が描かれる");
+        let half = most(60);
+        assert!((120..=135).contains(&half), "半分の不透明度: {half}");
     }
 
     #[test]
