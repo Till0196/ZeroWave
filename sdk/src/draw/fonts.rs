@@ -87,8 +87,10 @@ pub fn context(faces: &Faces) -> FontContext {
     ] {
         collection.set_generic_families(generic, families.iter().copied());
     }
-    for script in ["Hira", "Kana", "Hani", "Latn", "Zyyy", "Zinh", "Zzzz"] {
-        collection.set_fallbacks(Script::from_str_unchecked(script), families.iter().copied());
+    for script in [
+        *b"Hira", *b"Kana", *b"Hani", *b"Latn", *b"Zyyy", *b"Zinh", *b"Zzzz",
+    ] {
+        collection.set_fallbacks(Script::from_bytes(script), families.iter().copied());
     }
     FontContext {
         source_cache: SourceCache::new_shared(),
