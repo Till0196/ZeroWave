@@ -57,16 +57,16 @@ macOS 向けは Mac で組みます。
 ## 配布物
 
 バージョンの形のタグ（`v0.1.0` など）を push すると、`.github/workflows/release.yml` が組んで GitHub Releases に載せます。
-macOS は Apple のランナーで組み、それ以外は ubuntu-latest から zig でクロスビルドします（上の `cargo linux`・`cargo linux-arm64`・`cargo win` と同じ組み方）。
+macOS は Apple のランナーで組み、それ以外は ubuntu-latest から zig でクロスビルドします（上の `cargo linux`・`cargo linux-arm64`・`cargo linux-armhf`・`cargo win`・`cargo win32` と同じ組み方）。
 
 | 成果物 | 中身 |
 | --- | --- |
 | `zerowave-<ターゲット>.tar.gz`（Windows は `.zip`） | ZeroWave と README・LICENSE・NOTICE（展開した場所でそのまま動きます） |
-| `ZeroWave_<バージョン>_<amd64・arm64>.deb` | Linux の ZeroWave（`/usr/bin/ZeroWave`）と、メニューに並べる `zerowave.desktop`・アイコン |
-| `zerowave-<バージョン>-1.<x86_64・aarch64>.rpm` | deb と同じ物（ライセンスは `/usr/share/licenses/zerowave`） |
+| `ZeroWave_<バージョン>_<amd64・arm64・armhf>.deb` | Linux の ZeroWave（`/usr/bin/ZeroWave`）と、メニューに並べる `zerowave.desktop`・アイコン |
+| `zerowave-<バージョン>-1.<x86_64・aarch64・armv7hl>.rpm` | deb と同じ物（ライセンスは `/usr/share/licenses/zerowave`） |
 | `ZeroWave-<ターゲット>.app.zip` | macOS の ZeroWave.app（ad-hoc の署名） |
 
-ターゲットは macOS（Apple シリコン・Intel）、Linux（x86_64・arm64、glibc 2.28 以降）、Windows（x86_64、gnullvm）です。
+ターゲットは macOS（Apple シリコン・Intel）、Linux（x86_64・arm64・armv7 hard-float、glibc 2.28 以降）、Windows（x86_64・i686、gnullvm）です。
 .app と deb は cargo-packager で作ります（設定は deck の `Cargo.toml` の `[package.metadata.packager]`）。
 rpm は rpmbuild で作ります（設定は `deck/linux/zerowave.spec`。組んだバイナリを包むだけで、rpm の中ではコンパイルしません）。
 rpm の版はタグの `-` を `~` に替えた物です（`v0.2.0-beta.1` なら `0.2.0~beta.1`）。

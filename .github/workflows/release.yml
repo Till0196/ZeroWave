@@ -37,8 +37,16 @@ jobs:
             runner: ubuntu-latest
             package: deb
             rpm: aarch64
+          - target: armv7-unknown-linux-gnueabihf
+            zigbuild: armv7-unknown-linux-gnueabihf.2.28
+            runner: ubuntu-latest
+            package: deb
+            rpm: armv7hl
           - target: x86_64-pc-windows-gnullvm
             zigbuild: x86_64-pc-windows-gnullvm
+            runner: ubuntu-latest
+          - target: i686-pc-windows-gnullvm
+            zigbuild: i686-pc-windows-gnullvm
             runner: ubuntu-latest
     runs-on: ${{ matrix.runner }}
     env:
