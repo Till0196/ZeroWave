@@ -98,5 +98,4 @@ libva も libnvcuvid も `dlopen` で開き、バインディングは自前で�
 
 deck の既定の feature は sound・nvdec・qsv・amf です。
 Linux では vaapi・v4l2・passthrough・wayland、Apple では videotoolbox が自動で入ります。
-H.264 と HEVC の内蔵のソフトウェアデコーダーは、特許の使用許諾が要るので既定に入れていません（`--features h264-decoder,hevc-decoder`）。
 Windows でパススルーを使うときは `--features passthrough` を付けます。
