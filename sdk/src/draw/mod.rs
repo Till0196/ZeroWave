@@ -44,8 +44,8 @@ impl Fonts {
         let line = layout.lines().next()?;
         let metrics = line.metrics();
         let line = Line {
-            ascent: metrics.ascent,
-            descent: metrics.descent,
+            ascent: metrics.baseline - metrics.content_block_min_coord,
+            descent: metrics.content_block_max_coord - metrics.baseline,
             baseline: metrics.baseline,
             width: layout.width(),
         };
@@ -257,6 +257,7 @@ impl Canvas {
         let rect = Rect::new(x, y, x + w, y + h);
         let transform = self.state.transform;
         self.scene.push_layer(
+            Fill::NonZero,
             BlendMode::new(Mix::Normal, Compose::Clear),
             1.0,
             transform,
@@ -363,7 +364,7 @@ impl Canvas {
                     font,
                     size,
                     true,
-                    run.normalized_coords(),
+                    bytemuck::cast_slice(run.normalized_coords()),
                     embolden,
                     style,
                     &paint,
@@ -400,6 +401,7 @@ impl Canvas {
             * Affine::translate((-sx, -sy));
         let clip = Rect::new(dx, dy, dx + dw, dy + dh);
         self.scene.push_layer(
+            Fill::NonZero,
             BlendMode::new(Mix::Normal, Compose::SrcOver),
             self.state.alpha,
             transform,
@@ -518,7 +520,7 @@ impl Canvas {
             return;
         }
         let (transform, path) = (self.state.transform, self.path.clone());
-        self.scene.push_clip_layer(transform, &path);
+        self.scene.push_clip_layer(Fill::NonZero, transform, &path);
         self.open_layers += 1;
         self.clips += 1;
     }
