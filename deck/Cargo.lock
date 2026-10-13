@@ -422,6 +422,7 @@ dependencies = [
 [[package]]
 name = "coax"
 version = "0.1.0"
+source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
 
 [[package]]
 name = "cobs"
@@ -725,9 +726,9 @@ checksum = "56caa8a7f1e0f2c61400996cc1567fb06dd417c49d5e673131a149cb9628625f"
 
 [[package]]
 name = "crc32fast"
-version = "1.5.1"
+version = "1.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8498c871161e1742aaa9d52551b2d6ebdd4c3d45a3be423e3728f33b955be550"
+checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
 dependencies = [
  "cfg-if",
 ]
@@ -1593,6 +1594,7 @@ dependencies = [
 [[package]]
 name = "isdb"
 version = "0.1.0"
+source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
 dependencies = [
  "encoding_rs",
  "miniz_oxide 0.8.9",
@@ -1914,6 +1916,7 @@ dependencies = [
 [[package]]
 name = "mmttlv"
 version = "0.1.0"
+source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
 dependencies = [
  "mpegts",
 ]
@@ -1931,6 +1934,7 @@ dependencies = [
 [[package]]
 name = "mpegts"
 version = "0.1.0"
+source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
 
 [[package]]
 name = "muda"
