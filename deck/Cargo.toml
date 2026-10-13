@@ -128,7 +128,7 @@ rfd = { version = "0.17", default-features = false }
 pollster = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-muda = { version = "0.19", default-features = false }
+muda = { version = "0.21", default-features = false }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFRunLoop", "CFDate", "CFBase", "CFPreferences", "CFString", "CFPropertyList"] }
 objc2 = "0.6"
 block2 = "0.6"
@@ -136,7 +136,7 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSClipView", "NSScrollView", "NSText", "NSTextView", "NSTextContainer", "NSColor", "NSFont", "NSAppearance", "NSTextStorage", "NSAttributedString", "NSTextAttachment", "NSImage", "NSBezierPath", "NSStringDrawing", "NSWindow", "NSApplication", "block2", "objc2-core-foundation"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-muda = { version = "0.19", default-features = false }
+muda = { version = "0.21", default-features = false }
 windows = { version = "0.62", default-features = false, features = [
     "Win32_Foundation",
     "Win32_System_LibraryLoader",
