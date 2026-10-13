@@ -1,0 +1,97 @@
+# ビルド
+
+## 通常のビルド
+
+```sh
+cd deck
+cargo build --release              # target/release/ZeroWave（Windows は ZeroWave.exe）
+cargo packager --release           # macOS の ZeroWave.app（cargo install cargo-packager）
+```
+
+| OS | 必要な物 | できる物 |
+| --- | --- | --- |
+| Windows | Visual Studio の C++ ビルドツール（MSVC） | MSVC の ZeroWave.exe |
+| macOS | Xcode の Command Line Tools | その Mac の CPU 向け。動くのは macOS 13 以降 |
+| Linux | C コンパイラー（開発用のパッケージは不要） | ビルドした環境の glibc 以降で動く物 |
+
+coax-rs（`mpegts`・`mmttlv`・`isdb`・`coax`）は、Cargo が git（`https://github.com/Till0196/coax-rs`）から取ってきます。
+手元の coax-rs を使うときは、zerowave と coax-rs を並べたフォルダーに `.cargo/config.toml` を置いて差し替えます。
+
+```toml
+[patch."https://github.com/Till0196/coax-rs"]
+coax = { path = "coax-rs/coax" }
+isdb = { path = "coax-rs/isdb" }
+mmttlv = { path = "coax-rs/mmttlv" }
+mpegts = { path = "coax-rs/mpegts" }
+```
+
+ライブラリだけをビルドするなら、ワークスペースの直下で下記を実行します。
+
+```sh
+cargo build --release -p zerowave-core --features wgpu        # レンダリングまで
+cargo build --release -p zerowave-core --features vaapi,wgpu  # Linux のハードウェアデコード
+```
+
+## クロスビルド（zig）
+
+クロスビルドでは zig でリンクします。
+ビルドした環境より古い glibc 向け（配布用）も同じです。
+Linux でも Windows でも同じ手順で、cargo の別名（`.cargo/config.toml`）と cargo のサブコマンドを使います。
+必要な物は `zig`（PATH に置く）と `cargo install cargo-zigbuild cargo-packager` です。
+Windows 向けは MinGW の ABI（`gnullvm`）で、CRT を静的にリンクします。
+
+```sh
+cd deck
+cargo win                                   # Windows（ZeroWave.exe）
+cargo win32                                 # 32 ビットの Windows
+cargo linux                                 # Linux（glibc 2.28 以降）
+cargo linux-old                             # Linux（glibc 2.17 以降）
+cargo linux-arm64                           # Linux の arm64（glibc 2.28 以降）
+cargo linux-armhf                           # Linux の armv7 hard-float（glibc 2.28 以降。Raspberry Pi 2 など）
+SDKROOT=~/sdk/MacOSX.sdk cargo mac          # macOS（Apple シリコン）
+SDKROOT=~/sdk/MacOSX.sdk cargo mac-intel    # macOS（Intel）
+cargo mac-app                               # cargo mac でビルドした物を ZeroWave.app に
+cargo mac-intel-app                         # cargo mac-intel でビルドした物を ZeroWave.app に
+cargo winq                                  # Windows（quick プロファイル。確かめるとき用）
+```
+
+ターゲットは `rustup target add` で入れます（`x86_64-pc-windows-gnullvm`、`aarch64-apple-darwin` など）。
+cargo-packager は自分ではビルドしないので、`cargo mac-app` の前に `cargo mac` が要ります。
+
+macOS 向けは、zig がリンクし（ad-hoc の署名も付きます）、フレームワーク（Metal、AppKit など）は SDK のテキストスタブ（`.tbd`）で解決します。
+そのため、Mac から SDK をコピーしておけば Mac が無くてもビルドできます。
+コピーは `rsync -a --copy-links mac:$(xcrun --show-sdk-path)/ ~/sdk/MacOSX.sdk/` です（ヘッダーとスタブで 300 MB ほど。Command Line Tools の SDK で足ります）。
+動くのは macOS 13 以降です（cargo-zigbuild が zig にバージョンを渡さないので、zig の既定になります）。
+実行して確かめるには Mac が必要です。
+
+## 配布物
+
+バージョンの形のタグ（`v0.1.0` など）を push すると、`.github/workflows/release.yml` が組んで GitHub Releases に載せます。
+macOS は Apple のランナーで組み、それ以外は ubuntu-latest から zig でクロスビルドします（上の `cargo linux`・`cargo linux-arm64`・`cargo win` と同じ組み方）。
+
+| 成果物 | 中身 |
+| --- | --- |
+| `zerowave-<ターゲット>.tar.gz`（Windows は `.zip`） | ZeroWave と README・LICENSE・NOTICE（展開した場所でそのまま動きます） |
+| `ZeroWave_<バージョン>_<amd64・arm64>.deb` | Linux の ZeroWave（`/usr/bin/ZeroWave`）と、メニューに並べる `zerowave.desktop`・アイコン |
+| `zerowave-<バージョン>-1.<x86_64・aarch64>.rpm` | deb と同じ物（ライセンスは `/usr/share/licenses/zerowave`） |
+| `ZeroWave-<ターゲット>.app.zip` | macOS の ZeroWave.app |
+
+ターゲットは macOS（Apple シリコン・Intel）、Linux（x86_64・arm64、glibc 2.28 以降）、Windows（x86_64、gnullvm）です。
+.app と deb は cargo-packager で作ります（設定は deck の `Cargo.toml` の `[package.metadata.packager]`）。
+rpm は rpmbuild で作ります（設定は `deck/linux/zerowave.spec`。組んだバイナリを包むだけで、rpm の中ではコンパイルしません）。
+rpm の版はタグの `-` を `~` に替えた物です（`v0.2.0-beta.1` なら `0.2.0~beta.1`）。
+deb と rpm の .desktop とアイコンは `deck/linux/` の物をそのまま入れます（.desktop の名前を Wayland の app_id の `zerowave` に揃えるため）。
+タグに `-` が付く物はプレリリースにします。
+zig（ziglang.org の公式のアーカイブを SHA-256 で確かめて使う）・cargo-zigbuild・cargo-packager の版は、release.yml の `env` で決めています。
+GitHub の action は actions/ の公式の物（checkout・upload-artifact・download-artifact）だけを使います。
+
+## feature
+
+ハードウェアの経路は feature になっていて、その環境に無い経路はビルドに含めません。
+ドライバーが入っていない環境では、経路は「無い」を返してソフトウェアデコーダーに切り替えます。
+libva も libnvcuvid も `dlopen` で開き、バインディングは自前で書いているので、依存するクレートはほとんど増えません。
+
+deck の既定の feature は sound・nvdec・qsv・amf です。
+Linux では vaapi・v4l2・passthrough・wayland、Apple では videotoolbox が自動で入ります。
+H.264 と HEVC の内蔵のソフトウェアデコーダーは、特許の使用許諾が要るので既定に入れていません（`--features h264-decoder,hevc-decoder`）。
+Windows でパススルーを使うときは `--features passthrough` を付けます。

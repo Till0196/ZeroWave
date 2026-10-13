@@ -1,0 +1,38 @@
+[package]
+name = "zwsdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "ZeroWave のプラグイン（wasm）の SDK：プラグイン側（plug）、ホスト側（host）、メッセージの型（layer・video・ui・control）、レンダリング（draw）、通信（net）"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# wasmtime に依存するので wasm32 ではビルドできない。guest は default-features = false で依存する。
+host = ["dep:wasmtime", "dep:coax", "dep:skrifa", "dep:memmap2"]
+
+[dependencies]
+tracing.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyrender = "0.13"
+anyrender_vello_cpu = "0.17"
+kurbo = "0.13"
+peniko = "0.6"
+parley = { version = "0.11.1", default-features = false, features = ["std"] }
+parlance = "0.1"
+wasmtime = { version = "48", default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation"], optional = true }
+coax = { workspace = true, optional = true }
+# parley（fontique）と同じバージョンに揃える。
+skrifa = { version = "0.44", optional = true }
+memmap2 = { version = "0.9", optional = true }
+
+# aws-lc は C と nasm が要り、Windows へのクロスビルドで失敗するので ring にする。
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+# SHA-1 の署名の検証に使う（webpki に無い）。
+ring = "0.17"

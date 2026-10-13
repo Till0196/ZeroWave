@@ -1,0 +1,7 @@
+# doctest は nextest では走らないので、要るときは `cargo test --doc`。
+[profile.default]
+retries = 0
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 3 }
+status-level = "slow"
+final-status-level = "fail"

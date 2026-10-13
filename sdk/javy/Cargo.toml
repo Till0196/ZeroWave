@@ -1,0 +1,20 @@
+[package]
+name = "zwjavy"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "ZeroWave のレイヤーを JavaScript（TypeScript）で書くための Javy プラグイン"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+javy-plugin-api = "7"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+
+# wasm32-wasip1 専用なので親の workspace には入れない。
+[workspace]

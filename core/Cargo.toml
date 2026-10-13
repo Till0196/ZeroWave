@@ -1,0 +1,112 @@
+[package]
+name = "zerowave-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# `core` は libcore と衝突するので、使うときの名前は `zwcore`。
+[lib]
+name = "zwcore"
+
+[features]
+default = []
+epg-db = ["dep:rusqlite"]
+wgpu = ["dep:wgpu", "dep:pollster", "dep:libc"]
+vaapi = ["dep:ash"]
+v4l2 = ["dep:ash"]
+wayland = ["dep:wayland-client", "dep:wayland-protocols", "dep:wayland-backend"]
+nvdec = ["dep:ash"]
+d3d12 = ["dep:windows"]
+mediafoundation = ["dep:windows"]
+amf = ["dep:windows"]
+qsv = []
+passthrough = ["dep:windows", "dep:ndk-context"]
+android = ["dep:ndk", "dep:ndk-sys", "dep:ash", "dep:libc"]
+videotoolbox = ["dep:objc2", "dep:objc2-metal"]
+coaxd = ["dep:coax"]
+mirakurun = ["dep:coax"]
+plugins = ["dep:zwsdk", "zwsdk/host"]
+h264-decoder = ["mediadecoder/h264-decoder"]
+hevc-decoder = ["mediadecoder/hevc-decoder"]
+
+[dependencies]
+tracing.workspace = true
+rusqlite = { version = "0.40", features = ["bundled", "functions"], optional = true }
+mediadecoder = { path = "../mediadecoder" }
+mpegts.workspace = true
+mmttlv.workspace = true
+isdb.workspace = true
+coax = { workspace = true, optional = true }
+zwsdk = { path = "../sdk", optional = true }
+png = "0.18"
+wgpu = { version = "30", default-features = false, features = [
+    "wgsl",
+    "vulkan",
+    "metal",
+    "dx12",
+], optional = true }
+pollster = { version = "0.4", optional = true }
+ash = { version = "0.38", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = { version = "0.31", optional = true }
+wayland-protocols = { version = "0.32", features = ["client", "staging"], optional = true }
+# winit と同じ Wayland の接続を使うので client_system。
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"], optional = true }
+
+# windows クレートはほかの OS ではビルドできない。D3D12 の動画デコードの API は Win32_Media_MediaFoundation にある。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+    "Win32_System_JobObjects",
+    "Win32_System_Memory",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Variant",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Devices_FunctionDiscovery",
+], optional = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-metal = { version = "0.3", default-features = false, features = [
+    "std",
+    "MTLResource",
+    "MTLTexture",
+    "MTLAllocation",
+    "MTLDevice",
+    "MTLCommandQueue",
+    "MTLCommandBuffer",
+    "MTLEvent",
+], optional = true }
+
+# AHardwareBuffer が API 26 からなので、下限は 26。
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = { version = "0.9", default-features = false, features = [
+    "media",
+    "nativewindow",
+    "api-level-26",
+], optional = true }
+ndk-sys = { version = "0.6", optional = true }
+libc = { version = "0.2", optional = true }
+ndk-context = { version = "0.1", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { version = "0.2", optional = true }
+
+[dev-dependencies]
+mediadecoder = { path = "../mediadecoder" }
+naga = { version = "30", features = ["wgsl-in"] }
+
+[lints]
+workspace = true

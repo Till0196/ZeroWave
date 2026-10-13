@@ -1,0 +1,19 @@
+{
+  "name": "zwsdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ZeroWave のレイヤーを TypeScript で書くための SDK（canvas 2D・タイマー・requestAnimationFrame を wasm の中に）",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "bin": {
+    "zw-stamp": "bin/zw-stamp.mjs"
+  }
+}

@@ -1,0 +1,22 @@
+[alias]
+win = "zigbuild --release --target x86_64-pc-windows-gnullvm"
+win32 = "zigbuild --release --target i686-pc-windows-gnullvm"
+mac = "zigbuild --release --target aarch64-apple-darwin"
+mac-intel = "zigbuild --release --target x86_64-apple-darwin"
+linux = "zigbuild --release --target x86_64-unknown-linux-gnu.2.28"
+linux-old = "zigbuild --release --target x86_64-unknown-linux-gnu.2.17"
+linux-arm64 = "zigbuild --release --target aarch64-unknown-linux-gnu.2.28"
+linux-armhf = "zigbuild --release --target armv7-unknown-linux-gnueabihf.2.28"
+mac-app = "packager --release --target aarch64-apple-darwin --formats app"
+mac-intel-app = "packager --release --target x86_64-apple-darwin --formats app"
+winq = "zigbuild --profile quick --target x86_64-pc-windows-gnullvm"
+
+[env]
+# cargo-zigbuild でリンクした物は zig の既定の 13.0 になるので、rustc と cc もそれに揃える。
+MACOSX_DEPLOYMENT_TARGET = "13.0"
+
+[target.x86_64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.i686-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]
