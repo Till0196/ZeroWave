@@ -75,6 +75,4 @@ stream のプラグインはマニフェストの `order` の小さい順に通�
 
 ## 多重フレーム（TSMF）
 
-ケーブルは一本のキャリアに複数の TS を載せます。
-そのまま入れると一本のストリームの中に PAT が何組も見えて何も映らないので、デマルチプレクサの手前で分離します。
-この処理は本体には入っておらず、[zerowave_plugins](https://github.com/Till0196/zerowave_plugins) の `tsmf`（`zerowave_tsmf.wasm`）が stream hook として行います。
+TSMF の分離は本体には入っておらず、[zerowave_plugins](https://github.com/Till0196/zerowave_plugins) の `tsmf`（`zerowave_tsmf.wasm`）が stream hook として行います。
