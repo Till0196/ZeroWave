@@ -112,6 +112,8 @@ pub struct Info {
     packages: Vec<isdb::mmttables::ListedPackage>,
     packages_told: bool,
     layouts: Vec<isdb::mmttables::Layout>,
+    /// MH-AIT の識別子ごとの、載っているアプリケーションの数。
+    applications: BTreeMap<u16, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,6 +304,14 @@ impl Info {
 
     pub fn packages(&self) -> &[isdb::mmttables::ListedPackage] {
         &self.packages
+    }
+
+    pub fn applications(&self) -> &BTreeMap<u16, usize> {
+        &self.applications
+    }
+
+    pub fn on_application_information(&mut self, packet_id: u16, count: usize) {
+        self.applications.insert(packet_id, count);
     }
 
     pub fn set_packages(&mut self, packages: Vec<isdb::mmttables::ListedPackage>) {

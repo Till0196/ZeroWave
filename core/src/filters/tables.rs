@@ -56,7 +56,7 @@ impl Tables<'_> {
     pub fn feed(&mut self, section: &Section<'_>) {
         match section.origin {
             Origin::Ts => self.feed_ts(section.pid, section.data),
-            Origin::MmtSi => self.feed_mmt(section.data),
+            Origin::MmtSi => self.feed_mmt(section.pid, section.data),
             Origin::TlvSi => self.feed_tlv(section.data),
         }
     }
@@ -165,11 +165,17 @@ impl Tables<'_> {
         }
     }
 
-    fn feed_mmt(&mut self, section: &[u8]) {
+    fn feed_mmt(&mut self, packet_id: u16, section: &[u8]) {
         let Some(&table_id) = section.first() else {
             return;
         };
         match table_id {
+            mmttables::TABLE_MH_AIT => {
+                if let Some(table) = mmttables::application_information(section) {
+                    self.si
+                        .on_application_information(packet_id, table.applications.len());
+                }
+            }
             mmttables::TABLE_MH_EIT_PRESENT..=mmttables::TABLE_MH_EIT_SCHEDULE_LAST => {
                 if let Some(table) = mmttables::event_table(section) {
                     self.guide.on_mh_event_table(&table);

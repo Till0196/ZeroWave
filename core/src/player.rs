@@ -720,6 +720,8 @@ pub struct Tables {
     pub partial: Option<crate::si::PartialInfo>,
     pub packages: Vec<isdb::mmttables::ListedPackage>,
     pub layouts: Vec<isdb::mmttables::Layout>,
+    /// MH-AIT の識別子と、載っているアプリケーションの数。
+    pub applications: Vec<(u16, usize)>,
     pub counts: Counts,
     pub container: Container,
     pub pids: Vec<(u16, Counted)>,

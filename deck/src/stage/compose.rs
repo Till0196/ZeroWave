@@ -934,15 +934,22 @@ pub fn shown_size(format: &mediadecoder::es::Format) -> (u32, u32) {
     (width.max(1), height.max(1))
 }
 
-/// TS は PMT のデータ符号化方式記述子（字幕の 0x0008 は数えない、ARIB STD-B10 第2部 6.2.20）、
-/// MMT は MH のアプリケーションサービス記述子。
-fn has_data_broadcast(program: &zwcore::filters::Program) -> bool {
+/// TS は PMT のデータ符号化方式記述子（字幕の 0x0008 は数えない、ARIB STD-B10 第2部 6.2.20）。
+/// MMT は MH のアプリケーションサービス記述子が示す MH-AIT に、アプリケーションが載っているか。
+/// 記述子はデータ放送の無い局の MPT にも載るので、それだけでは分からない。MH-AIT がまだ届いて
+/// いなければ、有るとして扱う。
+fn has_data_broadcast(program: &zwcore::filters::Program, applications: &[(u16, usize)]) -> bool {
     const CAPTION: u16 = 0x0008;
-    program.application.is_some()
-        || program
-            .streams
+    if let Some(service) = &program.application {
+        return applications
             .iter()
-            .any(|stream| stream.data.as_ref().is_some_and(|data| data.id != CAPTION))
+            .find(|(packet_id, _)| *packet_id == service.ait)
+            .is_none_or(|(_, count)| *count > 0);
+    }
+    program
+        .streams
+        .iter()
+        .any(|stream| stream.data.as_ref().is_some_and(|data| data.id != CAPTION))
 }
 
 /// フリー関数なのは `player` と `guide` を借りたまま `status` を渡すため。
@@ -971,7 +978,7 @@ pub(super) fn collect(player: &Player, guide: &Guide, status: &mut Status, size:
             .programs
             .iter()
             .find(|program| program.number == watching.service)
-            .map(has_data_broadcast)
+            .map(|program| has_data_broadcast(program, &tables.applications))
     });
     status.counts = tables.counts;
     status.clock = clock_now();
@@ -1382,4 +1389,31 @@ fn tables_mark(tables: &zwcore::player::Tables) -> u64 {
     }
     tables.pictures.hash(&mut hasher);
     hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn an_empty_entry_means_no_data_broadcast() {
+        let program = zwcore::filters::Program {
+            number: 0x0101,
+            map: 0,
+            streams: Vec::new(),
+            pcr: 0,
+            ecm: Vec::new(),
+            application: Some(isdb::descriptors::ApplicationService {
+                resolution: 0,
+                ait: 0x8000,
+                data: None,
+                emts: Vec::new(),
+            }),
+            region: None,
+            emergency_news: None,
+            emergency: Vec::new(),
+        };
+        assert!(super::has_data_broadcast(&program, &[]));
+        assert!(super::has_data_broadcast(&program, &[(0x8000, 1)]));
+        assert!(!super::has_data_broadcast(&program, &[(0x8000, 0)]));
+        assert!(super::has_data_broadcast(&program, &[(0x8001, 0)]));
+    }
 }

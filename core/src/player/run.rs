@@ -619,6 +619,11 @@ pub(super) fn gather(engine: &Engine) -> Tables {
         partial: si.partial().cloned(),
         packages: si.packages().to_vec(),
         layouts: si.layouts().to_vec(),
+        applications: si
+            .applications()
+            .iter()
+            .map(|(packet_id, count)| (*packet_id, *count))
+            .collect(),
         counts: engine.counts(),
         container: engine.container(),
         services,
