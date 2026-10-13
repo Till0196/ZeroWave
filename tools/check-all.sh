@@ -1,10 +1,10 @@
 #!/bin/sh
-# 六つのターゲットを全部検査する。実機は要らない: Windows・Apple・Android は
+# Apple 以外のターゲットを検査する。実機は要らない: Windows・Android は
 # `cargo check` の対象指定だけで通る（リンクはしない）。
 set -e
 cd "$(dirname "$0")/.."
-# Windows と Apple の行は cargo-zigbuild を通す。ring が C をそのターゲット向けに
-# コンパイルするので、リンクしない検査でも zig（と Apple は SDK、SDKROOT）が要る。
+# Windows の行は cargo-zigbuild を通す。ring が C をそのターゲット向けに
+# コンパイルするので、リンクしない検査でも zig が要る。
 say() { printf '\n=== %s ===\n' "$1"; }
 
 say "書式"
@@ -18,10 +18,6 @@ cargo check -p zwsdk --target wasm32-wasip1
 say "Windows（d3d12）"
 cargo-zigbuild clippy -p zerowave-core --features d3d12,coaxd,mirakurun,plugins --all-targets \
     --target x86_64-pc-windows-gnullvm -- -D warnings
-
-say "Apple（videotoolbox）"
-cargo-zigbuild clippy -p zerowave-core --features videotoolbox,coaxd,mirakurun,plugins --all-targets \
-    --target aarch64-apple-darwin -- -D warnings
 
 say "Android（64 ビットと 32 ビットの両方）"
 # **両方**要る。`timespec` のフィールドの幅が変わるので、片方だけでは

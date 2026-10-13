@@ -48,21 +48,11 @@ cargo linux                                 # Linux（glibc 2.28 以降）
 cargo linux-old                             # Linux（glibc 2.17 以降）
 cargo linux-arm64                           # Linux の arm64（glibc 2.28 以降）
 cargo linux-armhf                           # Linux の armv7 hard-float（glibc 2.28 以降。Raspberry Pi 2 など）
-SDKROOT=~/sdk/MacOSX.sdk cargo mac          # macOS（Apple シリコン）
-SDKROOT=~/sdk/MacOSX.sdk cargo mac-intel    # macOS（Intel）
-cargo mac-app                               # cargo mac でビルドした物を ZeroWave.app に
-cargo mac-intel-app                         # cargo mac-intel でビルドした物を ZeroWave.app に
 cargo winq                                  # Windows（quick プロファイル。確かめるとき用）
 ```
 
-ターゲットは `rustup target add` で入れます（`x86_64-pc-windows-gnullvm`、`aarch64-apple-darwin` など）。
-cargo-packager は自分ではビルドしないので、`cargo mac-app` の前に `cargo mac` が要ります。
-
-macOS 向けは、zig がリンクし（ad-hoc の署名も付きます）、フレームワーク（Metal、AppKit など）は SDK のテキストスタブ（`.tbd`）で解決します。
-そのため、Mac から SDK をコピーしておけば Mac が無くてもビルドできます。
-コピーは `rsync -a --copy-links mac:$(xcrun --show-sdk-path)/ ~/sdk/MacOSX.sdk/` です（ヘッダーとスタブで 300 MB ほど。Command Line Tools の SDK で足ります）。
-動くのは macOS 13 以降です（cargo-zigbuild が zig にバージョンを渡さないので、zig の既定になります）。
-実行して確かめるには Mac が必要です。
+ターゲットは `rustup target add` で入れます（`x86_64-pc-windows-gnullvm` など）。
+macOS 向けは Mac で組みます。
 
 ## 配布物
 

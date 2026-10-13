@@ -20,17 +20,18 @@ AAC      実放送で ffmpeg に対し 133 dB。22.2ch の 24 チャンネルす
 同じ録画をデバイスと内蔵のソフトウェアデコーダーで二回デコードし、フレームごとの dB と並び順と速さを出します。
 実機でしか意味の無い検証なので、`deck` に入れています。
 
-VA-API・V4L2・NVDEC・D3D12・VideoToolbox・Android の六つの経路は、実機が無くてもまとめて検査できます。
+VA-API・V4L2・NVDEC・D3D12・Android の経路は、実機が無くてもまとめて検査できます。
 
 ```sh
 ./tools/check-all.sh
 ```
 
-対象は書式、Linux（vaapi・v4l2・nvdec・wgpu・coaxd・mirakurun・plugins と、wasm32 の zwsdk）、Windows（d3d12）、Apple（videotoolbox）、Android（64 ビットと 32 ビット）、`deck`、テストです。
+対象は書式、Linux（vaapi・v4l2・nvdec・wgpu・coaxd・mirakurun・plugins と、wasm32 の zwsdk）、Windows（d3d12）、Android（64 ビットと 32 ビット）、`deck`、テストです。
 `cargo check` ではなく `cargo clippy -- -D warnings` で検査します。
 リンクはしないので実機は要りませんが、引数と型の不一致はここで分かります。
 AMF・QSV・Media Foundation・パススルーの feature は検査しません。
-Windows と Apple の行には zig と cargo-zigbuild が、Apple にはさらに SDKROOT が要ります。
+Windows の行には zig と cargo-zigbuild が要ります。
+Apple の行は検査しないので、CI の macOS のランナーで確かめます。
 テストが失敗してもスクリプトは失敗しないので、出力を見て確かめてください。
 
 GitHub Actions の CI（`.github/workflows/ci.yml`）も、master への push とプルリクエストで同じ検査を流します。
