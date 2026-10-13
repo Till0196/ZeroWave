@@ -256,8 +256,8 @@ impl Worker {
 
     fn open(&self) -> Option<LayerInstance> {
         let mut io = self.own.clone();
-        let faces = zwsdk::draw::fonts::Faces::find();
-        let fonts = zwsdk::draw::fonts::context(&faces);
+        let faces = zwsdk::fonts::Faces::find();
+        let fonts = zwsdk::draw::font_context(&faces);
         if let Some(sans) = faces.sans {
             io.fonts.insert(String::from("sans"), sans);
         }

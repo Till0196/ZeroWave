@@ -6,7 +6,9 @@
 pub mod abi;
 pub mod config;
 pub mod control;
+#[cfg(feature = "host")]
 pub mod draw;
+pub mod fonts;
 pub mod layer;
 pub mod net;
 pub mod plug;

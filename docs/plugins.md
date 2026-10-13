@@ -26,7 +26,8 @@
 - `zwsdk::ui`：メニュー・ページ・通知のデータ型。
 - `zwsdk::control`：リモコン API のデータ型。
 - `zwsdk::config`：一覧とマップの設定（`kind = "list"`・`"map"`）。
-- `zwsdk::draw`：canvas 2D の API でレンダリングして画像にします。フォントの探し方もここにあります。
+- `zwsdk::fonts`：フォントの探し方です。
+- `zwsdk::draw`：canvas 2D の API でレンダリングして画像にします（ホスト側だけ、feature `host`）。
 - `zwsdk::net`：データ放送の通信など。本体がプラグインの代わりに通信します。
 - `sdk/ts`・`sdk/javy`：TypeScript でレイヤーを書くための SDK と、それを wasm にする Javy のプラグイン。
 

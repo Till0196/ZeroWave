@@ -6,7 +6,7 @@
 | --- | --- |
 | `mediadecoder` | ES ヘッダー解析、MPEG-2 / H.264 / HEVC / AAC / MPEG Audio / AIFF のデコード、規格が定める参照画像の管理。 |
 | `core`（`zwcore`） | 本体。コンテナフォーマット、時計と同期、八つのハードウェアデコードの経路（VA-API・V4L2・NVDEC・D3D12・VideoToolbox・Android・AMF・QSV）、音声の経路（デバイス、パススルー、リサンプル）、wgpu と GLES 2.0 のレンダリング、デインタレース、番組表と、プレイヤー（字幕、データ放送、レイヤー、プラグインの読み込み。feature `plugins`）。 |
-| `sdk`（`zwsdk`） | プラグインの SDK。プラグイン側（`plug`）、ホスト側（`host`、feature）、メッセージの型（`layer`・`video`）、canvas 2D（`draw`）、通信（`net`）、UI（`ui`）、リモコン（`control`）、設定（`config`）。`javy/` と `ts/` は TypeScript用の Javy プラグインと SDK |
+| `sdk`（`zwsdk`） | プラグインの SDK。プラグイン側（`plug`）、ホスト側（`host`、feature）、メッセージの型（`layer`・`video`）、フォントの探し方（`fonts`）、ホスト側の canvas 2D（`draw`、feature `host`）、通信（`net`）、UI（`ui`）、リモコン（`control`）、設定（`config`）。`javy/` と `ts/` は TypeScript用の Javy プラグインと SDK |
 | `deck` | デスクトップ向けZeroWave実装。ウィンドウ（winit・egui）、wgpu のサーフェス、音声の出力（Linux は libasound を実行時に開き、ほかは cpal）。 |
 
 伝送層（`mpegts` / `mmttlv` / `isdb`）は [coax-rs](https://github.com/Till0196/coax-rs) 。

@@ -172,7 +172,7 @@ fn work(fonts: &mut Vec<((PathBuf, u32), zwsdk::draw::Fonts)>, job: Job) {
                 put(&shared, &job.ask, Slot::Failed);
                 return;
             };
-            let faces = zwsdk::draw::fonts::Faces {
+            let faces = zwsdk::fonts::Faces {
                 sans: Some(bytes),
                 mono: None,
             };
@@ -181,7 +181,7 @@ fn work(fonts: &mut Vec<((PathBuf, u32), zwsdk::draw::Fonts)>, job: Job) {
             }
             fonts.push((
                 mark,
-                zwsdk::draw::Fonts::new(zwsdk::draw::fonts::context(&faces)),
+                zwsdk::draw::Fonts::new(zwsdk::draw::font_context(&faces)),
             ));
             fonts.len() - 1
         }

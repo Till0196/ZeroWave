@@ -88,7 +88,7 @@ impl Face {
     pub fn bytes(&self) -> Option<Vec<u8>> {
         let bytes = std::fs::read(&self.path).ok()?;
         if bytes.starts_with(b"ttcf") {
-            crate::draw::fonts::single_face(&bytes, self.index)
+            crate::fonts::single_face(&bytes, self.index)
         } else {
             Some(bytes)
         }

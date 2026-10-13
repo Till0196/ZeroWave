@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "ZeroWave のプラグイン（wasm）の SDK：プラグイン側（plug）、ホスト側（host）、メッセージの型（layer・video・ui・control）、レンダリング（draw）、通信（net）"
+description = "ZeroWave のプラグイン（wasm）の SDK：プラグイン側（plug）、ホスト側（host）、メッセージの型（layer・video・ui・control）、フォント（fonts）、ホスト側のレンダリング（draw）、通信（net）"
 
 [lints]
 workspace = true
@@ -12,19 +12,32 @@ workspace = true
 [features]
 default = []
 # wasmtime に依存するので wasm32 ではビルドできない。guest は default-features = false で依存する。
-host = ["dep:wasmtime", "dep:coax", "dep:skrifa", "dep:memmap2"]
+# draw（canvas 2D のレンダリング）もホスト側だけ。プラグインは描画の依存を持たない。
+host = [
+    "dep:wasmtime",
+    "dep:coax",
+    "dep:skrifa",
+    "dep:memmap2",
+    "dep:anyrender",
+    "dep:anyrender_vello_cpu",
+    "dep:kurbo",
+    "dep:peniko",
+    "dep:parley",
+    "dep:bytemuck",
+    "dep:parlance",
+]
 
 [dependencies]
 tracing.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-anyrender = "0.14"
-anyrender_vello_cpu = "0.18"
-kurbo = "0.13"
-peniko = "0.6"
-parley = { version = "0.12", default-features = false, features = ["std", "bytemuck"] }
-bytemuck = "1"
-parlance = "0.1"
+anyrender = { version = "0.14", optional = true }
+anyrender_vello_cpu = { version = "0.18", optional = true }
+kurbo = { version = "0.13", optional = true }
+peniko = { version = "0.6", optional = true }
+parley = { version = "0.12", default-features = false, features = ["std", "bytemuck"], optional = true }
+bytemuck = { version = "1", optional = true }
+parlance = { version = "0.1", optional = true }
 wasmtime = { version = "48", default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation"], optional = true }
 coax = { workspace = true, optional = true }
 # parley（fontique）と同じバージョンに揃える。

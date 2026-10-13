@@ -3,14 +3,6 @@
 
 //! フォント。fontconfig には頼らずファイルを渡す。
 
-use std::sync::Arc;
-
-use parlance::Script;
-use parley::FontContext;
-use parley::fontique::{
-    Blob, Collection, CollectionOptions, FamilyId, FontInfoOverride, GenericFamily, SourceCache,
-};
-
 #[derive(Debug, Clone, Default)]
 pub struct Faces {
     pub sans: Option<Vec<u8>>,
@@ -40,61 +32,6 @@ impl Faces {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-}
-
-/// 順序は固定する（登録順に依るとレンダリングのたびにグリフが変わる）。
-pub fn context(faces: &Faces) -> FontContext {
-    let mut collection = Collection::new(CollectionOptions {
-        shared: false,
-        system_fonts: false,
-    });
-    let mut families = Vec::new();
-    let register = |collection: &mut Collection, face: &Vec<u8>, alias: Option<&str>| {
-        let blob = Blob::new(Arc::new(face.clone()) as Arc<dyn AsRef<[u8]> + Send + Sync>);
-        let over = alias.map(|name| FontInfoOverride {
-            family_name: Some(name),
-            ..Default::default()
-        });
-        let mut found: Vec<(String, FamilyId)> = collection
-            .register_fonts(blob, over)
-            .into_iter()
-            .map(|(id, _)| (collection.family_name(id).unwrap_or("").to_owned(), id))
-            .collect();
-        found.sort();
-        found.into_iter().map(|(_, id)| id).collect::<Vec<_>>()
-    };
-    if let Some(sans) = &faces.sans {
-        families.extend(register(&mut collection, sans, None));
-        // Hybridcast の CSS は `font-family:"丸ゴシック"` と書く。
-        for alias in ["丸ゴシック", "角ゴシック", "太丸ゴシック"] {
-            let _ = register(&mut collection, sans, Some(alias));
-        }
-    }
-    if let Some(mono) = &faces.mono {
-        let named = register(&mut collection, mono, None);
-        let _ = register(&mut collection, mono, Some(MONO_ALIAS));
-        families.extend(named);
-    }
-    for generic in [
-        GenericFamily::SansSerif,
-        GenericFamily::Serif,
-        GenericFamily::Monospace,
-        GenericFamily::SystemUi,
-        GenericFamily::UiSansSerif,
-        GenericFamily::Cursive,
-        GenericFamily::Fantasy,
-    ] {
-        collection.set_generic_families(generic, families.iter().copied());
-    }
-    for script in [
-        *b"Hira", *b"Kana", *b"Hani", *b"Latn", *b"Zyyy", *b"Zinh", *b"Zzzz",
-    ] {
-        collection.set_fallbacks(Script::from_bytes(script), families.iter().copied());
-    }
-    FontContext {
-        source_cache: SourceCache::new_shared(),
-        collection,
     }
 }
 
