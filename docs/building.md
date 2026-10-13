@@ -68,14 +68,27 @@ macOS は Apple のランナーで組み、それ以外は ubuntu-latest から 
 
 ターゲットは macOS（Apple シリコン・Intel）、Linux（x86_64・arm64、glibc 2.28 以降）、Windows（x86_64、gnullvm）です。
 .app と deb は cargo-packager で作ります（設定は deck の `Cargo.toml` の `[package.metadata.packager]`）。
-ZeroWave.app は公証していないので、ダウンロードした物を初めて開くときは、一度開こうとしてから「システム設定」の「プライバシーとセキュリティ」で「このまま開く」を押します。
-ターミナルからなら `xattr -dr com.apple.quarantine ZeroWave.app` でも開けるようになります。
 rpm は rpmbuild で作ります（設定は `deck/linux/zerowave.spec`。組んだバイナリを包むだけで、rpm の中ではコンパイルしません）。
 rpm の版はタグの `-` を `~` に替えた物です（`v0.2.0-beta.1` なら `0.2.0~beta.1`）。
 deb と rpm の .desktop とアイコンは `deck/linux/` の物をそのまま入れます（.desktop の名前を Wayland の app_id の `zerowave` に揃えるため）。
 タグに `-` が付く物はプレリリースにします。
 zig（ziglang.org の公式のアーカイブを SHA-256 で確かめて使う）・cargo-zigbuild・cargo-packager の版は、release.yml の `env` で決めています。
 GitHub の action は actions/ の公式の物（checkout・upload-artifact・download-artifact）だけを使います。
+
+### macOS で初めて開くとき
+
+ZeroWave.app は公証していないので、ダウンロードした物を初めて開くと macOS に止められます。
+次の手順で一度だけ許可します。
+
+1. ZeroWave.app を開きます。
+   「“ZeroWave.app”は開いていません」と出るので、「完了」を押します（「ゴミ箱に入れる」は押しません）。
+2. 「システム設定」の「プライバシーとセキュリティ」を開き、下の方の「セキュリティ」まで進みます。
+   「お使いのMacを保護するために“ZeroWave.app”がブロックされました。」の横の「このまま開く」を押します。
+3. 「“ZeroWave.app”を開きますか?」と出るので、「このまま開く」を押します。
+4. 管理者の Touch ID かパスワードで許可します。
+
+次からは普通に開けます。
+ターミナルからなら、`xattr -dr com.apple.quarantine ZeroWave.app` でも開けるようになります。
 
 ## feature
 

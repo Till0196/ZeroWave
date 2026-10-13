@@ -28,6 +28,7 @@ coax のリリースから入手して、`ZeroWave` と同じフォルダーか 
 ファームウェアが必要なデバイスは、`coaxd` と同じフォルダに `firmware` フォルダーを作成し、ファームウェアを設置してください（[coax の説明](https://github.com/Till0196/coax/blob/main/docs/setup/firmware.md)）。
 
 クロスビルドは[ビルド](docs/building.md)を参照してください。
+macOS でダウンロードした ZeroWave.app を初めて開くときの手順は、[macOS で初めて開くとき](docs/building.md#macos-で初めて開くとき)にあります。
 
 ### 文書
 
