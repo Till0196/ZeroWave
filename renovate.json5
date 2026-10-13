@@ -1,0 +1,50 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: ['config:recommended'],
+  timezone: 'Asia/Tokyo',
+  packageRules: [
+    {
+      matchUpdateTypes: ['minor', 'patch', 'pin', 'digest'],
+      automerge: true,
+    },
+    {
+      matchManagers: ['github-actions'],
+      automerge: true,
+    },
+    {
+      matchDepNames: ['zig'],
+      matchUpdateTypes: ['minor'],
+      automerge: false,
+    },
+  ],
+  customDatasources: {
+    zig: {
+      defaultRegistryUrlTemplate: 'https://ziglang.org/download/index.json',
+      transformTemplates: ['{"releases": $keys($).{"version": $}}'],
+    },
+  },
+  customManagers: [
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/[^/]+\\.ya?ml$/'],
+      matchStrings: ['ZIG_VERSION: "(?<currentValue>[^"]+)"'],
+      depNameTemplate: 'zig',
+      datasourceTemplate: 'custom.zig',
+      versioningTemplate: 'semver',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/[^/]+\\.ya?ml$/'],
+      matchStrings: ['ZIGBUILD_VERSION: "(?<currentValue>[^"]+)"'],
+      depNameTemplate: 'cargo-zigbuild',
+      datasourceTemplate: 'crate',
+    },
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/[^/]+\\.ya?ml$/'],
+      matchStrings: ['PACKAGER_VERSION: "(?<currentValue>[^"]+)"'],
+      depNameTemplate: 'cargo-packager',
+      datasourceTemplate: 'crate',
+    },
+  ],
+}

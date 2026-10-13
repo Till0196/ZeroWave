@@ -1,0 +1,41 @@
+[workspace]
+resolver = "3"
+members = ["mediadecoder", "core", "sdk"]
+exclude = ["deck", "sdk/javy"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.dependencies]
+# coax は core の feature（coaxd・mirakurun）からだけ使う。
+coax = { git = "https://github.com/Till0196/coax-rs" }
+mpegts = { git = "https://github.com/Till0196/coax-rs" }
+mmttlv = { git = "https://github.com/Till0196/coax-rs" }
+isdb = { git = "https://github.com/Till0196/coax-rs" }
+tracing = "0.1"
+
+[profile.dev.package.mediadecoder]
+opt-level = 2
+
+# target の容量を抑えるため、デバッグ情報は自分の crate は行番号だけ、依存は無し。
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.quick]
+inherits = "release"
+opt-level = 2
+lto = false
+codegen-units = 256
+incremental = true
+debug = false
+strip = true

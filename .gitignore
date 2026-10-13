@@ -1,0 +1,8 @@
+target/
+dataplugin.png
+node_modules/
+dist/
+sdk/bin/
+sdk/javy/target/
+testdata/*.ts
+testdata/*.y4m

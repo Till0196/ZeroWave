@@ -1,0 +1,259 @@
+[package]
+name = "zerowave"
+version = "0.1.0"
+edition = "2024"
+# egui が要るので zwcore・mediadecoder より新しい。
+rust-version = "1.95"
+license = "Apache-2.0"
+description = "デジタル放送の視聴"
+authors = ["Till0196"]
+repository = "https://github.com/Till0196/zerowave"
+publish = false
+
+[[bin]]
+name = "ZeroWave"
+path = "src/main.rs"
+
+[features]
+default = ["sound", "nvdec", "qsv", "amf"]
+sound = ["dep:cpal"]
+# macOS にはパススルーの出力方式が無いので既定には入れない。
+passthrough = ["zwcore/passthrough"]
+vaapi = ["zwcore/vaapi"]
+h264-decoder = ["zwcore/h264-decoder"]
+hevc-decoder = ["zwcore/hevc-decoder"]
+v4l2 = ["zwcore/v4l2"]
+nvdec = ["zwcore/nvdec"]
+qsv = ["zwcore/qsv"]
+amf = ["zwcore/amf"]
+
+[package.metadata.packager]
+product-name = "ZeroWave"
+long-description = "デジタル放送（TS・MMT/TLV）を視聴するプレーヤーです。"
+identifier = "com.till0196.zerowave.deck"
+formats = ["app"]
+binaries = [{ path = "ZeroWave", main = true }]
+icons = ["icon/zerowave.icns"]
+
+# .desktop とアイコンは linux/ の物をそのまま入れる（.desktop の名前を Wayland の app_id の zerowave に揃えるため、
+# cargo-packager には作らせない）。バイナリは /usr/bin/ZeroWave。
+[package.metadata.packager.linux]
+generate-desktop-entry = false
+
+[package.metadata.packager.deb]
+package-name = "zerowave"
+section = "video"
+depends = ["libc6 (>= 2.28)"]
+files = { "linux/zerowave.desktop" = "usr/share/applications/zerowave.desktop", "linux/icons/hicolor" = "usr/share/icons/hicolor" }
+
+[package.metadata.packager.macos]
+minimum-system-version = "13.0"
+info-plist-path = "mac/Info.plist"
+
+[dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "ansi", "tracing-log"] }
+coax = { git = "https://github.com/Till0196/coax-rs" }
+zwcore = { package = "zerowave-core", path = "../core", features = [
+    "epg-db",
+    "wgpu",
+    "plugins",
+    "d3d12",
+    "mediafoundation",
+    "coaxd",
+    "mirakurun",
+] }
+mediadecoder = { path = "../mediadecoder" }
+zwsdk = { path = "../sdk", features = ["host"] }
+isdb = { git = "https://github.com/Till0196/coax-rs" }
+png = "0.18"
+flate2 = "1.1"
+crc32fast = "1.5"
+adler2 = "2"
+# std と parking_lot は egui-wgpu の既定を外したぶん。
+wgpu = { version = "30", default-features = false, features = [
+    "std",
+    "parking_lot",
+    "wgsl",
+    "vulkan",
+    "metal",
+    "dx12",
+] }
+winit = "0.30"
+
+# ウィンドウとサーフェスは eframe に任せない（理由は src/ui/face.rs の先頭）。
+egui = "0.36"
+egui-winit = { version = "0.36", default-features = false, features = [
+    "x11",
+    "wayland",
+    "clipboard",
+] }
+# 既定の feature は wgpu の gles などを Windows・macOS にも入れるので外す。
+egui-wgpu = { version = "0.36", default-features = false }
+
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+toml_edit = "0.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+arboard = "3"
+
+# Linux は libasound を実行時に開く（src/audio/alsa.rs）ので cpal は入れない。
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+cpal = { version = "0.18", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+egui_glow = { version = "0.36", default-features = false }
+glow = "0.17"
+
+# Linux だけの zwcore の feature（既定の feature にすると Windows・macOS でもビルドされて通らない）。
+[target.'cfg(target_os = "linux")'.dependencies]
+zwcore = { package = "zerowave-core", path = "../core", features = [
+    "vaapi",
+    "v4l2",
+    "passthrough",
+    "wayland",
+] }
+x11rb = { version = "0.13", features = ["resource_manager"] }
+wayland-client = "0.31"
+wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
+# Vulkan の無い環境で wgpu が GL ES 3 を選べるように。
+wgpu = { version = "30", default-features = false, features = ["gles"] }
+
+# Linux は GTK か portal が要るので入れず、zenity を呼ぶ。
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+rfd = { version = "0.17", default-features = false }
+pollster = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.19", default-features = false }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["CFRunLoop", "CFDate", "CFBase", "CFPreferences", "CFString", "CFPropertyList"] }
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSAttributedString", "NSDictionary", "NSRange", "NSData"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSClipView", "NSScrollView", "NSText", "NSTextView", "NSTextContainer", "NSColor", "NSFont", "NSAppearance", "NSTextStorage", "NSAttributedString", "NSTextAttachment", "NSImage", "NSBezierPath", "NSStringDrawing", "NSWindow", "NSApplication", "block2", "objc2-core-foundation"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+muda = { version = "0.19", default-features = false }
+windows = { version = "0.62", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_Performance",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+    "Win32_System_Registry",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_RichEdit",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Devices_Display",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_DirectComposition",
+    "Win32_System_Console",
+    "Win32_Storage_FileSystem",
+    "Win32_System_SystemInformation",
+    "Win32_System_Time",
+] }
+
+# `#[link(kind = "framework")]` は Apple でしかコンパイルできない。
+[target.'cfg(target_vendor = "apple")'.dependencies]
+zwcore = { package = "zerowave-core", path = "../core", features = ["videotoolbox"] }
+
+[lints.rust]
+missing_debug_implementations = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+# target の容量を抑えるため、デバッグ情報は自分の crate は行番号だけ、依存は無し。
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.quick]
+inherits = "release"
+opt-level = 2
+lto = false
+codegen-units = 256
+incremental = true
+debug = false
+strip = true
+
+# panic は catch_unwind で受け止めている所があるので unwind のまま。
+[profile.release]
+lto = "thin"
+strip = true
+
+# 配る物（.github/workflows/release.yml）は release と同じ設定で組む。
+[profile.dist]
+inherits = "release"
+
+# 映像・音声・レンダリングの経路を通らない大きなクレートだけ、サイズを優先する。
+[profile.release.package]
+cranelift-codegen.opt-level = "s"
+cranelift-assembler-x64.opt-level = "s"
+cranelift-frontend.opt-level = "s"
+cranelift-entity.opt-level = "s"
+cranelift-bforest.opt-level = "s"
+cranelift-bitset.opt-level = "s"
+cranelift-control.opt-level = "s"
+cranelift-native.opt-level = "s"
+wasmtime-internal-cranelift.opt-level = "s"
+regalloc2.opt-level = "s"
+wasmparser.opt-level = "s"
+wasmprinter.opt-level = "s"
+wasm-encoder.opt-level = "s"
+wasmtime-environ.opt-level = "s"
+gimli.opt-level = "s"
+object.opt-level = "s"
+postcard.opt-level = "s"
+pulley-interpreter.opt-level = "s"
+naga.opt-level = "s"
+toml.opt-level = "s"
+toml_edit.opt-level = "s"
+toml_parser.opt-level = "s"
+toml_datetime.opt-level = "s"
+toml_writer.opt-level = "s"
+serde_spanned.opt-level = "s"
+regex-syntax.opt-level = "s"
+regex-automata.opt-level = "s"
+rusqlite.opt-level = "s"
+libsqlite3-sys.opt-level = "s"
+rustls.opt-level = "s"
+rustls-webpki.opt-level = "s"
+ring.opt-level = "s"
+winit.opt-level = "s"
+arboard.opt-level = "s"
+sha2.opt-level = "s"
+egui.opt-level = "s"
+epaint.opt-level = "s"
+emath.opt-level = "s"
+ecolor.opt-level = "s"
+egui-wgpu.opt-level = "s"
+egui-winit.opt-level = "s"
+egui_glow.opt-level = "s"
+parley.opt-level = "s"
+fontique.opt-level = "s"
+skrifa.opt-level = "s"
+read-fonts.opt-level = "s"
+harfrust.opt-level = "s"
+wasmtime.opt-level = "s"
+wasmtime-internal-unwinder.opt-level = "s"
+wasmtime-internal-versioned-export-macros.opt-level = "s"
+wasmtime-internal-fiber.opt-level = "s"
+wasmtime-internal-jit-debug.opt-level = "s"
+wasmtime-internal-jit-icache-coherence.opt-level = "s"
+serde_json.opt-level = "s"
+png.opt-level = "s"
+image.opt-level = "s"
+accesskit.opt-level = "s"
+smithay-clipboard.opt-level = "s"
+windows.opt-level = "s"
+muda.opt-level = "s"
+objc2-app-kit.opt-level = "s"
+tracing-subscriber.opt-level = "s"

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ZeroWave
+Comment=デジタル放送の視聴
+Exec=ZeroWave %f
+Icon=zerowave
+Terminal=false
+Categories=AudioVideo;Video;TV;
+MimeType=video/mp2t;
+StartupWMClass=zerowave

@@ -1,0 +1,185 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  ZIG_VERSION: "0.16.0"
+  ZIG_PUBKEY: "RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U"
+  ZIGBUILD_VERSION: "0.23.4"
+  PACKAGER_VERSION: "0.11.8"
+  LINUX_FEATURES: zerowave-core/vaapi,zerowave-core/v4l2,zerowave-core/nvdec,zerowave-core/wgpu,zerowave-core/coaxd,zerowave-core/mirakurun,zerowave-core/plugins,zwsdk/host
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check the workspace
+        run: cargo fmt --all --check
+
+      - name: Check deck
+        working-directory: deck
+        run: cargo fmt --check
+
+  linux:
+    name: Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            deck/target
+          key: linux-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: linux-
+
+      - name: Add the wasm target
+        run: rustup target add wasm32-wasip1
+
+      - name: Clippy
+        run: cargo clippy -p zerowave-core -p mediadecoder -p zwsdk --features "$LINUX_FEATURES" --all-targets -- -D warnings
+
+      - name: Check the plugin side of the SDK
+        run: cargo check -p zwsdk --target wasm32-wasip1
+
+      - name: Clippy deck
+        working-directory: deck
+        run: cargo clippy --features zwcore/vaapi,zwcore/v4l2,zwcore/nvdec,zwcore/wgpu --all-targets -- -D warnings
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Make the test data
+        run: sh testdata/make.sh
+
+      - name: Test
+        run: cargo test --workspace --features "$LINUX_FEATURES"
+
+  windows:
+    name: Windows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-
+
+      - name: Add the Rust target
+        run: rustup target add x86_64-pc-windows-gnullvm
+
+      - name: Install zig
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          url="https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+          curl --proto '=https' --tlsv1.2 -sSfL -o "$RUNNER_TEMP/zig.tar.xz" "$url"
+          curl --proto '=https' --tlsv1.2 -sSfL -o "$RUNNER_TEMP/zig.tar.xz.minisig" "$url.minisig"
+          minisign -Vm "$RUNNER_TEMP/zig.tar.xz" -x "$RUNNER_TEMP/zig.tar.xz.minisig" -P "$ZIG_PUBKEY"
+          tar -xJf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-$ZIG_VERSION" >> "$GITHUB_PATH"
+
+      - name: Restore cargo-zigbuild
+        id: zigbuild
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-zigbuild
+          key: cargo-zigbuild-${{ runner.os }}-${{ runner.arch }}-${{ env.ZIGBUILD_VERSION }}
+
+      - name: Install cargo-zigbuild
+        if: steps.zigbuild.outputs.cache-hit != 'true'
+        run: cargo install --locked "cargo-zigbuild@$ZIGBUILD_VERSION"
+
+      - name: Clippy
+        run: cargo-zigbuild clippy -p zerowave-core --features d3d12,coaxd,mirakurun,plugins --all-targets --target x86_64-pc-windows-gnullvm -- -D warnings
+
+  macos:
+    name: macOS
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: macos-
+
+      - name: Clippy
+        run: cargo clippy -p zerowave-core --features videotoolbox,coaxd,mirakurun,plugins --all-targets -- -D warnings
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: android-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: android-
+
+      - name: Add the Rust targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi
+
+      - name: Clippy (64-bit)
+        run: cargo clippy -p zerowave-core --features android --target aarch64-linux-android --all-targets -- -D warnings
+
+      - name: Clippy (32-bit)
+        run: cargo clippy -p zerowave-core --features android --target armv7-linux-androideabi --lib -- -D warnings
+
+  packager:
+    name: cargo-packager (${{ matrix.runner }})
+    strategy:
+      matrix:
+        runner:
+          - ubuntu-latest
+          - macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Restore cargo-packager
+        id: packager
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-packager
+          key: cargo-packager-${{ runner.os }}-${{ runner.arch }}-${{ env.PACKAGER_VERSION }}
+
+      - name: Install cargo-packager
+        if: steps.packager.outputs.cache-hit != 'true'
+        run: cargo install --locked "cargo-packager@$PACKAGER_VERSION"

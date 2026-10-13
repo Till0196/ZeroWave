@@ -1,0 +1,103 @@
+zerowave
+Copyright 2026 Till0196
+
+This product includes software developed by Till0196.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+------------------------------------------------------------------------------
+Third-party material
+------------------------------------------------------------------------------
+
+NVIDIA Optical Flow SDK headers
+  core/src/output/video/host/nvofa.rs and nvofa_cuda.rs transcribe
+  structures from nvOpticalFlowCommon.h, nvOpticalFlowD3D12.h,
+  nvOpticalFlowCuda.h and nvOpticalFlowVulkan.h of the NVIDIA Optical Flow
+  SDK 5.0, which are under the MIT License:
+
+    Copyright (c) 2018-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the
+    "Software"), to deal in the Software without restriction, including
+    without limitation the rights to use, copy, modify, merge, publish,
+    distribute, sublicense, and/or sell copies of the Software, and to permit
+    persons to whom the Software is furnished to do so, subject to the
+    following conditions:
+
+    The above copyright notice and this permission notice shall be included
+    in all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+    OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN
+    NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
+    DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+    OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+    USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+NVIDIA Video Codec SDK headers (nv-codec-headers)
+  core/src/decode/nvdec/cu/ transcribes structures and constants from
+  dynlink_cuviddec.h, dynlink_nvcuvid.h and dynlink_cuda.h as distributed in
+  nv-codec-headers (https://github.com/FFmpeg/nv-codec-headers), which are
+  under the MIT License (text above), with the copyright notices of NVIDIA
+  Corporation and of Timo Rothenpieler given in those headers.
+
+Intel Video Processing Library (libvpl) headers
+  core/src/decode/qsv/mfx.rs and core/src/output/video/host/vpl.rs
+  transcribe declarations from api/vpl/mfx*.h of libvpl
+  (https://github.com/intel/libvpl), under the MIT License (text above):
+
+    Copyright (C) Intel Corporation
+
+libva headers
+  core/src/decode/vaapi/ and core/src/decode/qsv.rs transcribe structures
+  and constants from va.h, va_drm.h, va_vpp.h and va_dec_hevc.h of libva
+  (https://github.com/intel/libva), under the MIT License (text above):
+
+    Copyright (c) 2007-2009 Intel Corporation. All Rights Reserved.
+
+Linux user-space API headers
+  core/src/decode/v4l2/ transcribes structures and constants from
+  linux/videodev2.h, linux/v4l2-controls.h, linux/media.h,
+  asm-generic/ioctl.h and drm/drm_fourcc.h of the Linux kernel. These
+  headers are offered under GPL-2.0 WITH Linux-syscall-note (videodev2.h and
+  v4l2-controls.h also under BSD-3-Clause, drm_fourcc.h under the MIT
+  License); the syscall note keeps a program that uses the kernel's
+  interface through them from being a derived work of the kernel. Copyright
+  the authors named in those headers.
+
+AMD Advanced Media Framework (AMF) headers
+  core/src/decode/amf/ and core/src/output/video/host/amf.rs transcribe
+  interface layouts from
+  amf/public/include of the AMF SDK 1.5 (https://github.com/GPUOpen-LibrariesAndSDKs/AMF),
+  under the MIT License (text above), with the copyright notice of
+  Advanced Micro Devices, Inc. given in those headers.
+
+sdk/javy/zwjavy.wasm
+  A build of sdk/javy (the source is next to it). The binary contains:
+
+  - Javy and javy-plugin-api (https://github.com/bytecodealliance/javy),
+    Apache-2.0 WITH LLVM-exception. Copyright the Bytecode Alliance and
+    Javy contributors.
+  - rquickjs (https://github.com/DelSkayn/rquickjs), MIT License.
+    Copyright (c) 2020 Mees Delzenne, Copyright (c) 2025 Rquickjs Contributors.
+  - QuickJS-ng (https://github.com/quickjs-ng/quickjs), as bundled by
+    rquickjs-sys, MIT License. Copyright (c) 2017-2026 Fabrice Bellard,
+    Copyright (c) 2017-2024 Charlie Gordon, Copyright (c) 2023-2026 Ben
+    Noordhuis, Copyright (c) 2023-2026 Saúl Ibarra Corretgé.
+  - Further Rust crates under MIT or Apache-2.0 (see sdk/javy/Cargo.lock).
+
+  The MIT License text above applies to the MIT-licensed parts with their
+  own copyright lines. The Apache License 2.0 text is in LICENSE; the LLVM
+  exception only relaxes it for compiled forms.
