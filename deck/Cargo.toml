@@ -116,7 +116,7 @@ zwcore = { package = "zerowave-core", path = "../core", features = [
     "passthrough",
     "wayland",
 ] }
-x11rb = { version = "0.13", features = ["resource_manager"] }
+x11rb = { version = "0.14", features = ["resource_manager"] }
 wayland-client = "0.31"
 wayland-backend = { version = "0.3", features = ["client_system", "dlopen"] }
 # Vulkan の無い環境で wgpu が GL ES 3 を選べるように。
