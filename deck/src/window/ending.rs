@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const WATCHDOG: Duration = Duration::from_secs(5);
+/// 終了するときの番組表の保存を待つ長さ。ウィンドウを閉じた後なので、長くても目に見えない。
+pub const GUIDE_SAVING: Duration = Duration::from_secs(30);
 
 pub use zwcore::thread::{PATIENCE, Thread};
 

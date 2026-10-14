@@ -157,13 +157,18 @@ impl Shell {
             drop(keep);
             terminator.at("ウィンドウと画面を片付けているところ");
         }
+        terminator.stood_down();
         // 番組表のスレッドは、チャネルを持つ物が全部片付いてから最後の保存をして終わる。
         // 待たずにプロセスを終えると、保存の途中で打ち切られて書きかけの分が捨てられる。
-        terminator.at("番組表を保存しているところ");
+        // HDD では数秒かかるので、ウィンドウを閉じた後に別の期限で待つ。
+        // その間に開き直せるよう、二重起動防止のロックは先に放す。
         if let Some(mut guide) = guide {
-            guide.join_within(ending::PATIENCE);
+            crate::config::release_single();
+            let terminator = ending::watch(ending::GUIDE_SAVING + ending::WATCHDOG);
+            terminator.at("番組表を保存しているところ");
+            guide.join_within(ending::GUIDE_SAVING);
+            terminator.stood_down();
         }
-        terminator.stood_down();
     }
 
     fn fitting(&self, size: (f32, f32)) -> (f32, f32) {
