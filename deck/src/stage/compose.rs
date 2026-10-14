@@ -935,6 +935,7 @@ pub fn shown_size(format: &mediadecoder::es::Format) -> (u32, u32) {
 }
 
 /// TS は PMT のデータ符号化方式記述子（字幕の 0x0008 は数えない、ARIB STD-B10 第2部 6.2.20）。
+/// MMT の字幕のアセットも MH-データ符号化方式記述子で記述されるので、字幕のストリームは数えない。
 /// MMT は MH のアプリケーションサービス記述子が示す MH-AIT に、アプリケーションが載っているか。
 /// 記述子はデータ放送の無い局の MPT にも載るので、それだけでは分からない。MH-AIT がまだ届いて
 /// いなければ、有るとして扱う。
@@ -946,10 +947,10 @@ fn has_data_broadcast(program: &zwcore::filters::Program, applications: &[(u16, 
             .find(|(packet_id, _)| *packet_id == service.ait)
             .is_none_or(|(_, count)| *count > 0);
     }
-    program
-        .streams
-        .iter()
-        .any(|stream| stream.data.as_ref().is_some_and(|data| data.id != CAPTION))
+    program.streams.iter().any(|stream| {
+        stream.kind != zwcore::filters::Kind::Caption
+            && stream.data.as_ref().is_some_and(|data| data.id != CAPTION)
+    })
 }
 
 /// フリー関数なのは `player` と `guide` を借りたまま `status` を渡すため。
@@ -1415,5 +1416,36 @@ mod tests {
         assert!(super::has_data_broadcast(&program, &[(0x8000, 1)]));
         assert!(!super::has_data_broadcast(&program, &[(0x8000, 0)]));
         assert!(super::has_data_broadcast(&program, &[(0x8001, 0)]));
+    }
+
+    #[test]
+    fn a_caption_asset_is_not_a_data_broadcast() {
+        let caption = zwcore::filters::Stream {
+            id: 0xf130,
+            kind: zwcore::filters::Kind::Caption,
+            framing: mediadecoder::es::Framing::Lengths,
+            declared: String::from("stpp"),
+            tag: Some(0x0030),
+            component: None,
+            name: None,
+            hierarchy: None,
+            data: Some(isdb::bxml::DataComponent {
+                id: 0x0020,
+                additional: Vec::new(),
+            }),
+            decode: None,
+        };
+        let program = zwcore::filters::Program {
+            number: 0x00a1,
+            map: 0,
+            streams: vec![caption],
+            pcr: 0,
+            ecm: Vec::new(),
+            application: None,
+            region: None,
+            emergency_news: None,
+            emergency: Vec::new(),
+        };
+        assert!(!super::has_data_broadcast(&program, &[]));
     }
 }
