@@ -106,7 +106,7 @@ libc = "0.2"
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 egui_glow = { version = "0.36", default-features = false }
-glow = "0.17"
+glow = "0.18"
 
 # Linux だけの zwcore の feature（既定の feature にすると Windows・macOS でもビルドされて通らない）。
 [target.'cfg(target_os = "linux")'.dependencies]
