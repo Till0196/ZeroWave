@@ -107,7 +107,7 @@ jobs:
           mkdir -p "release/$ARCHIVE"
           cp LICENSE NOTICE README.md "release/$ARCHIVE/"
           cd release
-          if [ "$TARGET" = x86_64-pc-windows-gnullvm ]; then
+          if [[ "$TARGET" == *-windows-* ]]; then
             cp "../deck/target/$TARGET/dist/ZeroWave.exe" "$ARCHIVE/"
             zip -qr "$ARCHIVE.zip" "$ARCHIVE"
             shasum -a 256 "$ARCHIVE.zip" > "$ARCHIVE.zip.sha256"
