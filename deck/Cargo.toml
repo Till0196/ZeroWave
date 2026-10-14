@@ -125,7 +125,7 @@ wgpu = { version = "30", default-features = false, features = ["gles"] }
 # Linux は GTK か portal が要るので入れず、zenity を呼ぶ。
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 rfd = { version = "0.17", default-features = false }
-pollster = "0.4"
+pollster = "1.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 muda = { version = "0.21", default-features = false }

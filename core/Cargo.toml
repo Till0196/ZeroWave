@@ -46,7 +46,7 @@ wgpu = { version = "30", default-features = false, features = [
     "metal",
     "dx12",
 ], optional = true }
-pollster = { version = "0.4", optional = true }
+pollster = { version = "1.0", optional = true }
 ash = { version = "0.38", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
