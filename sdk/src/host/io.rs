@@ -16,7 +16,7 @@ pub struct Io {
     pub cfg: BTreeMap<String, String>,
     pub live: Option<Live>,
     pub defaults: BTreeMap<String, String>,
-    pub fonts: BTreeMap<String, Vec<u8>>,
+    pub fonts: BTreeMap<String, std::sync::Arc<Vec<u8>>>,
     pub store: Option<Store>,
     /// ユーザーが入れたパスだけが起動でき、guest の `set` では書けない。
     pub programs: BTreeSet<String>,
@@ -107,7 +107,7 @@ impl Io {
     /// `zw_font_v1` の `get`。`sans`・`mono`、`kind = "font"` のキー、OS のフォントフォルダー以下のパス、フォント名の順。
     pub fn font(&self, name: &str) -> Option<Vec<u8>> {
         if let Some(lent) = self.fonts.get(name) {
-            return Some(lent.clone());
+            return Some(lent.to_vec());
         }
         if self.font_keys.contains(name) {
             let value = self.declared(&self.font_keys, name)?;
@@ -637,7 +637,7 @@ mod tests {
         let mut io = Io {
             live: Some(std::sync::Arc::clone(&table)),
             font_keys: [String::from("font_round")].into(),
-            fonts: [(String::from("sans"), b"lent".to_vec())].into(),
+            fonts: [(String::from("sans"), std::sync::Arc::new(b"lent".to_vec()))].into(),
             ..Io::default()
         };
         assert_eq!(

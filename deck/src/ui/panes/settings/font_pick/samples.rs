@@ -173,7 +173,7 @@ fn work(fonts: &mut Vec<((PathBuf, u32), zwsdk::draw::Fonts)>, job: Job) {
                 return;
             };
             let faces = zwsdk::fonts::Faces {
-                sans: Some(bytes),
+                sans: Some(Arc::new(bytes)),
                 mono: None,
             };
             if fonts.len() >= FONTS_KEPT {

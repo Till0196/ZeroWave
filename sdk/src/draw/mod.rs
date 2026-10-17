@@ -825,8 +825,8 @@ pub fn font_context(faces: &crate::fonts::Faces) -> FontContext {
         system_fonts: false,
     });
     let mut families = Vec::new();
-    let register = |collection: &mut Collection, face: &Vec<u8>, alias: Option<&str>| {
-        let blob = Blob::new(Arc::new(face.clone()) as Arc<dyn AsRef<[u8]> + Send + Sync>);
+    let register = |collection: &mut Collection, face: &Arc<Vec<u8>>, alias: Option<&str>| {
+        let blob = Blob::new(Arc::clone(face) as Arc<dyn AsRef<[u8]> + Send + Sync>);
         let over = alias.map(|name| FontInfoOverride {
             family_name: Some(name),
             ..Default::default()

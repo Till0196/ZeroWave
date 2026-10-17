@@ -3,10 +3,12 @@
 
 //! フォント。fontconfig には頼らずファイルを渡す。
 
+use std::sync::Arc;
+
 #[derive(Debug, Clone, Default)]
 pub struct Faces {
-    pub sans: Option<Vec<u8>>,
-    pub mono: Option<Vec<u8>>,
+    pub sans: Option<Arc<Vec<u8>>>,
+    pub mono: Option<Arc<Vec<u8>>>,
 }
 
 pub const MONO_ALIAS: &str = "zerowave-bml";
@@ -21,8 +23,8 @@ impl Faces {
             }
         };
         Self {
-            sans: lent("sans").or_else(find_japanese),
-            mono: lent("mono").or_else(find_monospace_japanese),
+            sans: lent("sans").or_else(find_japanese).map(Arc::new),
+            mono: lent("mono").or_else(find_monospace_japanese).map(Arc::new),
         }
     }
 
