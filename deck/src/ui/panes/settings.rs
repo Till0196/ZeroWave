@@ -122,7 +122,7 @@ const PAGES: &[(&str, &[Page])] = &[
 /// 選んだフォントを適用前からこのウィンドウに入れる。フォントを読むのは重いので、変わったときだけ入れ直す。
 fn preview_fonts(context: &egui::Context, edited: &File) {
     use crate::ui::text::font;
-    let id = egui::Id::new("settings-font-preview");
+    let id = egui::Id::unique("settings-font-preview");
     let wanted = font::Choice::of(edited);
     let had: Option<font::Choice> = context.data(|data| data.get_temp(id));
     if had.unwrap_or_else(font::chosen) != wanted {
@@ -553,7 +553,7 @@ fn pages(
             }
             let response = ui.interact(
                 item,
-                ui.id().with(("設定の頁", format!("{page:?}"))),
+                ui.scope_id().with(("設定の頁", format!("{page:?}"))),
                 Sense::click(),
             );
             let painter = ui.painter();
@@ -625,7 +625,7 @@ fn bar_thumb(track: Rect, rect: Rect, scroll: f32, content: f32) -> (f32, f32) {
 }
 
 fn bar_id(rect: Rect) -> egui::Id {
-    egui::Id::new(("設定の送り", rect.left() as i32, rect.top() as i32))
+    egui::Id::unique(("設定の送り", rect.left() as i32, rect.top() as i32))
 }
 
 fn dragged(ui: &Ui, rect: Rect, scroll: f32, content: f32) -> f32 {
@@ -943,7 +943,7 @@ fn foot_button(
 ) -> bool {
     let response = ui.interact(
         button,
-        ui.id().with(("設定の釦", label)),
+        ui.scope_id().with(("設定の釦", label)),
         if enabled {
             Sense::click()
         } else {

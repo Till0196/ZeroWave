@@ -379,9 +379,11 @@ fn tabs(form: &mut Form<'_, '_>, tab: &mut usize, labels: &[&str], id: &'static 
         let width = galley.size().x + 32.0;
         let rect = Rect::from_min_size(pos2(x, row.top()), vec2(width, row.height()));
         let chosen = index == *tab;
-        let hit = form
-            .ui
-            .interact(rect, form.ui.id().with((id, index)), egui::Sense::click());
+        let hit = form.ui.interact(
+            rect,
+            form.ui.scope_id().with((id, index)),
+            egui::Sense::click(),
+        );
         if hit.clicked() {
             *tab = index;
         }

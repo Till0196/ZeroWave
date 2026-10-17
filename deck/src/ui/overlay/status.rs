@@ -442,7 +442,7 @@ fn draw(
         _ => "",
     };
     let response = sense.filter(|_| live).map(|sense| {
-        let response = ui.interact(rect, ui.id().with(name), sense);
+        let response = ui.interact(rect, ui.scope_id().with(name), sense);
         if response.hovered() {
             ui.painter().rect_filled(rect, 0.0, skin.divider);
         }

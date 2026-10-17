@@ -56,7 +56,7 @@ fn head(ui: &mut Ui, skin: &skin::Skin) {
 fn line_of(ui: &mut Ui, line: &Row, chosen: bool, skin: &skin::Skin) -> bool {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(vec2(width, table::ROW), Sense::hover());
-    let response = ui.interact(rect, ui.id().with(("PID", line.pid)), Sense::click());
+    let response = ui.interact(rect, ui.scope_id().with(("PID", line.pid)), Sense::click());
     let painter = ui.painter();
     let colour = if chosen {
         painter.rect_filled(rect, 0.0, skin.chosen);

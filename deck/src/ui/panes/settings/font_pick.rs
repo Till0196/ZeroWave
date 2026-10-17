@@ -346,7 +346,7 @@ fn head_row(root: &mut Ui, head: Rect, pick: &mut Pick, tones: &Tones) -> bool {
         pos2(search.left() + 28.0, search.top() + 6.0),
         pos2(search.right() - 8.0, search.bottom() - 4.0),
     );
-    let id = root.id().with("font-pick-search");
+    let id = root.scope_id().with("font-pick-search");
     let mut inner = root.new_child(egui::UiBuilder::new().max_rect(field));
     let edit = inner.add(
         egui::TextEdit::singleline(&mut pick.filter)
@@ -373,7 +373,7 @@ fn head_row(root: &mut Ui, head: Rect, pick: &mut Pick, tones: &Tones) -> bool {
         let rect = Rect::from_min_size(pos2(x, head.center().y - 11.0), vec2(width, 22.0));
         let response = root.interact(
             rect,
-            root.id().with(("font-pick-chip", label)),
+            root.scope_id().with(("font-pick-chip", label)),
             Sense::click(),
         );
         let painter = root.painter();
@@ -475,7 +475,7 @@ fn rows(root: &mut Ui, list: Rect, pick: &mut Pick, tones: &Tones) -> Option<Don
     }
     tops.push(y);
     let total = y;
-    let typing = inner.memory(|memory| memory.has_focus(root.id().with("font-pick-search")));
+    let typing = inner.memory(|memory| memory.has_focus(root.scope_id().with("font-pick-search")));
     let (up, down, left, right) = inner.input(|input| {
         (
             input.key_pressed(egui::Key::ArrowUp),
@@ -555,7 +555,7 @@ fn row(
     let chosen = pick.chosen_in(family);
     let response = ui.interact(
         rect,
-        ui.id().with(("font-pick-row", &family.name)),
+        ui.scope_id().with(("font-pick-row", &family.name)),
         Sense::click(),
     );
     let painter = ui.painter().clone();
@@ -614,7 +614,9 @@ fn row(
     let mut clicked_chip = false;
     for (face, place) in family.faces.iter().copied().zip(chips) {
         let chip = place.translate(vec2(right.left(), line.bottom() + 5.0));
-        let id = ui.id().with(("font-pick-face", &face.path, face.index));
+        let id = ui
+            .scope_id()
+            .with(("font-pick-face", &face.path, face.index));
         let pressed = ui.interact(chip, id, Sense::click());
         let on = chosen.is_some_and(|had| std::ptr::eq(had, face));
         // 選んだ行の背景はボタンの背景に近いので、その行のラベルは少し明るく。
@@ -704,7 +706,7 @@ fn foot_row(root: &mut Ui, foot: Rect, pick: &Pick, tones: &Tones) -> Option<Don
         let enabled = label != "OK" || pick.face.is_some();
         let response = root.interact(
             rect,
-            root.id().with(("font-pick-button", label)),
+            root.scope_id().with(("font-pick-button", label)),
             if enabled {
                 Sense::click()
             } else {

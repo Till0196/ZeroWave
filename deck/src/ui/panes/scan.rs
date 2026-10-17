@@ -190,7 +190,11 @@ pub fn show(root: &mut Ui, scanning: &Scanning, look: &Look) -> Shown {
         let width = 96.0;
         let button = Rect::from_min_size(pos2(right - width, at), vec2(width, 30.0));
         right = button.left() - 8.0;
-        let response = root.interact(button, root.id().with(("走査の釦", label)), Sense::click());
+        let response = root.interact(
+            button,
+            root.scope_id().with(("走査の釦", label)),
+            Sense::click(),
+        );
         let painter = root.painter();
         if primary {
             painter.rect_filled(button, skin::BUTTON_ROUNDING, look.primary);

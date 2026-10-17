@@ -49,7 +49,7 @@ fn fitting<R>(ui: &mut ::egui::Ui, width: f32, add: impl FnOnce(&mut ::egui::Ui)
     // ポップアップの幅はここで決める（使える幅いっぱいに取ると、開いたポップアップの幅に引きずられて広がる）。
     ui.set_min_width(width);
     ui.set_max_width(width);
-    let id = ui.id().with("はみ出し");
+    let id = ui.scope_id().with("はみ出し");
     let room = (ui.ctx().content_rect().height() - 24.0).clamp(120.0, MOST_ROWS * ROW);
     let (offset, content): (f32, f32) = ui.data(|data| data.get_temp(id)).unwrap_or_default();
     let over = content > room + 0.5;
@@ -69,7 +69,7 @@ fn fitting<R>(ui: &mut ::egui::Ui, width: f32, add: impl FnOnce(&mut ::egui::Ui)
         .scroll_bar_visibility(::egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .vertical_scroll_offset(offset)
         .show(ui, add);
-    let mut offset = shown.state.offset.y;
+    let mut offset = shown.state.clamped_offset().y;
     let content = shown.content_size.y;
     if over && strip(ui, width, false, offset < most) {
         offset = (offset + step).min(most);

@@ -457,7 +457,7 @@ fn rocker(
     ] {
         let response = ui.interact(
             rect,
-            ui.id().with(("リモコン", label, format!("{what:?}"))),
+            ui.scope_id().with(("リモコン", label, format!("{what:?}"))),
             Sense::click(),
         );
         let painter = ui.painter();
@@ -668,7 +668,7 @@ fn key_sized(
     } else {
         Sense::click()
     };
-    let response = ui.interact(rect, ui.id().with(("リモコン", id)), sense);
+    let response = ui.interact(rect, ui.scope_id().with(("リモコン", id)), sense);
     let down = response.is_pointer_button_down_on();
     let hovered = response.hovered();
     let painter = ui.painter();

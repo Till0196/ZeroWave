@@ -62,7 +62,7 @@ pub fn show(
         left = rect.right() + theme::BUTTON_GAP;
         let response = ui.interact(
             rect,
-            ui.id().with(("録画の釦", format!("{what:?}"))),
+            ui.scope_id().with(("録画の釦", format!("{what:?}"))),
             Sense::click(),
         );
         let pushed = match what {
@@ -146,7 +146,11 @@ fn bar(
 ) -> Option<f32> {
     let painter = ui.painter().with_clip_rect(rect);
     let middle = rect.center().y;
-    let response = ui.interact(rect, ui.id().with("録画の棒"), Sense::click_and_drag());
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with("録画の棒"),
+        Sense::click_and_drag(),
+    );
     // 端の丸が切れないよう、丸の半径の分だけ内側に。
     let span = Rect::from_min_max(
         pos2(rect.left() + theme::KNOB, rect.top()),
@@ -194,7 +198,7 @@ fn bar(
             let text = zwcore::input::span::clock_text(ticks);
             let top = ui.ctx().layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
-                egui::Id::new("録画の棒の時刻"),
+                egui::Id::unique("録画の棒の時刻"),
             ));
             let galley = top.layout_no_wrap(text, FontId::monospace(theme::HINT_SIZE), skin.value);
             let size = galley.size() + vec2(8.0, 4.0);

@@ -172,7 +172,7 @@ fn toggle(
             .ui
             .interact(
                 hit,
-                form.ui.id().with(("plugin.toggle", scope, id)),
+                form.ui.scope_id().with(("plugin.toggle", scope, id)),
                 Sense::click(),
             )
             .clicked();
@@ -362,7 +362,7 @@ fn input(
         Stroke::new(1.0, look.select_edge),
         egui::StrokeKind::Inside,
     );
-    let edit_id = form.ui.id().with(("plugin.input", scope, id));
+    let edit_id = form.ui.scope_id().with(("plugin.input", scope, id));
     let buffer_id = edit_id.with("buffer");
     let ctx = form.ui.ctx().clone();
     let focused = ctx.memory(|memory| memory.has_focus(edit_id));
@@ -424,7 +424,7 @@ fn chips_at(
         let response = form.ui.interact(
             rect,
             form.ui
-                .id()
+                .scope_id()
                 .with(("plugin.chip", scope, id, chip.id.as_str())),
             Sense::click(),
         );
@@ -661,7 +661,7 @@ fn table(
         }
         let response = form.ui.interact(
             line,
-            form.ui.id().with(("plugin.row", scope, id, &row.id)),
+            form.ui.scope_id().with(("plugin.row", scope, id, &row.id)),
             Sense::click(),
         );
         {
@@ -812,7 +812,7 @@ fn table(
                         .ui
                         .interact(
                             hit,
-                            form.ui.id().with(("plugin.cell", scope, id.as_str())),
+                            form.ui.scope_id().with(("plugin.cell", scope, id.as_str())),
                             Sense::click(),
                         )
                         .clicked();
@@ -948,7 +948,7 @@ pub fn show_window(
             );
             let response = root.interact(
                 rect,
-                root.id().with(("plugin.tab", &key, tab)),
+                root.scope_id().with(("plugin.tab", &key, tab)),
                 Sense::click(),
             );
             let chosen = *tab == page.tab;

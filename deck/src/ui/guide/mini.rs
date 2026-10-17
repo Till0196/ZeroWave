@@ -303,7 +303,7 @@ pub(crate) fn steps_by(held: f64) -> u32 {
 
 /// このフレームでスクロールする数を返す。
 fn step(ui: &mut Ui, rect: Rect, mark: &str, tag: &str, skin: &mini::Skin) -> u32 {
-    let id = ui.id().with(("帯の送り", tag));
+    let id = ui.scope_id().with(("帯の送り", tag));
     let response = ui.interact(rect, id, Sense::click()).on_hover_text(tag);
     let painter = ui.painter();
     painter.rect_filled(rect, 0.0, skin.step);
@@ -394,7 +394,7 @@ fn watching_index(strip: &Strip<'_>) -> Option<usize> {
 fn follow_watching(ui: &Ui, strip: &Strip<'_>) -> Option<f32> {
     follow(
         ui,
-        ui.id().with("帯の局を見ている局へ"),
+        ui.scope_id().with("帯の局を見ている局へ"),
         strip.watching,
         strip.band,
         watching_offset(strip),
@@ -463,7 +463,11 @@ fn head(
     skin: &mini::Skin,
 ) -> bool {
     let rect = Rect::from_min_size(column.min, vec2(column.width(), mini::HEAD_HEIGHT));
-    let response = ui.interact(rect, ui.id().with(("帯の局", channel.key)), Sense::click());
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with(("帯の局", channel.key)),
+        Sense::click(),
+    );
     let painter = ui.painter();
     painter.rect_filled(
         rect,
@@ -636,7 +640,13 @@ mod tests {
         let mut said = Vec::new();
         for offset in [None, None, Some(240.0), Some(240.0)] {
             let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-                said.push(follow(ui, ui.id().with("試し"), Some(key), Band(0), offset));
+                said.push(follow(
+                    ui,
+                    ui.scope_id().with("試し"),
+                    Some(key),
+                    Band(0),
+                    offset,
+                ));
             });
         }
         assert_eq!(said, [None, None, Some(240.0), None]);

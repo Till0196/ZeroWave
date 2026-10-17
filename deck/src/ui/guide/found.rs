@@ -290,7 +290,7 @@ fn top_bar(
         }
     }
     if !state.typed.is_empty() {
-        let hit = ui.interact(clear, ui.id().with("番組検索を消す"), Sense::click());
+        let hit = ui.interact(clear, ui.scope_id().with("番組検索を消す"), Sense::click());
         if hit.hovered() {
             ui.painter()
                 .circle_filled(clear.center(), 10.0, skin.control_edge);
@@ -455,7 +455,7 @@ fn filter_bar(
     if shown != &told || galley.elided {
         ui.interact(
             Rect::from_min_size(at, galley.size()),
-            ui.id().with("件数"),
+            ui.scope_id().with("件数"),
             egui::Sense::hover(),
         )
         .on_hover_text(told.clone());
@@ -494,7 +494,7 @@ fn segments(
         let piece = Rect::from_min_size(pos2(left, rect.top()), vec2(width, rect.height()));
         let response = ui.interact(
             piece,
-            ui.id().with(("切り替え", tag, index)),
+            ui.scope_id().with(("切り替え", tag, index)),
             Sense::click(),
         );
         let chosen = index == selected;
@@ -938,7 +938,7 @@ fn side_pane(
             Rect::from_min_size(pos2(left, buttons_top), vec2(galley.size().x + 28.0, 30.0));
         let response = ui.interact(
             button,
-            ui.id().with(("番組検索の釦", label)),
+            ui.scope_id().with(("番組検索の釦", label)),
             Sense::click(),
         );
         let (fill, text) = match (primary, response.hovered()) {

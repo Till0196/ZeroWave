@@ -102,7 +102,7 @@ pub fn show(
         area = area.vertical_scroll_offset((seconds / 3600.0 * epg::HOUR - 60.0).max(0.0));
     }
     // スクロールは一度きりなので、囲む番組は egui のメモリーに置く。
-    let marked_id = ui.id().with("送った番組");
+    let marked_id = ui.scope_id().with("送った番組");
     let time = ui.input(|input| input.time);
     if let (Some(key), Some(start)) = (jump_to, listing.jump) {
         ui.data_mut(|data| data.insert_temp(marked_id, (key, start, time)));
@@ -117,9 +117,10 @@ pub fn show(
         ui.ctx().request_repaint();
     }
     // 開いたときと種別を替えたときは、見ている局が左の端に来るようにスクロールする。
+    let shoved_id = ui.scope_id().with("見出しの横の送り");
     let follow = super::mini::follow(
         ui,
-        ui.id().with("番組表を見ている局へ"),
+        ui.scope_id().with("番組表を見ている局へ"),
         listing.watching,
         listing.band,
         listing.watching.and_then(|key| {
@@ -146,6 +147,8 @@ pub fn show(
         ));
     } else if let Some(offset) = follow {
         area = area.horizontal_scroll_offset(super::mini::within(offset, content, view));
+    } else if let Some(offset) = ui.data_mut(|data| data.remove_temp::<f32>(shoved_id)) {
+        area = area.horizontal_scroll_offset(offset);
     }
     let mut scrolled = area.show(&mut child, |ui| {
         let height = epg::HOUR * listing.hours as f32;
@@ -173,10 +176,13 @@ pub fn show(
     if let Some(picked) = scrolled.inner.take() {
         action = Some(picked);
     }
-    let offset = scrolled.state.offset;
+    let offset = scrolled.state.unclamped_offset();
     // 時刻の列は下端のスクロールバーの上で止める（バーの横に時刻がはみ出さないように）。
     let seen_height = scrolled.inner_rect.height().min(body.height());
-    sideways(ui, head_row, body_right, listing, scrolled);
+    if let Some(shoved) = sideways(ui, head_row, body_right, listing, &scrolled) {
+        ui.data_mut(|data| data.insert_temp(shoved_id, shoved));
+        ui.ctx().request_repaint();
+    }
 
     let clock_column = Rect::from_min_size(body.min, vec2(epg::CLOCK_WIDTH, seen_height));
     clock(ui, clock_column, listing, skin, offset.y);
@@ -201,15 +207,15 @@ pub fn show(
     action
 }
 
-/// 見出しの上では向きを問わず横にスクロールする。スクロール量は次のフレームで効かせる
+/// 見出しの上では向きを問わず横にスクロールする。返す横のオフセットは次のフレームで効かせる
 /// （このフレームの見出しだけ先に動かすと領域と一フレームずれる）。
 fn sideways(
     ui: &mut Ui,
     head_row: Rect,
     body: Rect,
     listing: &Listing,
-    scrolled: egui::scroll_area::ScrollAreaOutput<Option<Action>>,
-) {
+    scrolled: &egui::scroll_area::ScrollAreaOutput<Option<Action>>,
+) -> Option<f32> {
     let mut shove = 0.0;
     if ui.rect_contains_pointer(head_row) {
         let delta = ui.input(|input| input.smooth_scroll_delta());
@@ -224,14 +230,11 @@ fn sideways(
         shove += epg::COLUMN * stepped as f32;
     }
     if shove == 0.0 {
-        return;
+        return None;
     }
     let seen = scrolled.inner_rect.width().min(body.width());
     let most = (epg::COLUMN * listing.channels.len() as f32 - seen).max(0.0);
-    let mut state = scrolled.state;
-    state.offset.x = (state.offset.x + shove).clamp(0.0, most);
-    state.store(ui.ctx(), scrolled.id);
-    ui.ctx().request_repaint();
+    Some((scrolled.state.clamped_offset().x + shove).clamp(0.0, most))
 }
 
 fn heads(
@@ -399,7 +402,7 @@ fn bar(ui: &mut Ui, full: Rect, listing: &Listing, skin: &epg::Skin) -> (Option<
             pos2(left, row_y - 12.0),
             vec2(galley.size().x + marked + 16.0, 24.0),
         );
-        let response = ui.interact(button, ui.id().with(("送り", label)), Sense::click());
+        let response = ui.interact(button, ui.scope_id().with(("送り", label)), Sense::click());
         if response.hovered() {
             ui.painter().rect_filled(button, 4.0, skin.head_background);
         }
@@ -467,7 +470,7 @@ fn bar(ui: &mut Ui, full: Rect, listing: &Listing, skin: &epg::Skin) -> (Option<
 
 /// Enter で検索する文字列を返す。一覧は毎回届き直すので、入力中の文字列は egui のメモリーに置く。
 fn search_field(ui: &mut Ui, row: Rect) -> Option<String> {
-    let id = ui.id().with("番組検索");
+    let id = ui.scope_id().with("番組検索");
     let mut text = ui
         .data_mut(|data| data.get_temp::<String>(id))
         .unwrap_or_default();
@@ -597,7 +600,11 @@ fn one_channel(
 
 fn head(ui: &mut Ui, column: Rect, channel: &Channel, watching: bool, skin: &epg::Skin) -> bool {
     let rect = Rect::from_min_size(column.min, vec2(column.width(), epg::HEAD_HEIGHT));
-    let response = ui.interact(rect, ui.id().with(("局", channel.key)), Sense::click());
+    let response = ui.interact(
+        rect,
+        ui.scope_id().with(("局", channel.key)),
+        Sense::click(),
+    );
     let painter = ui.painter();
     painter.rect_filled(
         rect,

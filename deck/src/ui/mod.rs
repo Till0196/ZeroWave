@@ -159,7 +159,7 @@ pub fn logo_texture(
     ctx: &egui::Context,
     logo: &std::sync::Arc<zwcore::guide::Logo>,
 ) -> Option<egui::TextureHandle> {
-    let place = egui::Id::new("局ロゴ");
+    let place = egui::Id::unique("局ロゴ");
     let key = std::sync::Arc::as_ptr(logo) as usize;
     let pass = ctx.cumulative_pass_nr();
     // キーはアドレスなので、アドレスが別のロゴに使い回されていないか確かめる。
@@ -337,7 +337,7 @@ pub fn alpha_texture(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     (width, height, levels, bitmap).hash(&mut hasher);
     let key = hasher.finish();
-    let place = egui::Id::new("階調の画像");
+    let place = egui::Id::unique("階調の画像");
     if let Some(id) = ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<AlphaKept>(place)
             .get(&key)

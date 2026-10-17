@@ -355,7 +355,7 @@ pub(super) fn channel_list(
             let chosen = *band == *tab;
             let hit = form.ui.interact(
                 rect,
-                form.ui.id().with(("channel.tab", band.0)),
+                form.ui.scope_id().with(("channel.tab", band.0)),
                 Sense::click(),
             );
             if hit.clicked() {
@@ -442,7 +442,7 @@ pub(super) fn channel_list(
                 pos2(columns[1], row.top()),
                 pos2(columns[2] - 4.0, row.bottom()),
             ),
-            form.ui.id().with(("channel.mark", index)),
+            form.ui.scope_id().with(("channel.mark", index)),
             Sense::click(),
         );
         if hit.clicked() {
@@ -582,7 +582,7 @@ pub(super) fn channel_list(
         );
         let copy = form.ui.interact(
             key_rect,
-            form.ui.id().with(("channel.copy", 0)),
+            form.ui.scope_id().with(("channel.copy", 0)),
             Sense::click(),
         );
         form.ui.painter().text(

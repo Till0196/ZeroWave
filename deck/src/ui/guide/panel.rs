@@ -227,7 +227,7 @@ pub fn show(ui: &mut Ui, panel: &Panel<'_>, plugins: &mut Plugins<'_>) -> Option
 
 fn grip(ui: &mut Ui, rect: Rect, bottom: f32, panel: &Panel<'_>, skin: &look::Skin) -> Option<u32> {
     let response = ui
-        .interact(rect, ui.id().with("パネルのつまみ"), Sense::drag())
+        .interact(rect, ui.scope_id().with("パネルのつまみ"), Sense::drag())
         .on_hover_cursor(egui::CursorIcon::ResizeVertical)
         .on_hover_text("上下にドラッグして高さを変更");
     let painter = ui.painter();
@@ -268,7 +268,11 @@ fn bar(ui: &mut Ui, rect: Rect, panel: &Panel<'_>, skin: &look::Skin) -> Option<
         let width = galley.size().x + 14.0 + 6.0 + look::TAB_PAD * 2.0;
         let button =
             Rect::from_min_max(pos2(right - width, rect.top()), pos2(right, rect.bottom()));
-        let response = ui.interact(button, ui.id().with("パネルを本体に戻す"), Sense::click());
+        let response = ui.interact(
+            button,
+            ui.scope_id().with("パネルを本体に戻す"),
+            Sense::click(),
+        );
         let ink = if response.hovered() {
             skin.tab_text
         } else {
@@ -310,7 +314,11 @@ fn bar(ui: &mut Ui, rect: Rect, panel: &Panel<'_>, skin: &look::Skin) -> Option<
                 pos2(right, rect.bottom()),
             );
             let response = ui
-                .interact(button, ui.id().with(("パネルの釦", tip)), Sense::click())
+                .interact(
+                    button,
+                    ui.scope_id().with(("パネルの釦", tip)),
+                    Sense::click(),
+                )
                 .on_hover_text(tip);
             let ink = match (&said, response.hovered()) {
                 (Pressed::Close, true) => skin.bar_clock,
@@ -416,7 +424,7 @@ fn tab_row(
         let tab = &panel.tabs[*index];
         let response = ui.interact(
             tab_rect,
-            ui.id().with(("パネルのタブ", tab.key())),
+            ui.scope_id().with(("パネルのタブ", tab.key())),
             Sense::click(),
         );
         let on = *index == panel.tab;
@@ -459,7 +467,11 @@ fn tab_row(
     if overflow {
         let more = Rect::from_min_size(pos2(x, rect.top()), vec2(look::ICON_WIDTH, rect.height()));
         let response = ui
-            .interact(more, ui.id().with("パネルのほかのタブ"), Sense::click())
+            .interact(
+                more,
+                ui.scope_id().with("パネルのほかのタブ"),
+                Sense::click(),
+            )
             .on_hover_text("ほかのタブ");
         let ink = if response.hovered() {
             skin.tab_text

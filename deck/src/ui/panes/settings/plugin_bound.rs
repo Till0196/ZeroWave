@@ -291,7 +291,7 @@ pub(super) fn segments(
         let response = form.ui.interact(
             rect,
             form.ui
-                .id()
+                .scope_id()
                 .with(("plugin.segment", scope, id, option.as_str())),
             Sense::click(),
         );
@@ -483,7 +483,9 @@ pub(super) fn program(
         if small_button(
             form,
             change,
-            form.ui.id().with(("plugin.program.change", scope, key)),
+            form.ui
+                .scope_id()
+                .with(("plugin.program.change", scope, key)),
             change_label,
         ) {
             bound.browse = Some(key.to_owned());
@@ -492,7 +494,9 @@ pub(super) fn program(
             && glyph(
                 form,
                 cross,
-                form.ui.id().with(("plugin.program.clear", scope, key)),
+                form.ui
+                    .scope_id()
+                    .with(("plugin.program.clear", scope, key)),
                 Icon::Cross,
             )
             .on_hover_text("外す")
@@ -525,12 +529,12 @@ pub(super) fn list(
     }
     let look = form.look;
     let mut items = zwsdk::config::list_of(&bound.value(key));
-    let input_id = form.ui.id().with(("plugin.list.input", scope, key));
-    let drag_id = form.ui.id().with(("plugin.list.drag", scope, key));
+    let input_id = form.ui.scope_id().with(("plugin.list.input", scope, key));
+    let drag_id = form.ui.scope_id().with(("plugin.list.drag", scope, key));
     let add = (!bound.read_only).then(|| {
         (
             "＋ 追加",
-            form.ui.id().with(("plugin.list.add", scope, key)),
+            form.ui.scope_id().with(("plugin.list.add", scope, key)),
         )
     });
     if rule(form, if label.is_empty() { key } else { label }, add) {
@@ -563,7 +567,9 @@ pub(super) fn list(
     for (index, (item, rect)) in items.iter().zip(&rects).enumerate() {
         let response = form.ui.interact(
             *rect,
-            form.ui.id().with(("plugin.list.chip", scope, key, index)),
+            form.ui
+                .scope_id()
+                .with(("plugin.list.chip", scope, key, index)),
             if bound.read_only {
                 Sense::hover()
             } else {
@@ -771,7 +777,7 @@ pub(super) fn map(
     let env = bound.setting(key).is_some_and(zwsdk::host::Setting::is_env);
     let look = form.look;
     let mut entries = zwsdk::config::entries_of(&bound.value(key));
-    let edit_id = form.ui.id().with(("plugin.map.edit", scope, key));
+    let edit_id = form.ui.scope_id().with(("plugin.map.edit", scope, key));
     let name_id = edit_id.with("name");
     let value_id = edit_id.with("value");
     let mut editing: Option<Editing> = form.ui.ctx().data(|data| data.get_temp(edit_id));
@@ -781,8 +787,12 @@ pub(super) fn map(
         .ctx()
         .data(|data| data.get_temp::<bool>(name_id))
         .unwrap_or(false);
-    let add =
-        (!bound.read_only).then(|| ("＋ 追加", form.ui.id().with(("plugin.map.add", scope, key))));
+    let add = (!bound.read_only).then(|| {
+        (
+            "＋ 追加",
+            form.ui.scope_id().with(("plugin.map.add", scope, key)),
+        )
+    });
     if rule(form, if label.is_empty() { key } else { label }, add) {
         editing = Some(Editing::default());
         focus_name = true;
@@ -893,7 +903,9 @@ pub(super) fn map(
         if switch(
             form,
             pos2(left + 24.0, line.center().y),
-            form.ui.id().with(("plugin.map.on", scope, key, index)),
+            form.ui
+                .scope_id()
+                .with(("plugin.map.on", scope, key, index)),
             on,
             !bound.read_only,
         ) {
@@ -923,7 +935,9 @@ pub(super) fn map(
         let response = glyph(
             form,
             menu,
-            form.ui.id().with(("plugin.map.more", scope, key, index)),
+            form.ui
+                .scope_id()
+                .with(("plugin.map.more", scope, key, index)),
             Icon::More,
         );
         egui::Popup::menu(&response).show(|ui| {
@@ -1073,7 +1087,10 @@ pub(super) fn command(
         font.clone(),
         look.group,
     );
-    let copy_id = form.ui.id().with(("plugin.command.copy", scope, program));
+    let copy_id = form
+        .ui
+        .scope_id()
+        .with(("plugin.command.copy", scope, program));
     let copied_at: Option<f64> = form.ui.ctx().data(|data| data.get_temp(copy_id));
     let now = form.ui.input(|input| input.time);
     let copied = copied_at.is_some_and(|at| now - at < 1.5);

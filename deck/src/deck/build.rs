@@ -110,7 +110,11 @@ impl Deck {
             root.available_rect_before_wrap()
         };
         self.backdrop(root, area);
-        let grabbed = root.interact(area, root.id().with("映像"), egui::Sense::click_and_drag());
+        let grabbed = root.interact(
+            area,
+            root.scope_id().with("映像"),
+            egui::Sense::click_and_drag(),
+        );
         // 右クリックでメニュー。出せる環境では OS のもの、出せなければ egui で。
         let filling = self.filling();
         if menu::Menus::has_native_context() {
@@ -256,7 +260,7 @@ impl Deck {
             });
             let filling = self.filling();
             let mut picked = None;
-            let shown = egui::Area::new(egui::Id::new("ステータスバーのメニュー"))
+            let shown = egui::Area::new(egui::Id::unique("ステータスバーのメニュー"))
                 .order(egui::Order::Foreground)
                 .fixed_pos(at)
                 .show(&ctx, |ui| {

@@ -42,7 +42,7 @@ pub fn show(
         // 一つの領域に二組あっても識別子が重ならないよう、組の先頭の位置も混ぜる。
         let response = ui.interact(
             rect,
-            ui.id()
+            ui.scope_id()
                 .with(("chips", at.x.to_bits(), at.y.to_bits(), index)),
             Sense::click(),
         );

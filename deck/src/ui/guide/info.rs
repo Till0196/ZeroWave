@@ -258,7 +258,7 @@ fn notes(ui: &mut Ui, rect: Rect, programme: &Programme, skin: &look::Skin) {
                 text: skin.text,
                 leading: Some(look::INFO_TEXT_LEADING),
             };
-            let id = ui.id().with("パネルの番組情報の本文");
+            let id = ui.scope_id().with("パネルの番組情報の本文");
             crate::ui::guide::copyable::show(
                 ui,
                 id,

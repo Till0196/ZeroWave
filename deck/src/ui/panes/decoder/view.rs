@@ -435,7 +435,7 @@ fn copies(response: &Response, line: &str) {
 
 /// 前に見た数より増えていれば、しばらく真。選局で減ったときは数え直し。
 fn rising(ui: &Ui, key: &str, count: u64) -> bool {
-    let id = egui::Id::new(("デコーダの情報の増え", key));
+    let id = egui::Id::unique(("デコーダの情報の増え", key));
     let now = ui.input(|input| input.time);
     let rose_at = ui.data_mut(|data| {
         let seen: Option<(u64, f64)> = data.get_temp(id);
@@ -622,7 +622,7 @@ fn tiles(ui: &mut Ui, tiles: &[Tile], look: &look::Skin) {
                 );
                 let response = ui.interact(
                     rect,
-                    ui.id().with(("タイル", row_nth, nth, tile.name)),
+                    ui.scope_id().with(("タイル", row_nth, nth, tile.name)),
                     Sense::click(),
                 );
                 ui.painter().rect_filled(rect, 6.0, look.raised);

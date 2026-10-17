@@ -401,7 +401,7 @@ type PictureKept = std::collections::HashMap<usize, (Arc<Picture>, egui::Texture
 /// 画像は `Arc` のアドレスで調べる（表示のたびに画素全部のハッシュを取らない）。
 fn picture_texture(ctx: &egui::Context, name: &str, picture: &Arc<Picture>) -> egui::TextureId {
     let key = Arc::as_ptr(picture) as usize;
-    let place = egui::Id::new("字幕の画像");
+    let place = egui::Id::unique("字幕の画像");
     if let Some(id) = ctx.data_mut(|data| {
         data.get_temp_mut_or_default::<PictureKept>(place)
             .get(&key)

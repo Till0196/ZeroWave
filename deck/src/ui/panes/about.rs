@@ -254,7 +254,7 @@ fn audio() -> String {
 static LOGO_PNG: &[u8] = include_bytes!("../../../icon/about.png");
 
 fn logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
-    let id = egui::Id::new("ZeroWave のアイコン");
+    let id = egui::Id::unique("ZeroWave のアイコン");
     if let Some(held) = ctx.data(|data| data.get_temp::<Option<egui::TextureHandle>>(id)) {
         return held;
     }
@@ -404,7 +404,11 @@ pub fn show(root: &mut Ui, about: &About, look: &Look) -> Option<Pressed> {
             vec2(width, 24.0),
         );
         right = button.left() - 8.0;
-        let response = root.interact(button, root.id().with(("について", label)), Sense::click());
+        let response = root.interact(
+            button,
+            root.scope_id().with(("について", label)),
+            Sense::click(),
+        );
         let painter = root.painter();
         if primary {
             painter.rect_filled(button, skin::BUTTON_ROUNDING, look.primary);

@@ -255,7 +255,7 @@ pub(super) fn list(
             form.ui
                 .painter()
                 .rect_filled(line.shrink(1.0), 3.0, look.chosen_fill);
-            let id = form.ui.id().with(("plugin.list.edit", key));
+            let id = form.ui.scope_id().with(("plugin.list.edit", key));
             let response = form.ui.put(
                 line.shrink2(vec2(4.0, 2.0)),
                 egui::TextEdit::singleline(&mut inline.text)
@@ -287,7 +287,7 @@ pub(super) fn list(
         }
         let response = form.ui.interact(
             line,
-            form.ui.id().with(("plugin.list.row", key, row)),
+            form.ui.scope_id().with(("plugin.list.row", key, row)),
             Sense::click(),
         );
         let chosen = mark == Some(row);
@@ -486,7 +486,7 @@ pub(super) fn map(
         );
         let response = form.ui.interact(
             line,
-            form.ui.id().with(("plugin.map.row", key, row)),
+            form.ui.scope_id().with(("plugin.map.row", key, row)),
             Sense::click(),
         );
         let chosen = mark == Some(row);
@@ -619,7 +619,7 @@ pub(super) fn dialog(
         .fill(look.body)
         .stroke(Stroke::new(1.0, look.button_edge))
         .corner_radius(8);
-    let shown = egui::Modal::new(egui::Id::new(("plugin.dialog", plugin)))
+    let shown = egui::Modal::new(egui::Id::unique(("plugin.dialog", plugin)))
         .frame(frame)
         .show(root.ctx(), |ui| {
             let Some(dialog) = lists.dialog.as_mut() else {
@@ -841,8 +841,8 @@ fn pair_dialog(ui: &mut egui::Ui, look: &Look, draft: PairDraft<'_>) -> (Option<
         }
     }
     // `form.field` の欄の id は ui の id とキーから作る。それに合わせて指定する。
-    let name_field = ui.id().with(("plugin.pair", draft.key, 0usize));
-    let value_field = ui.id().with(("plugin.pair", draft.key, 1usize));
+    let name_field = ui.scope_id().with(("plugin.pair", draft.key, 0usize));
+    let value_field = ui.scope_id().with(("plugin.pair", draft.key, 1usize));
     if std::mem::take(draft.focus) || alt(ui, Key::N) {
         ui.memory_mut(|memory| memory.request_focus(name_field));
     }

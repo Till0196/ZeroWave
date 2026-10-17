@@ -49,7 +49,7 @@ pub(super) fn items(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
     form.key("ui.status_items");
     let _ = form.label_row("表示する項目", changed);
     *form.at -= skin::ROW_GAP + 4.0;
-    let held_id = form.ui.id().with("ステータスバーの項目");
+    let held_id = form.ui.scope_id().with("ステータスバーの項目");
     let mut held: Held = form
         .ui
         .ctx()
@@ -89,12 +89,12 @@ pub(super) fn items(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
         // チェックボックスの当たり判定と重ならないよう、⋮⋮ と名前は別々に受けて合わせる。
         let by_grip = form.ui.interact(
             grip,
-            form.ui.id().with(("項目を並べ替える", &key)),
+            form.ui.scope_id().with(("項目を並べ替える", &key)),
             Sense::click_and_drag(),
         );
         let by_name = form.ui.interact(
             name,
-            form.ui.id().with(("項目の名前", &key)),
+            form.ui.scope_id().with(("項目の名前", &key)),
             Sense::click_and_drag(),
         );
         let grab = by_grip.union(by_name);
@@ -183,7 +183,7 @@ pub(super) fn items(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
         );
         let pull = form.ui.interact(
             handle,
-            form.ui.id().with(("項目の幅", &key)),
+            form.ui.scope_id().with(("項目の幅", &key)),
             Sense::click_and_drag(),
         );
         if pull.hovered() || pull.dragged() {

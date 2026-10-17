@@ -16,6 +16,10 @@
       matchUpdateTypes: ['minor'],
       automerge: false,
     },
+    {
+      matchDepNames: ['egui', 'egui-winit', 'egui-wgpu', 'egui_glow'],
+      groupName: 'egui',
+    },
   ],
   customDatasources: {
     zig: {

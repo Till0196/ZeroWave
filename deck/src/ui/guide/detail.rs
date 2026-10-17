@@ -153,7 +153,7 @@ fn tabs(ui: &mut Ui, inner: Rect, top: f32, follow: Follow, skin: &detail::Skin)
         );
         let response = ui.interact(
             rect,
-            ui.id().with(("番組説明のタブ", label)),
+            ui.scope_id().with(("番組説明のタブ", label)),
             Sense::click(),
         );
         let on = which == follow;
@@ -284,7 +284,11 @@ fn footer(ui: &mut Ui, foot: Rect, told: Told, skin: &detail::Skin) -> bool {
         ),
         vec2(detail::CLOSE_WIDTH, detail::CLOSE_HEIGHT),
     );
-    let response = ui.interact(button, ui.id().with("番組説明を閉じる"), Sense::click());
+    let response = ui.interact(
+        button,
+        ui.scope_id().with("番組説明を閉じる"),
+        Sense::click(),
+    );
     let painter = ui.painter();
     painter.rect_filled(
         button,
@@ -550,7 +554,7 @@ fn fields(
         text: skin.text,
         leading: Some(detail::FIELD_LEADING),
     };
-    let id = ui.id().with("番組説明の本文");
+    let id = ui.scope_id().with("番組説明の本文");
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
     egui::ScrollArea::vertical()
         .id_salt("番組説明")

@@ -89,7 +89,7 @@ pub fn cell(
     let skin = style.skin;
     let response = ui.interact(
         rect,
-        ui.id()
+        ui.scope_id()
             .with((style.tag, programme.service, programme.start)),
         Sense::click(),
     );

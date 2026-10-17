@@ -82,14 +82,14 @@ wgpu = { version = "30", default-features = false, features = [
 winit = "0.30"
 
 # ウィンドウとサーフェスは eframe に任せない（理由は src/ui/face.rs の先頭）。
-egui = "0.36"
-egui-winit = { version = "0.36", default-features = false, features = [
+egui = { version = "0.37", features = ["monochrome_emoji_fonts"] }
+egui-winit = { version = "0.37", default-features = false, features = [
     "x11",
     "wayland",
     "clipboard",
 ] }
 # 既定の feature は wgpu の gles などを Windows・macOS にも入れるので外す。
-egui-wgpu = { version = "0.36", default-features = false }
+egui-wgpu = { version = "0.37", default-features = false }
 
 serde = { version = "1", features = ["derive"] }
 toml = "1"
@@ -105,7 +105,7 @@ cpal = { version = "0.18", optional = true }
 libc = "0.2"
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-egui_glow = { version = "0.36", default-features = false }
+egui_glow = { version = "0.37", default-features = false }
 glow = "0.17"
 
 # Linux だけの zwcore の feature（既定の feature にすると Windows・macOS でもビルドされて通らない）。

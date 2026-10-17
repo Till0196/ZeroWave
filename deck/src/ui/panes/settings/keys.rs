@@ -74,7 +74,7 @@ pub(super) fn keys(
             Rect::from_min_size(pos2(key_left, row.center().y - 13.0), vec2(170.0, 26.0));
         let response = form.ui.interact(
             key_rect,
-            form.ui.id().with(("keys.bind", index)),
+            form.ui.scope_id().with(("keys.bind", index)),
             egui::Sense::click(),
         );
         let painter = form.ui.painter();

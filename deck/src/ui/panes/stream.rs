@@ -134,7 +134,7 @@ fn tabs(ui: &mut Ui, full: Rect, tab: Tab, skin: &skin::Skin) -> Option<Tab> {
             pos2(left, rect.top() + 4.0),
             vec2(galley.size().x + 24.0, rect.height() - 8.0),
         );
-        let response = ui.interact(button, ui.id().with(("タブ", label)), Sense::click());
+        let response = ui.interact(button, ui.scope_id().with(("タブ", label)), Sense::click());
         let painter = ui.painter();
         if chosen {
             painter.rect_filled(button, 3.0, skin.tab_fill);
@@ -189,7 +189,7 @@ fn foot_button(ui: &mut Ui, rect: Rect, right: f32, label: &str, skin: &skin::Sk
         pos2(right - width, rect.center().y - 10.0),
         vec2(width, 20.0),
     );
-    let response = ui.interact(button, ui.id().with(label), Sense::click());
+    let response = ui.interact(button, ui.scope_id().with(label), Sense::click());
     let painter = ui.painter();
     if response.hovered() {
         painter.rect_filled(button, 3.0, skin.button_hover);
@@ -303,7 +303,7 @@ pub(super) fn branch(
     skin: &skin::Skin,
     children: impl FnOnce(&mut Ui),
 ) {
-    let id = ui.id().with(("ノード", label, depth));
+    let id = ui.scope_id().with(("ノード", label, depth));
     let mut opened: bool = ui.data(|d| d.get_temp(id)).unwrap_or(open);
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(vec2(width, skin::ROW), Sense::click());

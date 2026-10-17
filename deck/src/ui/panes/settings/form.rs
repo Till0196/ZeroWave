@@ -147,7 +147,7 @@ impl Form<'_, '_> {
             self.ui
                 .interact(
                     hover,
-                    self.ui.id().with(("ラベル", label)),
+                    self.ui.scope_id().with(("ラベル", label)),
                     egui::Sense::hover(),
                 )
                 .on_hover_text(label);
@@ -185,7 +185,7 @@ impl Form<'_, '_> {
             self.fit(skin::SELECT_WIDTH),
             skin::SELECT_HEIGHT,
         );
-        let id = self.ui.id().with(("選ぶ", label));
+        let id = self.ui.scope_id().with(("選ぶ", label));
         self.combo(rect, id, value, choices);
     }
 
@@ -210,7 +210,7 @@ impl Form<'_, '_> {
         value: &mut String,
         choices: &[(&str, &str)],
     ) {
-        let id = self.ui.id().with(id);
+        let id = self.ui.scope_id().with(id);
         self.combo(rect, id, value, choices);
     }
 
@@ -295,7 +295,11 @@ impl Form<'_, '_> {
                 galley.size(),
             );
             self.ui
-                .interact(hover, self.ui.id().with(("切った印", said)), Sense::hover())
+                .interact(
+                    hover,
+                    self.ui.scope_id().with(("切った印", said)),
+                    Sense::hover(),
+                )
                 .on_hover_text(said);
         }
         let hit = Rect::from_min_max(
@@ -305,9 +309,11 @@ impl Form<'_, '_> {
                 middle + skin::ROW / 2.0 - 2.0,
             ),
         );
-        let response =
-            self.ui
-                .interact(hit, self.ui.id().with(("印", label, said)), Sense::click());
+        let response = self.ui.interact(
+            hit,
+            self.ui.scope_id().with(("印", label, said)),
+            Sense::click(),
+        );
         if response.clicked() {
             *on = !*on;
         }
@@ -371,7 +377,7 @@ impl Form<'_, '_> {
             let chip = Rect::from_min_size(at, vec2(width, height));
             let response = self.ui.interact(
                 chip,
-                self.ui.id().with(("チップ", id, index)),
+                self.ui.scope_id().with(("チップ", id, index)),
                 Sense::click(),
             );
             if response.clicked() {
@@ -577,7 +583,7 @@ impl Form<'_, '_> {
         value: &mut String,
         hint: &str,
     ) {
-        let id = self.ui.id().with(id);
+        let id = self.ui.scope_id().with(id);
         self.edit(rect, vec2(8.0, 4.0), Some(id), value, hint);
     }
 
@@ -623,7 +629,7 @@ impl Form<'_, '_> {
         let look = self.look;
         let response = self
             .ui
-            .interact(rect, self.ui.id().with(id), Sense::click());
+            .interact(rect, self.ui.scope_id().with(id), Sense::click());
         let fill = if response.hovered() {
             look.hover
         } else {
@@ -654,9 +660,11 @@ impl Form<'_, '_> {
             skin::SELECT_WIDTH.min(rect.width()),
             skin::SELECT_HEIGHT,
         );
-        let response =
-            self.ui
-                .interact(field, self.ui.id().with(("font.field", id)), Sense::click());
+        let response = self.ui.interact(
+            field,
+            self.ui.scope_id().with(("font.field", id)),
+            Sense::click(),
+        );
         let painter = self.ui.painter();
         let fill = if response.hovered() {
             look.hover
@@ -767,7 +775,7 @@ impl Form<'_, '_> {
         }
         let response = self
             .ui
-            .interact(rect, self.ui.id().with(id), Sense::click());
+            .interact(rect, self.ui.scope_id().with(id), Sense::click());
         let painter = self.ui.painter();
         painter.rect_filled(rect, skin::BUTTON_ROUNDING, self.look.primary);
         label.paint(painter, rect, Color32::WHITE);
@@ -796,7 +804,7 @@ impl Form<'_, '_> {
         let look = self.look;
         let response = self
             .ui
-            .interact(rect, self.ui.id().with(id), Sense::click());
+            .interact(rect, self.ui.scope_id().with(id), Sense::click());
         let fill = if response.hovered() {
             look.hover
         } else {
@@ -854,7 +862,7 @@ impl Form<'_, '_> {
         let box_rect = Rect::from_center_size(rect.center(), vec2(skin::CHECK, skin::CHECK));
         let response = self
             .ui
-            .interact(rect, self.ui.id().with(id), Sense::click());
+            .interact(rect, self.ui.scope_id().with(id), Sense::click());
         tick_box(self.ui.painter(), self.look, box_rect, on);
         response.clicked()
     }
@@ -896,7 +904,11 @@ impl Form<'_, '_> {
         if galley.elided {
             let hover = Rect::from_min_size(top_left, galley.size());
             self.ui
-                .interact(hover, self.ui.id().with(("切った字", text)), Sense::hover())
+                .interact(
+                    hover,
+                    self.ui.scope_id().with(("切った字", text)),
+                    Sense::hover(),
+                )
                 .on_hover_text(text);
         }
         self.ui.painter().galley(top_left, galley, colour);
@@ -998,7 +1010,7 @@ impl Form<'_, '_> {
             if !row.fixed {
                 let response = self.ui.interact(
                     line,
-                    self.ui.id().with(("レイヤー", &row.key)),
+                    self.ui.scope_id().with(("レイヤー", &row.key)),
                     Sense::click(),
                 );
                 if response.clicked() {

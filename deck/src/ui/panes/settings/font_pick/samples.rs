@@ -60,7 +60,7 @@ pub struct Sample {
 
 fn cache_of(ctx: &egui::Context) -> Shared {
     ctx.data_mut(|data| {
-        data.get_temp_mut_or_insert_with(egui::Id::new("font-samples"), Shared::default)
+        data.get_temp_mut_or_insert_with(egui::Id::unique("font-samples"), Shared::default)
             .clone()
     })
 }
