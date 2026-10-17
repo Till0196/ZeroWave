@@ -89,7 +89,7 @@ egui-winit = { version = "0.36", default-features = false, features = [
     "clipboard",
 ] }
 # 既定の feature は wgpu の gles などを Windows・macOS にも入れるので外す。
-egui-wgpu = { version = "0.36", default-features = false }
+egui-wgpu = { version = "0.37", default-features = false }
 
 serde = { version = "1", features = ["derive"] }
 toml = "1"
