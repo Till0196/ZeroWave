@@ -82,7 +82,7 @@ wgpu = { version = "30", default-features = false, features = [
 winit = "0.30"
 
 # ウィンドウとサーフェスは eframe に任せない（理由は src/ui/face.rs の先頭）。
-egui = "0.36"
+egui = "0.37"
 egui-winit = { version = "0.36", default-features = false, features = [
     "x11",
     "wayland",
