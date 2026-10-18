@@ -289,6 +289,7 @@ fn main() {
     ui::theme::choose(&file.ui.theme);
     coaxd::install(file.general.launch_coaxd);
     pcsc::apply(&file);
+    config::apply::undecoded(&file);
     let mut overridden: Vec<String> = flags
         .iter()
         .filter_map(|(flag, _)| config::apply::key_of_flag(flag))

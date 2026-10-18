@@ -700,7 +700,7 @@ impl Line {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Source {
     pub label: String,
@@ -716,6 +716,25 @@ pub struct Source {
     pub tuner_settings: BTreeMap<String, TunerSetting>,
     pub url: String,
     pub by: String,
+    /// Mirakurun：要求に `decode=1` を付ける。
+    pub decode: bool,
+}
+
+impl Default for Source {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            kind: String::new(),
+            endpoint: String::new(),
+            priority: 0,
+            pcsc: false,
+            pcsc_socket: String::new(),
+            tuner_settings: BTreeMap::new(),
+            url: String::new(),
+            by: String::new(),
+            decode: true,
+        }
+    }
 }
 
 impl Source {

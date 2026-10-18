@@ -4,9 +4,9 @@
 //! Mirakurun から放送と番組表を受ける。`/api/programs` の時刻は UNIX エポックからのミリ秒なので、
 //! [`crate::guide::Guide::wall_clock`] で実時刻に合わせる。
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
 use coax::daemon::{Connection, Endpoint, Interrupter};
 use coax::http;
@@ -37,6 +37,21 @@ fn unanswered(how: &str, why: std::io::Error) -> Error {
         }
         _ => Error::from(why),
     }
+}
+
+/// 要求に `decode=1` を付けない Mirakurun（ホストとパス）。付けると Mirakurun の側の外のプログラムに通す。
+static UNDECODED: RwLock<BTreeSet<(String, String)>> = RwLock::new(BTreeSet::new());
+
+/// 設定のソースごとの選択。変わったら `true`。
+pub fn set_undecoded<'a>(urls: impl IntoIterator<Item = &'a str>) -> bool {
+    let wanted: BTreeSet<(String, String)> =
+        urls.into_iter().filter_map(|url| split(url).ok()).collect();
+    let mut kept = UNDECODED.write().unwrap_or_else(|e| e.into_inner());
+    if *kept == wanted {
+        return false;
+    }
+    *kept = wanted;
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -228,6 +243,13 @@ impl Mirakurun {
             }
         }
         carriers
+    }
+
+    fn decodes(&self) -> bool {
+        !UNDECODED
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&(self.host.clone(), self.root.clone()))
     }
 
     pub fn version(&self) -> Result<String, Error> {
@@ -451,7 +473,7 @@ impl Source for Mirakurun {
         let priority = self.priority.to_string();
         let answer = http::get(
             connection,
-            &format!("{}{}", self.root, channel.how),
+            &format!("{}{}", self.root, with_decode(&channel.how, self.decodes())),
             self.host.as_str(),
             &[("X-Mirakurun-Priority", priority.as_str())],
         )
@@ -532,8 +554,13 @@ struct Carriers {
 fn how(service: &Value, carriers: &Carriers, by: By) -> Option<String> {
     let id = number(service, "id")?;
     // 無いと TS に変換する途中で MMT/TLV が崩れる。
-    let format = if four_k(service) { "&format=tlv" } else { "" };
-    let by_service = || Some(format!("/api/services/{id}/stream?decode=1{format}"));
+    let format = four_k(service).then(|| String::from("format=tlv"));
+    let by_service = || {
+        Some(stream(
+            &format!("/api/services/{id}/stream"),
+            [format.clone()],
+        ))
+    };
     if by == By::Service {
         return by_service();
     }
@@ -541,20 +568,50 @@ fn how(service: &Value, carriers: &Carriers, by: By) -> Option<String> {
         let relative = carriers
             .relative
             .get(&id)
-            .map_or(String::new(), |relative| format!("&tsmfRelTs={relative}"));
-        return Some(format!(
-            "/api/channels/{kind}/{carrier}/stream?decode=1{format}{relative}"
+            .map(|relative| format!("tsmfRelTs={relative}"));
+        return Some(stream(
+            &format!("/api/channels/{kind}/{carrier}/stream"),
+            [format.clone(), relative],
         ));
     }
     if by == By::Channel
         && let Some(carrier) = service.get("channel")
         && let (Some(kind), Some(where_)) = (carrier.text("type"), carrier.text("channel"))
     {
-        return Some(format!(
-            "/api/channels/{kind}/{where_}/stream?decode=1{format}"
+        return Some(stream(
+            &format!("/api/channels/{kind}/{where_}/stream"),
+            [format.clone()],
         ));
     }
     by_service()
+}
+
+fn stream<const N: usize>(path: &str, query: [Option<String>; N]) -> String {
+    joined(path, query.into_iter().flatten().collect())
+}
+
+/// 開くときに `decode` を設定に合わせて付ける（一覧と覚えておく `how` は設定に依らない）。
+fn with_decode(how: &str, decode: bool) -> String {
+    let (path, query) = how.split_once('?').unwrap_or((how, ""));
+    let query = decode
+        .then(|| String::from("decode=1"))
+        .into_iter()
+        .chain(
+            query
+                .split('&')
+                .filter(|part| !part.is_empty() && !part.starts_with("decode="))
+                .map(str::to_owned),
+        )
+        .collect();
+    joined(path, query)
+}
+
+fn joined(path: &str, query: Vec<String>) -> String {
+    if query.is_empty() {
+        path.to_owned()
+    } else {
+        format!("{path}?{}", query.join("&"))
+    }
 }
 
 fn four_k(service: &Value) -> bool {
@@ -710,7 +767,7 @@ mod tests {
             key: None,
             order: None,
             transport: None,
-            how: String::from("/api/channels/GR/26/stream?decode=1"),
+            how: String::from("/api/channels/GR/26/stream"),
             container: Container::Ts,
         };
         let why = source.open(&channel).err().expect("refused");
@@ -719,6 +776,47 @@ mod tests {
             matches!(&why, Error::Refused(said) if said == NOTHING_CAME),
             "{why}"
         );
+    }
+
+    #[test]
+    fn decode_follows_the_setting_of_the_source() {
+        use std::io::Read as _;
+        let asked_for = |decode: bool| {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+            let url = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+            let heard = std::thread::spawn(move || {
+                let (mut asked, _) = listener.accept().expect("a request");
+                let mut request = Vec::new();
+                let mut piece = [0u8; 1024];
+                while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                    match asked.read(&mut piece) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&piece[..read]),
+                    }
+                }
+                let request = String::from_utf8_lossy(&request).into_owned();
+                request.lines().next().unwrap_or_default().to_owned()
+            });
+            let undecoded: &[&str] = if decode { &[] } else { &[&url] };
+            set_undecoded(undecoded.iter().copied());
+            let mut source = Mirakurun::at(&url).unwrap();
+            let channel = Channel {
+                name: String::from("ゼロウェーブ教育"),
+                key: None,
+                order: None,
+                transport: None,
+                how: String::from("/api/channels/GR/26/stream"),
+                container: Container::Ts,
+            };
+            let _ = source.open(&channel);
+            heard.join().unwrap()
+        };
+        assert_eq!(
+            asked_for(true),
+            "GET /api/channels/GR/26/stream?decode=1 HTTP/1.1"
+        );
+        assert_eq!(asked_for(false), "GET /api/channels/GR/26/stream HTTP/1.1");
+        set_undecoded([]);
     }
 
     #[test]
@@ -756,7 +854,7 @@ mod tests {
         let bs10 = service(r#"{"id": 400201, "channel": {"type": "BS", "channel": "16626"}}"#);
         assert_eq!(
             how(&bs10, &carriers(), By::Auto).unwrap(),
-            "/api/channels/BS/23/stream?decode=1&tsmfRelTs=2"
+            "/api/channels/BS/23/stream?tsmfRelTs=2"
         );
     }
 
@@ -800,11 +898,11 @@ mod tests {
         );
         assert_eq!(
             how(&four, &carriers(), By::Auto).unwrap(),
-            "/api/channels/BS4K/45234/stream?decode=1&format=tlv"
+            "/api/channels/BS4K/45234/stream?format=tlv"
         );
         assert_eq!(
             how(&four, &Carriers::default(), By::Auto).unwrap(),
-            "/api/services/1100221/stream?decode=1&format=tlv"
+            "/api/services/1100221/stream?format=tlv"
         );
         assert!(four_k(&four));
     }
@@ -817,7 +915,7 @@ mod tests {
         );
         assert_eq!(
             how(&terrestrial, &carriers(), By::Auto).unwrap(),
-            "/api/channels/GR/49/stream?decode=1"
+            "/api/channels/GR/49/stream"
         );
         assert!(!four_k(&terrestrial));
     }
@@ -830,7 +928,7 @@ mod tests {
         );
         assert_eq!(
             how(&sky, &carriers(), By::Auto).unwrap(),
-            "/api/channels/SKY/561250/stream?decode=1"
+            "/api/channels/SKY/561250/stream"
         );
     }
 
@@ -842,7 +940,7 @@ mod tests {
         );
         assert_eq!(
             how(&terrestrial, &carriers(), By::Auto).unwrap(),
-            "/api/services/3275101024/stream?decode=1"
+            "/api/services/3275101024/stream"
         );
     }
 
@@ -854,15 +952,15 @@ mod tests {
         );
         assert_eq!(
             how(&sky, &carriers(), By::Service).unwrap(),
-            "/api/services/1033293/stream?decode=1"
+            "/api/services/1033293/stream"
         );
         assert_eq!(
             how(&sky, &Carriers::default(), By::Channel).unwrap(),
-            "/api/channels/SKY/16425/stream?decode=1"
+            "/api/channels/SKY/16425/stream"
         );
         assert_eq!(
             how(&sky, &carriers(), By::Channel).unwrap(),
-            "/api/channels/SKY/561250/stream?decode=1"
+            "/api/channels/SKY/561250/stream"
         );
         assert_eq!(By::parse("channel"), Some(By::Channel));
         assert_eq!(By::parse("service"), Some(By::Service));
@@ -877,6 +975,26 @@ mod tests {
         );
         assert_eq!(
             how(&sky, &Carriers::default(), By::Auto).unwrap(),
+            "/api/services/1033293/stream"
+        );
+    }
+
+    #[test]
+    fn decode_is_put_when_the_stream_is_opened() {
+        assert_eq!(
+            with_decode("/api/channels/BS/23/stream?tsmfRelTs=2", true),
+            "/api/channels/BS/23/stream?decode=1&tsmfRelTs=2"
+        );
+        assert_eq!(
+            with_decode("/api/channels/GR/26/stream", false),
+            "/api/channels/GR/26/stream"
+        );
+        assert_eq!(
+            with_decode("/api/services/1100221/stream?decode=1&format=tlv", false),
+            "/api/services/1100221/stream?format=tlv"
+        );
+        assert_eq!(
+            with_decode("/api/services/1033293/stream?decode=1", true),
             "/api/services/1033293/stream?decode=1"
         );
     }

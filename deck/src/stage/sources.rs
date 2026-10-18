@@ -34,6 +34,7 @@ impl Stage {
             .collect();
         catalog::refresh_mirakurun(file, &active);
         crate::pcsc::apply(file);
+        let undecoded = crate::config::apply::undecoded(file);
         let was = *self.player.options();
         let replanned = zwcore::decode::plan() != applied.plan
             || zwcore::decode::sound::sound_plan() != applied.sound_plan;
@@ -110,7 +111,7 @@ impl Stage {
             self.switch_source(wanted);
             return;
         }
-        if redecode {
+        if redecode || undecoded {
             self.reopen_current();
         }
         tracing::info!("設定を保存した");

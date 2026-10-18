@@ -110,6 +110,13 @@ pub(super) fn source(
                     &by_was,
                     BY,
                 );
+                let decode_was = was.is_none_or(|had| had.decode);
+                form.check(
+                    "",
+                    "Mirakurun でデコードする",
+                    &mut source.decode,
+                    decode_was,
+                );
                 if let Some(Err(why)) = told {
                     let colour = form.look.error;
                     let left = form.label_left();

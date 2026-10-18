@@ -149,6 +149,16 @@ pub fn choices(file: &File) -> Result<Applied, String> {
     })
 }
 
+/// `decode` を外した Mirakurun を core に渡す。変わったら `true`。
+pub fn undecoded(file: &File) -> bool {
+    zwcore::input::source::mirakurun::set_undecoded(
+        file.sources
+            .iter()
+            .filter(|source| source.kind == "mirakurun" && !source.decode)
+            .map(|source| source.url.as_str()),
+    )
+}
+
 /// コーデックごとの並びを読む。先頭に `!` の付いた物は使わない。`zerowave` は最後に使う内蔵のデコーダーで、
 /// 並びには入らない。
 pub fn plan(file: &File) -> Result<zwcore::decode::Plan, String> {
