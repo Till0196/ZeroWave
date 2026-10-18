@@ -4,7 +4,7 @@
 //! Mirakurun から放送と番組表を受ける。`/api/programs` の時刻は UNIX エポックからのミリ秒なので、
 //! [`crate::guide::Guide::wall_clock`] で実時刻に合わせる。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -15,8 +15,6 @@ use coax::json::{self, Value};
 use super::{Bytes, Channel, Error, Source, Streamed, Tuner};
 use crate::filters::{Component, Container};
 use crate::guide::{Genre, Guide, Key, Picture, Programme, Service, Told};
-
-const PRIORITY: i32 = 1;
 
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -39,14 +37,34 @@ fn unanswered(how: &str, why: std::io::Error) -> Error {
     }
 }
 
-/// 要求に `decode=1` を付けない Mirakurun（ホストとパス）。付けると Mirakurun の側の外のプログラムに通す。
-static UNDECODED: RwLock<BTreeSet<(String, String)>> = RwLock::new(BTreeSet::new());
+/// ストリームの要求に付ける物。設定のソースごとに選ぶ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Asking {
+    /// `decode=1`（Mirakurun の側の外のプログラムに通す）か `decode=0`。省くと通す側になる。
+    pub decode: bool,
+    /// `X-Mirakurun-Priority`。使用中のチューナーは、それより高い優先度の要求にだけ譲られる。
+    pub priority: i32,
+}
 
-/// 設定のソースごとの選択。変わったら `true`。
-pub fn set_undecoded<'a>(urls: impl IntoIterator<Item = &'a str>) -> bool {
-    let wanted: BTreeSet<(String, String)> =
-        urls.into_iter().filter_map(|url| split(url).ok()).collect();
-    let mut kept = UNDECODED.write().unwrap_or_else(|e| e.into_inner());
+impl Default for Asking {
+    fn default() -> Self {
+        Self {
+            decode: true,
+            priority: 0,
+        }
+    }
+}
+
+/// ホストとパスごとの [`Asking`]。無い Mirakurun は既定。
+static ASKING: RwLock<BTreeMap<(String, String), Asking>> = RwLock::new(BTreeMap::new());
+
+/// 設定のソースの URL と選択。変わったら `true`。
+pub fn set_asking<'a>(sources: impl IntoIterator<Item = (&'a str, Asking)>) -> bool {
+    let wanted: BTreeMap<(String, String), Asking> = sources
+        .into_iter()
+        .filter_map(|(url, asking)| Some((split(url).ok()?, asking)))
+        .collect();
+    let mut kept = ASKING.write().unwrap_or_else(|e| e.into_inner());
     if *kept == wanted {
         return false;
     }
@@ -79,7 +97,6 @@ pub struct Mirakurun {
     by: By,
     root: String,
     name: String,
-    priority: i32,
     /// 選局の前に切断する（チューナーが一つの相手は `503` で断る）。
     open: Option<Interrupter>,
     cut: Arc<AtomicBool>,
@@ -93,7 +110,6 @@ impl Mirakurun {
             host,
             root,
             by: By::Auto,
-            priority: PRIORITY,
             open: None,
             cut: Arc::new(AtomicBool::new(false)),
         })
@@ -245,11 +261,13 @@ impl Mirakurun {
         carriers
     }
 
-    fn decodes(&self) -> bool {
-        !UNDECODED
+    fn asking(&self) -> Asking {
+        ASKING
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .contains(&(self.host.clone(), self.root.clone()))
+            .get(&(self.host.clone(), self.root.clone()))
+            .copied()
+            .unwrap_or_default()
     }
 
     pub fn version(&self) -> Result<String, Error> {
@@ -469,11 +487,11 @@ impl Source for Mirakurun {
         self.interrupt();
         let connection = self.connect()?;
         let interrupter = connection.interrupter().ok();
-        // 優先度を送らないと、番組表を取得している常駐のクライアントからチューナーを譲ってもらえないことがある。
-        let priority = self.priority.to_string();
+        let asking = self.asking();
+        let priority = asking.priority.to_string();
         let answer = http::get(
             connection,
-            &format!("{}{}", self.root, with_decode(&channel.how, self.decodes())),
+            &format!("{}{}", self.root, with_decode(&channel.how, asking.decode)),
             self.host.as_str(),
             &[("X-Mirakurun-Priority", priority.as_str())],
         )
@@ -593,9 +611,7 @@ fn stream<const N: usize>(path: &str, query: [Option<String>; N]) -> String {
 /// 開くときに `decode` を設定に合わせて付ける（一覧と覚えておく `how` は設定に依らない）。
 fn with_decode(how: &str, decode: bool) -> String {
     let (path, query) = how.split_once('?').unwrap_or((how, ""));
-    let query = decode
-        .then(|| String::from("decode=1"))
-        .into_iter()
+    let query = std::iter::once(format!("decode={}", u8::from(decode)))
         .chain(
             query
                 .split('&')
@@ -779,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_follows_the_setting_of_the_source() {
+    fn decode_and_priority_follow_the_setting_of_the_source() {
         use std::io::Read as _;
         let asked_for = |decode: bool| {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
@@ -795,10 +811,17 @@ mod tests {
                     }
                 }
                 let request = String::from_utf8_lossy(&request).into_owned();
-                request.lines().next().unwrap_or_default().to_owned()
+                let first = request.lines().next().unwrap_or_default().to_owned();
+                assert!(request.contains("X-Mirakurun-Priority: 3\r\n"), "{request}");
+                first
             });
-            let undecoded: &[&str] = if decode { &[] } else { &[&url] };
-            set_undecoded(undecoded.iter().copied());
+            set_asking([(
+                url.as_str(),
+                Asking {
+                    decode,
+                    priority: 3,
+                },
+            )]);
             let mut source = Mirakurun::at(&url).unwrap();
             let channel = Channel {
                 name: String::from("ゼロウェーブ教育"),
@@ -815,8 +838,11 @@ mod tests {
             asked_for(true),
             "GET /api/channels/GR/26/stream?decode=1 HTTP/1.1"
         );
-        assert_eq!(asked_for(false), "GET /api/channels/GR/26/stream HTTP/1.1");
-        set_undecoded([]);
+        assert_eq!(
+            asked_for(false),
+            "GET /api/channels/GR/26/stream?decode=0 HTTP/1.1"
+        );
+        set_asking([]);
     }
 
     #[test]
@@ -987,11 +1013,11 @@ mod tests {
         );
         assert_eq!(
             with_decode("/api/channels/GR/26/stream", false),
-            "/api/channels/GR/26/stream"
+            "/api/channels/GR/26/stream?decode=0"
         );
         assert_eq!(
             with_decode("/api/services/1100221/stream?decode=1&format=tlv", false),
-            "/api/services/1100221/stream?format=tlv"
+            "/api/services/1100221/stream?decode=0&format=tlv"
         );
         assert_eq!(
             with_decode("/api/services/1033293/stream?decode=1", true),

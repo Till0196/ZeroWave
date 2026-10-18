@@ -149,13 +149,21 @@ pub fn choices(file: &File) -> Result<Applied, String> {
     })
 }
 
-/// `decode` を外した Mirakurun を core に渡す。変わったら `true`。
-pub fn undecoded(file: &File) -> bool {
-    zwcore::input::source::mirakurun::set_undecoded(
+/// Mirakurun のソースごとのデコードと優先度を core に渡す。変わったら `true`。
+pub fn mirakurun_asking(file: &File) -> bool {
+    zwcore::input::source::mirakurun::set_asking(
         file.sources
             .iter()
-            .filter(|source| source.kind == "mirakurun" && !source.decode)
-            .map(|source| source.url.as_str()),
+            .filter(|source| source.kind == "mirakurun")
+            .map(|source| {
+                (
+                    source.url.as_str(),
+                    zwcore::input::source::mirakurun::Asking {
+                        decode: source.decode,
+                        priority: source.priority,
+                    },
+                )
+            }),
     )
 }
 

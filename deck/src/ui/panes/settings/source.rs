@@ -117,6 +117,8 @@ pub(super) fn source(
                     &mut source.decode,
                     decode_was,
                 );
+                let priority_was = was.map_or(0, |had| had.priority);
+                form.slider("優先度", &mut source.priority, priority_was, -10..=10, "");
                 if let Some(Err(why)) = told {
                     let colour = form.look.error;
                     let left = form.label_left();
