@@ -156,7 +156,7 @@ fn name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-fn expand(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> String {
+pub(crate) fn expand(value: &str, lookup: &impl Fn(&str) -> Option<String>) -> String {
     let mut out = String::new();
     let mut rest = value;
     while let Some(at) = rest.find('$') {

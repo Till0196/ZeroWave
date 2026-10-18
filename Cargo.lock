@@ -3068,4 +3068,5 @@ dependencies = [
  "vello_cpu",
  "wasmtime",
  "webpki-roots",
+ "windows",
 ]
