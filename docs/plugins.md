@@ -8,6 +8,8 @@
   `Stream` を実装して `zwsdk::export_stream!` で公開します。
   native にビルドすればそのままテストできます（`plug::abi::native`）。
   `plug::host` は本体が提供する汎用の API（時計・設定・フォント・通信・プロセス・ソケット・ファイル・チューナー・リモコン・通知）です。
+  ソケット（`zw_sock_v1`）の接続先は `kind = "socket"` のキーにユーザーが入れた値で、ドメインソケットのパス、`host:port`（TCP）、Windows の名前付きパイプ（`\\.\pipe\…`）のどれかです。
+  値の `$名前`・`${名前}` は本体の環境変数で展開するので、`$XDG_RUNTIME_DIR/…` や macOS の `$TMPDIR/…` のようにも書けます。
 - `zwsdk::host`（feature `host`）：ホスト側。
   マニフェスト（`zw_manifest` か `manifest.json`）を読んで hook ごとにインスタンスを作ります。
   ビルドした物は `.cwasm` として、プラグインフォルダーの隣の `plugins_cache/` に残します。

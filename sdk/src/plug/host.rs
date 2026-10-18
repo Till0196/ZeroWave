@@ -611,6 +611,7 @@ pub mod proc {
 }
 
 /// 接続先は `kind = "socket"` のキーの値。パスならドメインソケット、`host:port` なら TCP、空なら coaxd。
+/// Windows の `\\.\pipe\…` は名前付きパイプ。値の `$名前`・`${名前}` は本体の環境変数で展開する。
 pub mod sock {
     #[cfg(target_arch = "wasm32")]
     use super::take_buf;
