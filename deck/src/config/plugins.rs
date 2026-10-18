@@ -223,6 +223,13 @@ static ASKED: Mutex<Vec<Asked>> = Mutex::new(Vec::new());
 
 static CHANNELS: RwLock<Option<zwsdk::control::Channels>> = RwLock::new(None);
 
+static NOW: RwLock<Option<zwsdk::control::Now>> = RwLock::new(None);
+
+/// いま見ている局のロゴ（種類ごと）。ほかの局のロゴは渡さない（番組表はステージのスレッドにある）。
+pub type Logos = ((u16, u16), Vec<Arc<zwcore::guide::Logo>>);
+
+static LOGOS: RwLock<Option<Logos>> = RwLock::new(None);
+
 #[derive(Debug)]
 struct Remote;
 
@@ -252,6 +259,37 @@ impl zwsdk::host::Controls for Remote {
             .collect();
         channels
     }
+
+    fn now(&self) -> zwsdk::control::Now {
+        NOW.read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or_default()
+    }
+
+    fn logo(&self, network: u16, service: u16, logo_type: u8) -> Option<Vec<u8>> {
+        let held = LOGOS.read().unwrap_or_else(|e| e.into_inner());
+        let (station, logos) = held.as_ref()?;
+        if *station != (network, service) {
+            return None;
+        }
+        let logo = if logo_type == zwsdk::control::LOGO_ANY {
+            zwcore::guide::logo::PREFERRED
+                .iter()
+                .find_map(|want| logos.iter().find(|logo| logo.logo_type == *want))
+        } else {
+            logos.iter().find(|logo| logo.logo_type == logo_type)
+        }?;
+        Some(logo.png_with_palette())
+    }
+
+    fn host(&self) -> zwsdk::control::Host {
+        zwsdk::control::Host {
+            name: String::from("ZeroWave"),
+            version: String::from(env!("CARGO_PKG_VERSION")),
+            build: String::from(env!("ZW_BUILD").trim()),
+        }
+    }
 }
 
 fn ask(asked: Asked) {
@@ -268,6 +306,11 @@ pub fn take_asked() -> Vec<Asked> {
 
 pub fn set_channels(channels: zwsdk::control::Channels) {
     *CHANNELS.write().unwrap_or_else(|e| e.into_inner()) = Some(channels);
+}
+
+pub fn set_now(now: zwsdk::control::Now, logos: Option<Logos>) {
+    *NOW.write().unwrap_or_else(|e| e.into_inner()) = Some(now);
+    *LOGOS.write().unwrap_or_else(|e| e.into_inner()) = logos;
 }
 
 pub fn take_notices() -> Vec<zwsdk::ui::Notice> {

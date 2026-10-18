@@ -65,6 +65,8 @@ stream のプラグインはマニフェストの `order` の小さい順に通�
 - `ui`：メニュー・ページ・通知を足します。
   プラグインはウィジェットの並びを返し、レンダリングは本体が行います（`zwsdk::plug::Ui` と `zwsdk::export_ui!`）。
 - マニフェストの `hooks` に `control` を書くとリモコン API（`zw_control_v1`）を、`tuners` を書くとチューナーの貸し出しを使えます。
+  リモコン API では、選局やキー操作のほか、いま見ている局と番組（`now`：サービス名・事業者名・ロゴ ID、現在と次の番組の名前・説明・拡張説明・ジャンル・時刻）、局ロゴの PNG（`logo`、deck はいま見ている局の分だけ）、本体の名前とバージョン（`host`）を、どの hook からでも取りに行けます（TVTest の `GetServiceInfo`・`GetCurrentProgramInfo`・`GetLogo`・`GetHostInfo` に当たる）。
+  放送ソースが無く録画だけを見ているときも、ストリームの SDT・EIT から分かる分は入ります。
 - `video`：映像のフィルターです。
   プラグインはローダーで、パスの構成（`zwsdk::video::Graph`：WGSL のパスの並び、中間のテクスチャ、一つの入力から何枚出すか）を返すだけです。
   画素を処理するのは本体の GPU です（`zwcore::output::video::hook`）。
