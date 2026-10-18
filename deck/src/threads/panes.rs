@@ -168,9 +168,11 @@ impl Panes {
             return;
         };
         let file = self.file.take().unwrap_or_default();
-        let screen = Screen {
+        let to = self.to.clone();
+        // スレッドの中で作る（macOS の egui_winit::State は Send でない）。
+        let screen = move || Screen {
             drop_at: std::collections::HashMap::new(),
-            to: self.to.clone(),
+            to,
             to_broadcast,
             shown,
             drawn_shown: None,
@@ -227,7 +229,7 @@ impl Panes {
             panel_dropped: false,
         };
         match crate::window::ending::Thread::spawn("panes", "別ウィンドウ", move |_told| {
-            screen.run()
+            screen().run()
         }) {
             Ok(thread) => self.thread = Some(thread),
             Err(error) => tracing::warn!("別ウィンドウのスレッドを起動できない: {error}"),
