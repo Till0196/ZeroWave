@@ -42,6 +42,18 @@ pub trait Controls: Send + Sync {
     fn act(&self, name: &str) -> bool;
     fn tune(&self, network: u16, service: u16) -> bool;
     fn channels(&self) -> crate::control::Channels;
+    /// いま見ている局と番組。
+    fn now(&self) -> crate::control::Now {
+        crate::control::Now::default()
+    }
+    /// 局ロゴの PNG。`logo_type` は 0〜7 か [`crate::control::LOGO_ANY`]。
+    fn logo(&self, network: u16, service: u16, logo_type: u8) -> Option<Vec<u8>> {
+        let _ = (network, service, logo_type);
+        None
+    }
+    fn host(&self) -> crate::control::Host {
+        crate::control::Host::default()
+    }
 }
 
 pub type Control = std::sync::Arc<dyn Controls>;
@@ -333,6 +345,34 @@ pub(crate) fn link(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
         |mut caller: Caller<'_, HostState>| -> u32 {
             let control = caller.data().io.control.clone();
             let answer = control.map(|control| crate::ui::to_json(&control.channels()));
+            give(&mut caller, answer)
+        },
+    )?;
+    linker.func_wrap(
+        abi::import::CONTROL,
+        "now",
+        |mut caller: Caller<'_, HostState>| -> u32 {
+            let control = caller.data().io.control.clone();
+            let answer = control.map(|control| crate::ui::to_json(&control.now()));
+            give(&mut caller, answer)
+        },
+    )?;
+    linker.func_wrap(
+        abi::import::CONTROL,
+        "logo",
+        |mut caller: Caller<'_, HostState>, network: u32, service: u32, logo_type: u32| -> u32 {
+            let control = caller.data().io.control.clone();
+            let png = control
+                .and_then(|control| control.logo(network as u16, service as u16, logo_type as u8));
+            give(&mut caller, png)
+        },
+    )?;
+    linker.func_wrap(
+        abi::import::CONTROL,
+        "host",
+        |mut caller: Caller<'_, HostState>| -> u32 {
+            let control = caller.data().io.control.clone();
+            let answer = control.map(|control| crate::ui::to_json(&control.host()));
             give(&mut caller, answer)
         },
     )?;

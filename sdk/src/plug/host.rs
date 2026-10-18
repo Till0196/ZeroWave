@@ -202,6 +202,12 @@ mod wasm {
         pub safe fn control_tune(network: u32, service: u32) -> u32;
         #[link_name = "channels"]
         pub safe fn control_channels() -> u32;
+        #[link_name = "now"]
+        pub safe fn control_now() -> u32;
+        #[link_name = "logo"]
+        pub safe fn control_logo(network: u32, service: u32, logo_type: u32) -> u32;
+        #[link_name = "host"]
+        pub safe fn control_host() -> u32;
     }
 }
 
@@ -255,6 +261,49 @@ pub mod control {
         #[cfg(target_arch = "wasm32")]
         {
             let handle = super::wasm::control_channels();
+            let bytes = super::take_buf(handle)?;
+            crate::ui::from_json(&bytes).ok()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        None
+    }
+
+    /// いま見ている局と番組。
+    pub fn now() -> Option<crate::control::Now> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let handle = super::wasm::control_now();
+            let bytes = super::take_buf(handle)?;
+            crate::ui::from_json(&bytes).ok()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        None
+    }
+
+    /// 局ロゴの PNG。`logo_type` は 0〜7 か [`crate::control::LOGO_ANY`]。
+    /// 本体によってはいま見ている局の分だけを返す。
+    pub fn logo(network: u16, service: u16, logo_type: u8) -> Option<Vec<u8>> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let handle = super::wasm::control_logo(
+                u32::from(network),
+                u32::from(service),
+                u32::from(logo_type),
+            );
+            super::take_buf(handle)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let _ = (network, service, logo_type);
+            None
+        }
+    }
+
+    /// 本体の名前とバージョン。
+    pub fn host() -> Option<crate::control::Host> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let handle = super::wasm::control_host();
             let bytes = super::take_buf(handle)?;
             crate::ui::from_json(&bytes).ok()
         }

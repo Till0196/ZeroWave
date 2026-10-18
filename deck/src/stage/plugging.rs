@@ -18,6 +18,7 @@ impl Stage {
         }
         self.plugin_checked = Instant::now();
         self.tell_channels();
+        self.tell_now();
         let video = self.player.video_stats();
         let now = Instant::now();
         if self
@@ -190,6 +191,68 @@ impl Stage {
                 .map(|key| (key.network, key.service)),
             actions: Vec::new(),
         });
+    }
+
+    /// リモコン API の `now` と `logo`。局名は番組表、無ければストリームの SDT から。
+    fn tell_now(&self) {
+        let tables = self.player.tables();
+        let key = tables.watching;
+        let station = key.map(|key| {
+            let service = self.guide.service(key);
+            let sdt = tables
+                .neighbours
+                .iter()
+                .find(|told| told.network == key.network && told.service == key.service);
+            zwsdk::control::Station {
+                network: key.network,
+                transport: sdt
+                    .map(|told| told.transport)
+                    .or_else(|| tables.identity.map(|identity| identity.transport))
+                    .unwrap_or_default(),
+                service: key.service,
+                name: service
+                    .map(|service| service.name.clone())
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| sdt.map(|told| told.name.clone()))
+                    .unwrap_or_default(),
+                provider: sdt.map(|told| told.provider.clone()).unwrap_or_default(),
+                band: crate::plugin_ui::band_name(key.network),
+                remote: service.and_then(|service| service.remote_key),
+                logo_id: service.and_then(|service| service.logo_id),
+            }
+        });
+        let now = zwsdk::control::Now {
+            station,
+            event: tables.now.as_ref().map(event_of),
+            next: tables.next.as_ref().map(event_of),
+            recording: self.player.is_recording(),
+        };
+        let logos = key.map(|key| {
+            let logos = zwcore::guide::logo::PREFERRED
+                .iter()
+                .filter_map(|logo_type| self.guide.logo(key, *logo_type).cloned())
+                .collect();
+            ((key.network, key.service), logos)
+        });
+        crate::config::plugins::set_now(now, logos);
+    }
+}
+
+fn event_of(programme: &zwcore::guide::Programme) -> zwsdk::control::Event {
+    // 番組表の時刻は壁時計をゾーン無しで秒にしたもの。
+    let unix = |moment: i64| moment - i64::from(zwcore::guide::JST_OFFSET);
+    zwsdk::control::Event {
+        id: programme.event,
+        name: programme.title.clone(),
+        text: programme.detail.clone(),
+        extended: programme.extended.clone(),
+        genres: programme
+            .genres
+            .iter()
+            .map(|genre| (genre.large, genre.middle))
+            .collect(),
+        start: programme.start.map(unix),
+        duration: programme.seconds,
     }
 }
 
