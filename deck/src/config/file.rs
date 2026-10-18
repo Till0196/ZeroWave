@@ -54,7 +54,7 @@ pub struct General {
     pub volume: u32,
     pub always_on_top: bool,
     pub single_instance: bool,
-    pub no_screensaver: bool,
+    pub no_sleep: bool,
     pub hide_cursor: u32,
     pub title: String,
     /// 郵便番号。同じリモコン番号の局は同じ地域の局を優先（`zwcore::region`）。
@@ -70,7 +70,7 @@ impl Default for General {
             volume: 80,
             always_on_top: false,
             single_instance: false,
-            no_screensaver: true,
+            no_sleep: true,
             hide_cursor: 3,
             title: String::from("{channel} {event}"),
             zipcode: String::new(),

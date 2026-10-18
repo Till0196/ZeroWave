@@ -151,6 +151,10 @@ impl Stage {
             menu_mark: None,
             receivable: None,
             recording_guide: false,
+            no_sleep: false,
+            awake: crate::awake::Awake::default(),
+            awake_at: Instant::now(),
+            awake_read: 0,
             last: Instant::now(),
             painted: Instant::now(),
             spent: Outside::default(),
@@ -200,6 +204,7 @@ impl Stage {
         self.plugins_seen = Some((file.data.plugins.clone(), file.data.disabled.clone()));
         self.apply_channel_prefs(&file);
         self.volume_hold = file.osd.fade.max(1) as f32;
+        self.no_sleep = file.general.no_sleep;
         let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.open_painter()));
         let opened = opened.unwrap_or_else(|panic| {
             crate::draw::settle_panic(panic, self.device().as_ref());

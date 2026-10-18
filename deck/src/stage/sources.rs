@@ -25,6 +25,7 @@ impl Stage {
         self.choices.knobs = applied.choices.knobs;
         self.apply_channel_prefs(file);
         self.volume_hold = file.osd.fade.max(1) as f32;
+        self.no_sleep = file.general.no_sleep;
         // 他のプロファイルの Mirakurun からもサービス一覧を取得してキャッシュする。
         self.catalog_due = true;
         let active: Vec<String> = openings(file, &crate::config::load_state().profile)

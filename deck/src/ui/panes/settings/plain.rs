@@ -179,12 +179,12 @@ pub(super) fn general(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File)
         loaded.general.single_instance,
     );
     form.section("画面");
-    form.key("general.no_screensaver");
+    form.key("general.no_sleep");
     form.check(
         "",
-        "再生中はスクリーンセーバーを止める",
-        &mut edited.general.no_screensaver,
-        loaded.general.no_screensaver,
+        "再生中はスクリーンセーバーとスリープを止める",
+        &mut edited.general.no_sleep,
+        loaded.general.no_sleep,
     );
     form.key("general.always_on_top");
     form.check(

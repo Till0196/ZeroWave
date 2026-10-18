@@ -9,6 +9,7 @@
 #![windows_subsystem = "windows"]
 
 mod audio;
+mod awake;
 mod capture;
 mod check;
 mod choice;

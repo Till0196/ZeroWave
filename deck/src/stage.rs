@@ -405,6 +405,12 @@ pub struct Stage {
     menu_mark: Option<MenuMark>,
     receivable: Option<Arc<std::collections::BTreeSet<zwcore::guide::Key>>>,
     recording_guide: bool,
+    /// `general.no_sleep`。
+    no_sleep: bool,
+    awake: crate::awake::Awake,
+    awake_at: Instant,
+    /// 前に見たときの読んだバイト数（ストリームが流れているかを見る）。
+    awake_read: u64,
     hidden: Vec<crate::config::key::KeyPattern>,
     plugins_seen: Option<(String, Vec<String>)>,
     oneseg: Option<(zwcore::guide::Key, zwcore::guide::Key)>,

@@ -94,6 +94,7 @@ impl Stage {
             self.ended = false;
         }
         self.compose(tick.did);
+        self.keep_awake();
         self.spent.say();
         // Asking again at once spins a core and takes the sound callback's lock; wait a moment.
         // Also once the stream is over: the GLES 2.0 path has no surface to wait on.
@@ -112,6 +113,29 @@ impl Stage {
                 std::thread::sleep(left);
             }
         }
+    }
+
+    /// 一秒ごとに見る。映像が出ていれば画面ごと、最小化した再生と録画はスリープだけ止める。
+    fn keep_awake(&mut self) {
+        if self.awake_at.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.awake_at = Instant::now();
+        let read = self.player.read_bytes();
+        // 録画のファイルは先に読み終わるので、読んだ量では見ない。
+        let arriving = self.player.is_recording() || read != self.awake_read;
+        let flowing = arriving && !self.player.paused() && !self.ended;
+        self.awake_read = read;
+        let keep = if !self.no_sleep {
+            crate::awake::Keep::Nothing
+        } else if flowing && !self.surface.hidden() && !self.player.stalled() {
+            crate::awake::Keep::Display
+        } else if flowing || zwcore::record::state().is_some() {
+            crate::awake::Keep::System
+        } else {
+            crate::awake::Keep::Nothing
+        };
+        self.awake.set(keep);
     }
 
     fn paint(&mut self, ticks: i64) -> player::Tick {
