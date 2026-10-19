@@ -191,3 +191,13 @@ fn the_network_is_named_only_by_its_table() {
     });
     assert_eq!(network_name(&info).as_deref(), Some("ＢＳデジタル放送"));
 }
+
+#[test]
+fn an_ntp_time_is_written_in_japan_time() {
+    assert_eq!(
+        information::ntp_jst(0xee7c_1b14_0000_0000),
+        "2026-10-16 12:40:04 JST"
+    );
+    // 秒の最上位ビットが 0 なら 2036 年 2 月 7 日 6:28:16 UTC から数える。
+    assert_eq!(information::ntp_jst(1 << 32), "2036-02-07 15:28:17 JST");
+}
