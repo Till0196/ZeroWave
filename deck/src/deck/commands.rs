@@ -277,6 +277,13 @@ impl Deck {
                 )));
             }
             Command::Mute => self.say(ToStage::Act(Act::ToggleMute)),
+            Command::AudioDelayEarlier => self.say(ToStage::Act(Act::AudioDelay(Some(
+                -crate::stage::AUDIO_DELAY_STEP,
+            )))),
+            Command::AudioDelayLater => self.say(ToStage::Act(Act::AudioDelay(Some(
+                crate::stage::AUDIO_DELAY_STEP,
+            )))),
+            Command::AudioDelayReset => self.say(ToStage::Act(Act::AudioDelay(None))),
             Command::StartStopRecording => {
                 self.say(ToStage::Act(Act::Record { status_bar: false }));
             }

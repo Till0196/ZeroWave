@@ -69,6 +69,7 @@ impl Stage {
             ended: false,
             polled: Instant::now(),
             osd: ui::overlay::osd::State::default(),
+            osd_auto: ui::overlay::osd::Auto::default(),
             osd_shown: ui::overlay::osd::Osd::default(),
             scene_at: Instant::now(),
             scened: None,
@@ -114,6 +115,10 @@ impl Stage {
             errors_reset_due: None,
             reset_errors_on_tune: crate::config::load_plain().playback.reset_errors_on_tune,
             title_pattern: crate::config::load_plain().general.title,
+            audio_latency: crate::config::load_plain().audio.latency,
+            audio_delay: 0,
+            stepping: super::stepping::Stepping::default(),
+            reset_audio_delay: crate::config::load_plain().audio.reset_delay_on_change,
             inset_on: false,
             history: channels::History::default(),
             favourites: channels::Loaded::default(),
@@ -205,6 +210,7 @@ impl Stage {
         self.plugins_seen = Some((file.data.plugins.clone(), file.data.disabled.clone()));
         self.apply_channel_prefs(&file);
         self.volume_hold = file.osd.fade.max(1) as f32;
+        self.osd_auto = ui::overlay::osd::Auto::of(&file.osd);
         self.no_sleep = file.general.no_sleep;
         let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.open_painter()));
         let opened = opened.unwrap_or_else(|panic| {

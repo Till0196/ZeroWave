@@ -5,7 +5,36 @@
 
 use super::*;
 
+/// 音声の遅延は −1000〜1000 ミリ秒（`--audio-latency` と同じ）。正の音ずれ補正は音声を遅らせるので引く。
+fn delayed(latency: i32, delay: i32) -> i32 {
+    (latency - delay).clamp(-1000, 1000)
+}
+
 impl Stage {
+    /// 音ずれ補正を `by` ミリ秒動かす。`None` は 0 に戻す。
+    pub(super) fn audio_delay(&mut self, by: Option<i32>) {
+        let delay = match by {
+            Some(by) => (self.audio_delay + by).clamp(-1000, 1000),
+            None => 0,
+        };
+        self.set_audio_delay(delay);
+        self.toast(&format!("音ずれ補正 {delay:+} ms"));
+    }
+
+    fn set_audio_delay(&mut self, delay: i32) {
+        self.audio_delay = delay;
+        let mut options = *self.player.options();
+        options.audio_latency = delayed(self.audio_latency, delay);
+        self.player.set_decoding(&options);
+    }
+
+    /// 選局したら音ずれ補正を戻す（`audio.reset_delay_on_change`）。
+    pub(super) fn reset_audio_delay_on_tune(&mut self) {
+        if self.reset_audio_delay && self.audio_delay != 0 {
+            self.set_audio_delay(0);
+        }
+    }
+
     pub(super) fn settings(&mut self, file: &crate::config::File) {
         self.frame = file.video.frame.clone();
         self.reset_errors_on_tune = file.playback.reset_errors_on_tune;
@@ -21,7 +50,10 @@ impl Stage {
                 return;
             }
         };
-        let options = applied.choices.options;
+        let mut options = applied.choices.options;
+        self.audio_latency = options.audio_latency;
+        self.reset_audio_delay = file.audio.reset_delay_on_change;
+        options.audio_latency = delayed(self.audio_latency, self.audio_delay);
         self.player.set_mix(options.mix);
         if options.dual_mono != self.player.dual_mono() {
             self.player.set_dual_mono(options.dual_mono);
@@ -30,6 +62,7 @@ impl Stage {
         self.choices.knobs = applied.choices.knobs;
         self.apply_channel_prefs(file);
         self.volume_hold = file.osd.fade.max(1) as f32;
+        self.osd_auto = ui::overlay::osd::Auto::of(&file.osd);
         self.no_sleep = file.general.no_sleep;
         // 他のプロファイルの Mirakurun からもサービス一覧を取得してキャッシュする。
         self.catalog_due = true;
@@ -179,6 +212,7 @@ impl Stage {
         };
         // ここから下はプロファイルの上書きを重ねた物で（`[profile.channel]`）。
         let file = &crate::config::layered(file, &profile);
+        self.stepping = super::stepping::Stepping::of(&file.operation);
         zwcore::region::set_postal(&file.general.zipcode);
         crate::config::plugins::set_receiver(
             "receiver.zipcode",

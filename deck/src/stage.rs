@@ -61,6 +61,7 @@ mod run;
 mod serve;
 mod setup;
 mod sources;
+mod stepping;
 mod surface;
 #[cfg(test)]
 mod tests;
@@ -334,6 +335,7 @@ pub struct Stage {
     profile_pending: bool,
     polled: Instant,
     osd: ui::overlay::osd::State,
+    osd_auto: ui::overlay::osd::Auto,
     osd_shown: ui::overlay::osd::Osd,
     scene_at: Instant,
     scened: Option<(u64, (u32, u32))>,
@@ -386,6 +388,12 @@ pub struct Stage {
     reset_errors_on_tune: bool,
     /// ウィンドウの題の形（`general.title`）。
     title_pattern: String,
+    /// 設定の音ずれ補正（`audio.latency`）。
+    audio_latency: i32,
+    /// メニューやキーで足した音ずれ補正。
+    audio_delay: i32,
+    reset_audio_delay: bool,
+    stepping: stepping::Stepping,
     frame: crate::config::file::Frame,
     inset_on: bool,
     history: channels::History,
@@ -484,6 +492,8 @@ impl std::fmt::Debug for Stage {
 
 const TABLES_EVERY: Duration = Duration::from_millis(250);
 pub(crate) const TOAST_FOR: f32 = 3.5;
+/// 音ずれ補正を一度に動かすミリ秒。
+pub(crate) const AUDIO_DELAY_STEP: i32 = 50;
 pub(crate) const TOAST_FADE: f32 = 0.35;
 
 const POLL_EVERY: Duration = Duration::from_secs(1);

@@ -809,7 +809,8 @@ impl Stage {
         self.said = None;
         self.seeking = false;
         self.seek_settling = false;
-        self.osd.show();
+        self.osd
+            .show_on(self.osd_auto, ui::overlay::osd::Why::Channel);
         self.osded = None;
     }
 
@@ -1147,38 +1148,41 @@ impl Stage {
     pub(super) fn tell(&mut self, said: &str) {
         tracing::info!("{said}");
         self.said = Some(said.to_owned());
-        self.osd.show();
+        self.osd.show(self.osd_auto);
     }
 
     pub(super) fn step_channel(&mut self, forward: bool) {
         let Some(watching) = self.player.tables().watching else {
             return;
         };
-        let keys = if self.live.is_some() {
-            self.keys_of(Band::of(watching.network))
+        let from = self.asked_key.unwrap_or(watching);
+        let now = self.guide.now_or_machine();
+        let next = if self.live.is_some() {
+            let band = Band::of(watching.network);
+            let only = self.receivable.as_deref();
+            let services: Vec<&zwcore::guide::Service> = self
+                .guide
+                .channels()
+                .filter(|service| service.band() == band)
+                .filter(|service| only.is_none_or(|only| only.contains(&service.key())))
+                .collect();
+            super::stepping::next(&services, from, forward, self.stepping, |key| {
+                self.guide.at(key, now)
+            })
         } else {
             let tables = self.player.tables();
-            let mut services: Vec<&zwcore::guide::Service> = tables
+            let services: Vec<&zwcore::guide::Service> = tables
                 .services
                 .iter()
                 .filter(|service| service.watchable())
                 .collect();
-            services.sort_by_key(|service| service.order());
-            services.into_iter().map(|service| service.key()).collect()
+            super::stepping::next(&services, from, forward, self.stepping, |key| {
+                self.guide.at(key, now)
+            })
         };
-        let from = self.asked_key.unwrap_or(watching);
-        let Some(at) = keys.iter().position(|key| *key == from) else {
-            return;
-        };
-        if keys.len() < 2 {
-            return;
+        if let Some(next) = next {
+            self.tune(next);
         }
-        let next = if forward {
-            (at + 1) % keys.len()
-        } else {
-            (at + keys.len() - 1) % keys.len()
-        };
-        self.tune(keys[next]);
     }
 }
 
@@ -1242,7 +1246,8 @@ impl Stage {
             if self.seeking {
                 self.seeking = false;
             } else if was.is_none() {
-                self.osd.show();
+                self.osd
+                    .show_on(self.osd_auto, ui::overlay::osd::Why::Channel);
             }
             self.osded = None;
         }

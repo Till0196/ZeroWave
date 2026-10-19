@@ -59,7 +59,8 @@ impl Stage {
                     self.seen.map(|(_, event)| event),
                     seen.map(|(_, event)| event)
                 );
-                self.osd.show();
+                self.osd
+                    .show_on(self.osd_auto, ui::overlay::osd::Why::Event);
                 // 薄れ切っている間はビルドし直さないので、前の中身が一瞬出るのを防ぐ。
                 self.osded = None;
             }

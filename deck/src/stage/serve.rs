@@ -239,7 +239,7 @@ impl Stage {
             }
             Act::StepChannel(forward) => self.step_channel(forward),
             Act::TuneRemote { band, number } => self.tune_remote(band, number),
-            Act::ShowOsd => self.osd.show(),
+            Act::ShowOsd => self.osd.show(self.osd_auto),
             Act::Toast(text) => self.toast(&text),
             Act::Record { .. } => self.record(),
             Act::AddFavourite => self.add_favourite(),
@@ -297,6 +297,7 @@ impl Stage {
                 self.volume_shown = Some((Instant::now(), false));
                 self.volume_moved = Some(Instant::now());
             }
+            Act::AudioDelay(by) => self.audio_delay(by),
             Act::ToggleMute => {
                 if self.player.passes_sound_through() {
                     self.volume_shown = Some((Instant::now(), true));

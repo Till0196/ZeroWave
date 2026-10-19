@@ -195,6 +195,8 @@ pub enum Act {
     ShowOsd,
     VolumeBy(i32),
     ToggleMute,
+    /// 音ずれ補正をミリ秒だけ動かす（正は音声を遅らせる）。`None` は 0 に戻す。
+    AudioDelay(Option<i32>),
     SetVolume(u32),
     Profile(String),
     PluginPick {

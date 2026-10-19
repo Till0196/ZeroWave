@@ -586,6 +586,10 @@ pub fn entries_of(group: Group, filling: &Filling) -> Vec<Entry> {
                 logo: None,
             },
             Entry::choice("消音(M)", filling.muted, Picked::Command(Command::Mute)),
+            Entry::Separator,
+            Entry::command("音ずれ補正 音声を早める", Command::AudioDelayEarlier),
+            Entry::command("音ずれ補正 音声を遅らせる", Command::AudioDelayLater),
+            Entry::command("音ずれ補正 リセット", Command::AudioDelayReset),
         ],
         Group::Plugins => filling
             .plugins
@@ -698,6 +702,9 @@ pub enum Command {
     VolumeUp,
     VolumeDown,
     Mute,
+    AudioDelayEarlier,
+    AudioDelayLater,
+    AudioDelayReset,
     Settings,
     StreamInformation,
     DecoderInformation,

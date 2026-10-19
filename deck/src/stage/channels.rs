@@ -72,6 +72,7 @@ impl Stage {
         self.errors_reset_due = self
             .reset_errors_on_tune
             .then(|| Instant::now() + Duration::from_secs(5));
+        self.reset_audio_delay_on_tune();
         crate::config::remember_last(key);
         self.recent_serial += 1;
         self.history.visit(key);

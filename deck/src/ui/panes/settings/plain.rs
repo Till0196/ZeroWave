@@ -16,7 +16,7 @@ const WHEEL: Choices = &[
 ];
 const CHANNEL_ORDER: Choices = &[
     ("remote", "チャンネル番号順"),
-    ("service", "チャンネル一覧の並び順"),
+    ("service", "サービス ID 順"),
 ];
 const PASSTHROUGH: Choices = &[
     ("off", "しない"),

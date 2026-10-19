@@ -29,11 +29,72 @@ pub struct Osd {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct State {
     shown_at: Option<Instant>,
+    /// 薄れ始めるまでの秒。
+    hold: f32,
+}
+
+/// 番組情報を自動で出すとき。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Auto {
+    /// 出す秒。0 なら自動では出さない。
+    pub seconds: u32,
+    pub on_channel: bool,
+    pub on_event: bool,
+}
+
+impl Auto {
+    pub fn of(file: &crate::config::file::Osd) -> Self {
+        let on = |flag: &str| file.event_on.iter().any(|said| said == flag);
+        Self {
+            seconds: file.event,
+            on_channel: on("channel"),
+            on_event: on("event"),
+        }
+    }
+
+    /// 頼まれて出すときの秒。自動で出さない設定でも出す。
+    pub fn asked(self) -> f32 {
+        if self.seconds == 0 {
+            osd::SHOWN_FOR
+        } else {
+            self.seconds as f32
+        }
+    }
+}
+
+impl Default for Auto {
+    fn default() -> Self {
+        Self::of(&crate::config::file::Osd::default())
+    }
+}
+
+/// 自動で出すきっかけ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Why {
+    Channel,
+    Event,
 }
 
 impl State {
-    pub fn show(&mut self) {
+    /// 頼まれて出す（キー・メッセージ）。
+    pub fn show(&mut self, auto: Auto) {
+        self.show_for(auto.asked());
+    }
+
+    /// 選局や番組の切り替わりで出す。設定で出さないなら何もしない。
+    pub fn show_on(&mut self, auto: Auto, why: Why) {
+        let wanted = match why {
+            Why::Channel => auto.on_channel,
+            Why::Event => auto.on_event,
+        };
+        if wanted && auto.seconds > 0 {
+            self.show_for(auto.seconds as f32);
+        }
+    }
+
+    fn show_for(&mut self, seconds: f32) {
         self.shown_at = Some(Instant::now());
+        self.hold = seconds;
     }
 
     /// 局の OSD が録画に切り替えた後まで残らないように。
@@ -43,14 +104,14 @@ impl State {
 
     pub fn opacity(&mut self) -> Option<f32> {
         let since = self.shown_at?.elapsed().as_secs_f32();
-        if since >= osd::SHOWN_FOR + osd::FADE {
+        if since >= self.hold + osd::FADE {
             self.shown_at = None;
             return None;
         }
-        if since <= osd::SHOWN_FOR {
+        if since <= self.hold {
             return Some(1.0);
         }
-        Some(1.0 - (since - osd::SHOWN_FOR) / osd::FADE)
+        Some(1.0 - (since - self.hold) / osd::FADE)
     }
 
     pub fn is_shown(&self) -> bool {
@@ -460,13 +521,52 @@ mod tests {
     fn the_osd_is_shown_then_gone() {
         let mut state = State::default();
         assert!(state.opacity().is_none());
-        state.show();
+        state.show(Auto::default());
         assert_eq!(state.opacity(), Some(1.0));
-        state.shown_at = Some(
-            Instant::now() - std::time::Duration::from_secs_f32(osd::SHOWN_FOR + osd::FADE + 1.0),
-        );
+        state.shown_at =
+            Some(Instant::now() - std::time::Duration::from_secs_f32(5.0 + osd::FADE + 1.0));
         assert!(state.opacity().is_none());
         assert!(!state.is_shown());
+    }
+
+    /// 表示時間は osd.event の秒。
+    #[test]
+    fn the_osd_stays_for_the_seconds_set() {
+        let auto = Auto {
+            seconds: 20,
+            on_channel: true,
+            on_event: true,
+        };
+        let mut state = State::default();
+        state.show_on(auto, Why::Event);
+        state.shown_at = Some(Instant::now() - std::time::Duration::from_secs(10));
+        assert_eq!(state.opacity(), Some(1.0));
+        state.shown_at = Some(Instant::now() - std::time::Duration::from_secs(21));
+        assert!(state.opacity().is_none());
+    }
+
+    #[test]
+    fn the_osd_is_shown_only_when_asked_for() {
+        let channel_only = Auto {
+            seconds: 5,
+            on_channel: true,
+            on_event: false,
+        };
+        let mut state = State::default();
+        state.show_on(channel_only, Why::Event);
+        assert!(!state.is_shown(), "番組変更時に表示しない");
+        state.show_on(channel_only, Why::Channel);
+        assert!(state.is_shown());
+
+        let never = Auto {
+            seconds: 0,
+            ..channel_only
+        };
+        let mut state = State::default();
+        state.show_on(never, Why::Channel);
+        assert!(!state.is_shown(), "0 秒なら自動では出さない");
+        state.show(never);
+        assert!(state.is_shown(), "キーで頼めば出す");
     }
 }
 
