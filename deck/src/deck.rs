@@ -91,7 +91,8 @@ pub struct Deck {
     sized_at: Option<Instant>,
     sizing_from: Option<(u32, u32)>,
     size_was: Option<(u32, u32)>,
-    ratio_wanted: bool,
+    /// 大きさを変えている間に Ctrl が押された（`keep_aspect` を逆にする）。
+    ctrl_sizing: bool,
     moving: Option<Instant>,
     grabbed: bool,
     menus: menu::Menus,
@@ -197,7 +198,7 @@ impl Deck {
             sized_at: None,
             sizing_from: None,
             size_was: None,
-            ratio_wanted: false,
+            ctrl_sizing: false,
             moving: None,
             grabbed: false,
             menus: menu::Menus::none(),

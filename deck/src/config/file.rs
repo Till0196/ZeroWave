@@ -213,6 +213,7 @@ pub struct Frame {
     pub crop: [u32; 4],
     /// 全画面表示での合わせ方。`fit` / `fill` / `stretch`。
     pub fullscreen: String,
+    /// ウィンドウの大きさを変えたら、映像の縦横比に合わせる（Ctrl を押している間は逆）。
     pub keep_aspect: bool,
 }
 

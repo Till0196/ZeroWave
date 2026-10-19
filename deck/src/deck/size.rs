@@ -107,6 +107,7 @@ pub(super) fn fit_rect(area: egui::Rect, wanted: f32, ppp: f32) -> egui::Rect {
 
 impl Deck {
     /// ウィンドウの大きさが変わったのを見る。ドラッグ中は何もしない（押し戻すことになる）。
+    /// 落ち着いたら、`keep_aspect` なら映像の縦横比に合わせる（Ctrl を押していたら逆）。
     pub(super) fn settle_ratio(&mut self, ctx: &egui::Context, window: &Arc<Window>) {
         let size = ctx.input(|input| input.viewport_rect().size());
         let now = (size.x.round() as u32, size.y.round() as u32);
@@ -119,7 +120,7 @@ impl Deck {
                     was.map(|(width, height)| (width, height.saturating_sub(chrome)));
             }
             self.sized_at = Some(Instant::now());
-            self.ratio_wanted |= ctx.input(|input| input.modifiers.ctrl);
+            self.ctrl_sizing |= ctx.input(|input| input.modifiers.ctrl);
         }
         let Some(at) = self.sized_at else {
             return;
@@ -130,7 +131,12 @@ impl Deck {
         }
         self.sized_at = None;
         let from = self.sizing_from.take();
-        if !std::mem::take(&mut self.ratio_wanted) {
+        let ctrl = std::mem::take(&mut self.ctrl_sizing);
+        if self.file.video.frame.keep_aspect == ctrl {
+            return;
+        }
+        // 全画面と最大化は画面に合わせた大きさなので、縦横比では変えない。
+        if window.fullscreen().is_some() || window.is_maximized() {
             return;
         }
         self.keep_ratio(window, from, now);
@@ -143,13 +149,14 @@ impl Deck {
         if area == 0 {
             return;
         }
-        let Some((shown_w, shown_h)) = self.scene.picture else {
+        // パン&スキャンを掛けた後の形。
+        let Some(ratio) = self
+            .scene
+            .ratio
+            .filter(|ratio| ratio.is_finite() && *ratio > 0.0)
+        else {
             return;
         };
-        if shown_w == 0 || shown_h == 0 {
-            return;
-        }
-        let ratio = shown_w as f32 / shown_h as f32;
         let (was_w, was_h) = from.unwrap_or((width, area));
         let (want_w, want_h) = if width.abs_diff(was_w) >= area.abs_diff(was_h) {
             (width, (width as f32 / ratio).round().max(1.0) as u32)

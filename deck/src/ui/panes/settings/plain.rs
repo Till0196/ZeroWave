@@ -621,6 +621,7 @@ pub(super) fn display(
         &mut edited.video.frame.keep_aspect,
         loaded.video.frame.keep_aspect,
     );
+    form.hint("Ctrl を押しながら大きさを変えると、この設定の逆になります");
     form.key("video.frame.fullscreen");
     form.select(
         "全画面表示",
