@@ -69,7 +69,7 @@ impl Stage {
             ended: false,
             polled: Instant::now(),
             osd: ui::overlay::osd::State::default(),
-            osd_auto: ui::overlay::osd::Auto::default(),
+            osd_prefs: ui::overlay::osd::Prefs::default(),
             osd_shown: ui::overlay::osd::Osd::default(),
             scene_at: Instant::now(),
             scened: None,
@@ -210,7 +210,7 @@ impl Stage {
         self.plugins_seen = Some((file.data.plugins.clone(), file.data.disabled.clone()));
         self.apply_channel_prefs(&file);
         self.volume_hold = file.osd.fade.max(1) as f32;
-        self.osd_auto = ui::overlay::osd::Auto::of(&file.osd);
+        self.osd_prefs = ui::overlay::osd::Prefs::of(&file.osd);
         self.no_sleep = file.general.no_sleep;
         let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.open_painter()));
         let opened = opened.unwrap_or_else(|panic| {

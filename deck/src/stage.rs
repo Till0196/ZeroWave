@@ -335,7 +335,7 @@ pub struct Stage {
     profile_pending: bool,
     polled: Instant,
     osd: ui::overlay::osd::State,
-    osd_auto: ui::overlay::osd::Auto,
+    osd_prefs: ui::overlay::osd::Prefs,
     osd_shown: ui::overlay::osd::Osd,
     scene_at: Instant,
     scened: Option<(u64, (u32, u32))>,
@@ -565,7 +565,7 @@ const UNSEEN_FOR: Duration = Duration::from_millis(250);
 
 type SceneMark = (
     u64,
-    u32,
+    [u32; 4],
     scene::Backdrop,
     u32,
     u64,

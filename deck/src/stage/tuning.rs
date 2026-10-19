@@ -810,7 +810,7 @@ impl Stage {
         self.seeking = false;
         self.seek_settling = false;
         self.osd
-            .show_on(self.osd_auto, ui::overlay::osd::Why::Channel);
+            .show_on(self.osd_prefs, ui::overlay::osd::Why::Channel);
         self.osded = None;
     }
 
@@ -1148,7 +1148,7 @@ impl Stage {
     pub(super) fn tell(&mut self, said: &str) {
         tracing::info!("{said}");
         self.said = Some(said.to_owned());
-        self.osd.show(self.osd_auto);
+        self.osd.tell(self.osd_prefs);
     }
 
     pub(super) fn step_channel(&mut self, forward: bool) {
@@ -1247,7 +1247,7 @@ impl Stage {
                 self.seeking = false;
             } else if was.is_none() {
                 self.osd
-                    .show_on(self.osd_auto, ui::overlay::osd::Why::Channel);
+                    .show_on(self.osd_prefs, ui::overlay::osd::Why::Channel);
             }
             self.osded = None;
         }

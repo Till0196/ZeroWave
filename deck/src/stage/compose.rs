@@ -60,7 +60,7 @@ impl Stage {
                     seen.map(|(_, event)| event)
                 );
                 self.osd
-                    .show_on(self.osd_auto, ui::overlay::osd::Why::Event);
+                    .show_on(self.osd_prefs, ui::overlay::osd::Why::Event);
                 // 薄れ切っている間はビルドし直さないので、前の中身が一瞬出るのを防ぐ。
                 self.osded = None;
             }
@@ -106,11 +106,11 @@ impl Stage {
             let _ = self.guide_to.send(ToGuide::Heard(Box::new(guide)));
         }
         let backdrop = self.backdrop(drew);
-        let opacity = self.osd.opacity();
+        let shown = self.osd.shown();
         self.tell_captures();
         self.follow_sound_change();
         self.follow_picture_change();
-        self.tell_scene(backdrop, opacity, told);
+        self.tell_scene(backdrop, shown, told);
     }
 
     /// 黒はこのスレッドが映像と同じフレームに塗る。画面側にレンダリングさせると、モーダルループの間
@@ -268,10 +268,19 @@ impl Stage {
     pub(super) fn tell_scene(
         &mut self,
         backdrop: scene::Backdrop,
-        opacity: Option<f32>,
+        shown: Option<ui::overlay::osd::Shown>,
         told: u64,
     ) {
-        let shade = (opacity.unwrap_or(0.0) * 1000.0) as u32;
+        let opacity = shown.map(ui::overlay::osd::Shown::most);
+        let shade = shown.map_or([0; 4], |shown| {
+            let per_mille = |of: f32| (of * 1000.0) as u32;
+            [
+                per_mille(shown.channel),
+                per_mille(shown.event),
+                per_mille(shown.message),
+                shown.look as u32,
+            ]
+        });
         self.bring_back_toast();
         let toast = self.toast_opacity();
         let toast_shade = (toast.unwrap_or(0.0) * 1000.0) as u32;
@@ -427,7 +436,16 @@ impl Stage {
                 .filter(|_| {
                     picture.is_some() || self.player.audio_only() || self.player.data_only()
                 })
-                .map(|opacity| (self.osd_shown.clone(), opacity)),
+                .zip(shown)
+                .map(|(opacity, shown)| {
+                    (
+                        ui::overlay::osd::Osd {
+                            shown,
+                            ..self.osd_shown.clone()
+                        },
+                        opacity,
+                    )
+                }),
             strip,
             picture,
             ratio,
@@ -1053,6 +1071,7 @@ pub(super) fn osd_of(
             airtime: airtime_text(now),
             info: String::new(),
             said: said.map(str::to_owned),
+            shown: ui::overlay::osd::Shown::default(),
         };
     }
     let key = tables.watching.or(asked);
@@ -1122,6 +1141,7 @@ pub(super) fn osd_of(
             tables.sound_rate.or_else(|| player.heard_rate()),
         ),
         said: said.map(str::to_owned),
+        shown: ui::overlay::osd::Shown::default(),
     }
 }
 

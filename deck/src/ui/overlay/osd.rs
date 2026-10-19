@@ -24,45 +24,68 @@ pub struct Osd {
     pub info: String,
     /// メッセージ（選局できなかったときなど）。あれば題名の代わりに出る。
     pub said: Option<String>,
+    /// 部分ごとの濃さ。描くときに [`State::shown`] で入れる。
+    pub shown: Shown,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct State {
-    shown_at: Option<Instant>,
-    /// 薄れ始めるまでの秒。
-    hold: f32,
+/// チャンネルの出し方（`osd.channel`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Look {
+    #[default]
+    LogoAndName,
+    Name,
+    Number,
+    /// 選局しても出さない。
+    Off,
 }
 
-/// 番組情報を自動で出すとき。
+impl Look {
+    pub fn of(said: &str) -> Self {
+        match said {
+            "name" => Self::Name,
+            "number" => Self::Number,
+            "off" => Self::Off,
+            _ => Self::LogoAndName,
+        }
+    }
+}
+
+/// OSD の設定（`[osd]`）。
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Auto {
-    /// 出す秒。0 なら自動では出さない。
-    pub seconds: u32,
+pub struct Prefs {
+    /// チャンネルとメッセージを出す秒（`osd.fade`）。
+    pub fade: f32,
+    pub look: Look,
+    /// 番組情報を出す秒（`osd.event`）。0 なら自動では出さない。
+    pub event: u32,
+    /// 選局したときと番組が替わったときに番組情報を出すか。
     pub on_channel: bool,
     pub on_event: bool,
 }
 
-impl Auto {
+impl Prefs {
     pub fn of(file: &crate::config::file::Osd) -> Self {
         let on = |flag: &str| file.event_on.iter().any(|said| said == flag);
         Self {
-            seconds: file.event,
+            fade: file.fade.max(1) as f32,
+            look: Look::of(&file.channel),
+            event: file.event,
             on_channel: on("channel"),
             on_event: on("event"),
         }
     }
 
-    /// 頼まれて出すときの秒。自動で出さない設定でも出す。
-    pub fn asked(self) -> f32 {
-        if self.seconds == 0 {
+    /// 頼まれて番組情報を出すときの秒。自動で出さない設定でも出す。
+    fn asked(self) -> f32 {
+        if self.event == 0 {
             osd::SHOWN_FOR
         } else {
-            self.seconds as f32
+            self.event as f32
         }
     }
 }
 
-impl Default for Auto {
+impl Default for Prefs {
     fn default() -> Self {
         Self::of(&crate::config::file::Osd::default())
     }
@@ -75,47 +98,116 @@ pub enum Why {
     Event,
 }
 
-impl State {
-    /// 頼まれて出す（キー・メッセージ）。
-    pub fn show(&mut self, auto: Auto) {
-        self.show_for(auto.asked());
+/// 部分ごとの濃さ（0〜1）と、チャンネルの出し方。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shown {
+    pub channel: f32,
+    pub event: f32,
+    pub message: f32,
+    pub look: Look,
+}
+
+impl Default for Shown {
+    fn default() -> Self {
+        Self {
+            channel: 1.0,
+            event: 1.0,
+            message: 1.0,
+            look: Look::LogoAndName,
+        }
+    }
+}
+
+impl Shown {
+    pub fn most(self) -> f32 {
+        self.channel.max(self.event).max(self.message)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Timer(Option<(Instant, f32)>);
+
+impl Timer {
+    fn start(&mut self, hold: f32) {
+        self.0 = Some((Instant::now(), hold));
     }
 
-    /// 選局や番組の切り替わりで出す。設定で出さないなら何もしない。
-    pub fn show_on(&mut self, auto: Auto, why: Why) {
-        let wanted = match why {
-            Why::Channel => auto.on_channel,
-            Why::Event => auto.on_event,
+    fn opacity(&mut self) -> f32 {
+        let Some((at, hold)) = self.0 else {
+            return 0.0;
         };
-        if wanted && auto.seconds > 0 {
-            self.show_for(auto.seconds as f32);
+        let since = at.elapsed().as_secs_f32();
+        if since >= hold + osd::FADE {
+            self.0 = None;
+            return 0.0;
+        }
+        if since <= hold {
+            return 1.0;
+        }
+        1.0 - (since - hold) / osd::FADE
+    }
+}
+
+/// チャンネル・番組情報・メッセージは、それぞれの秒で消える。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct State {
+    channel: Timer,
+    event: Timer,
+    message: Timer,
+    look: Look,
+}
+
+impl State {
+    /// キーで頼まれて出す。チャンネルを出さない設定でも出す。
+    pub fn show(&mut self, prefs: Prefs) {
+        self.look = match prefs.look {
+            Look::Off => Look::LogoAndName,
+            look => look,
+        };
+        self.channel.start(prefs.fade);
+        self.event.start(prefs.asked());
+    }
+
+    /// 選局や番組の切り替わりで出す。設定で出さない物は出さない。
+    pub fn show_on(&mut self, prefs: Prefs, why: Why) {
+        if why == Why::Channel && prefs.look != Look::Off {
+            self.look = prefs.look;
+            self.channel.start(prefs.fade);
+        }
+        let wanted = match why {
+            Why::Channel => prefs.on_channel,
+            Why::Event => prefs.on_event,
+        };
+        if wanted && prefs.event > 0 {
+            self.event.start(prefs.event as f32);
         }
     }
 
-    fn show_for(&mut self, seconds: f32) {
-        self.shown_at = Some(Instant::now());
-        self.hold = seconds;
+    /// メッセージ（選局できなかったときなど）を出す。
+    pub fn tell(&mut self, prefs: Prefs) {
+        self.message.start(prefs.fade);
     }
 
     /// 局の OSD が録画に切り替えた後まで残らないように。
     pub fn hide(&mut self) {
-        self.shown_at = None;
+        *self = Self {
+            look: self.look,
+            ..Self::default()
+        };
     }
 
-    pub fn opacity(&mut self) -> Option<f32> {
-        let since = self.shown_at?.elapsed().as_secs_f32();
-        if since >= self.hold + osd::FADE {
-            self.shown_at = None;
-            return None;
-        }
-        if since <= self.hold {
-            return Some(1.0);
-        }
-        Some(1.0 - (since - self.hold) / osd::FADE)
+    pub fn shown(&mut self) -> Option<Shown> {
+        let shown = Shown {
+            channel: self.channel.opacity(),
+            event: self.event.opacity(),
+            message: self.message.opacity(),
+            look: self.look,
+        };
+        (shown.most() > 0.0).then_some(shown)
     }
 
     pub fn is_shown(&self) -> bool {
-        self.shown_at.is_some()
+        self.channel.0.is_some() || self.event.0.is_some() || self.message.0.is_some()
     }
 }
 
@@ -136,6 +228,14 @@ pub fn show(ui: &mut Ui, full: Rect, osd: &Osd, opacity: f32, hdr: bool) {
     );
     let painter = ui.painter().with_clip_rect(rect);
     let fade = |colour: Color32| colour.gamma_multiply(opacity);
+    // 部分の濃さは、いちばん濃い部分を `opacity` として比で掛ける。
+    let most = osd.shown.most();
+    let part = |of: f32| {
+        if most > 0.0 { opacity * of / most } else { 0.0 }
+    };
+    let channel_opacity = part(osd.shown.channel);
+    let in_channel = |colour: Color32| colour.gamma_multiply(channel_opacity);
+    let look = osd.shown.look;
     let left = rect.left() + osd::PAD_X * dp;
     let right = rect.right() - osd::PAD_X * dp;
 
@@ -154,9 +254,13 @@ pub fn show(ui: &mut Ui, full: Rect, osd: &Osd, opacity: f32, hdr: bool) {
         clock,
         fade(osd::CLOCK),
     );
-    let (titled, colour) = match &osd.said {
-        Some(said) => (crate::ui::text::badges::Titled::plain(said), osd::TROUBLE),
-        None => (osd.title.clone(), osd::TITLE),
+    let (titled, colour, title_opacity) = match &osd.said {
+        Some(said) => (
+            crate::ui::text::badges::Titled::plain(said),
+            osd::TROUBLE,
+            part(osd.shown.message.max(osd.shown.event)),
+        ),
+        None => (osd.title.clone(), osd::TITLE, part(osd.shown.event)),
     };
     let title_width = (right - left - 60.0 * dp).max(0.0);
     // タイトルは高さ 38dp のバーの中で縦に中央。
@@ -166,9 +270,9 @@ pub fn show(ui: &mut Ui, full: Rect, osd: &Osd, opacity: f32, hdr: bool) {
         title_width,
         &titled,
         crate::ui::text::font::osd(osd::TITLE_SIZE * dp),
-        fade(colour),
+        colour.gamma_multiply(title_opacity),
         crate::ui::text::badges::Look::Outlined,
-        opacity,
+        title_opacity,
     );
 
     let line = Rect::from_min_size(
@@ -182,15 +286,17 @@ pub fn show(ui: &mut Ui, full: Rect, osd: &Osd, opacity: f32, hdr: bool) {
             &painter,
             pos2(at + osd::KEY_BADGE * dp / 2.0, middle),
             osd::KEY_BADGE * dp / 2.0,
-            fade(Color32::WHITE),
+            in_channel(Color32::WHITE),
             None,
             key,
             osd::KEY_SIZE * dp,
-            fade(osd::KEY_TEXT),
+            in_channel(osd::KEY_TEXT),
         );
         at += (osd::KEY_BADGE + osd::KEY_GAP) * dp;
     }
-    if !osd.badge.is_empty() {
+    // 番号だけなら、番号の無い局だけ名前を出す。
+    let named = look != Look::Number || osd.remote_key.is_none();
+    if look == Look::LogoAndName && !osd.badge.is_empty() {
         let text_height = painter
             .layout_no_wrap(
                 "あ".to_owned(),
@@ -212,8 +318,8 @@ pub fn show(ui: &mut Ui, full: Rect, osd: &Osd, opacity: f32, hdr: bool) {
             pos2(at, middle),
             osd.logo.as_ref(),
             &osd.badge,
-            fade(osd.badge_colour),
-            fade(Color32::WHITE),
+            in_channel(osd.badge_colour),
+            in_channel(Color32::WHITE),
             osd::LOGO_SIZE * dp,
             text_height,
             osd::LOGO_PAD_X * dp,
@@ -235,46 +341,56 @@ pub fn show(ui: &mut Ui, full: Rect, osd: &Osd, opacity: f32, hdr: bool) {
     // 番組の時間は左端から幅の `AIRTIME_AT` が基本だが、局名は切らず、長ければ時間が右へ寄る。
     let airtime_left = rect.left() + rect.width() * osd::AIRTIME_AT;
     let room = (info_left - osd::LOGO_GAP * dp * 2.0 - at).max(0.0);
+    let (band_text, channel_text) = if named {
+        (osd.band.as_str(), osd.channel.as_str())
+    } else {
+        ("", "")
+    };
     let band = painter.layout_no_wrap(
-        osd.band.clone(),
+        band_text.to_owned(),
         crate::ui::text::font::osd(osd::BAND_SIZE * dp),
-        fade(osd::BAND),
+        in_channel(osd::BAND),
     );
     let channel = crate::ui::one_line(
         &painter,
-        &osd.channel,
+        channel_text,
         crate::ui::text::font::osd(osd::CHANNEL_SIZE * dp),
-        fade(osd::CHANNEL),
+        in_channel(osd::CHANNEL),
         room,
         0.0,
     );
     let channel_width = channel.size().x;
     let channel_height = channel.size().y;
-    if osd.band.is_empty() {
+    if band_text.is_empty() {
         painter.galley(
             pos2(at, middle - channel.size().y / 2.0),
             channel,
-            fade(osd::CHANNEL),
+            in_channel(osd::CHANNEL),
         );
     } else {
         let top = middle - (band.size().y + channel.size().y) / 2.0;
-        painter.galley(pos2(at, top), band.clone(), fade(osd::BAND));
-        painter.galley(pos2(at, top + band.size().y), channel, fade(osd::CHANNEL));
+        painter.galley(pos2(at, top), band.clone(), in_channel(osd::BAND));
+        painter.galley(
+            pos2(at, top + band.size().y),
+            channel,
+            in_channel(osd::CHANNEL),
+        );
     }
     if !osd.airtime.is_empty() {
+        let in_event = |colour: Color32| colour.gamma_multiply(part(osd.shown.event));
         let airtime = painter.layout_no_wrap(
             osd.airtime.clone(),
             crate::ui::text::font::osd(osd::AIRTIME_SIZE * dp),
-            fade(osd::AIRTIME),
+            in_event(osd::AIRTIME),
         );
-        let top = if osd.band.is_empty() {
+        let top = if band_text.is_empty() {
             middle - airtime.size().y / 2.0
         } else {
             middle - (band.size().y + channel_height) / 2.0
         };
         let x = airtime_left.max(at + band.size().x.max(channel_width) + osd::AIRTIME_GAP * dp);
         if x + airtime.size().x <= info_left - osd::LOGO_GAP * dp {
-            painter.galley(pos2(x, top), airtime, fade(osd::AIRTIME));
+            painter.galley(pos2(x, top), airtime, in_event(osd::AIRTIME));
         }
     }
 }
@@ -520,53 +636,114 @@ mod tests {
     #[test]
     fn the_osd_is_shown_then_gone() {
         let mut state = State::default();
-        assert!(state.opacity().is_none());
-        state.show(Auto::default());
-        assert_eq!(state.opacity(), Some(1.0));
-        state.shown_at =
-            Some(Instant::now() - std::time::Duration::from_secs_f32(5.0 + osd::FADE + 1.0));
-        assert!(state.opacity().is_none());
+        assert!(state.shown().is_none());
+        state.show(Prefs::default());
+        assert_eq!(state.shown().map(Shown::most), Some(1.0));
+        let long_ago = Instant::now() - std::time::Duration::from_secs(60);
+        state.channel.0 = state.channel.0.map(|(_, hold)| (long_ago, hold));
+        state.event.0 = state.event.0.map(|(_, hold)| (long_ago, hold));
+        assert!(state.shown().is_none());
         assert!(!state.is_shown());
     }
 
-    /// 表示時間は osd.event の秒。
-    #[test]
-    fn the_osd_stays_for_the_seconds_set() {
-        let auto = Auto {
-            seconds: 20,
+    fn prefs() -> Prefs {
+        Prefs {
+            fade: 3.0,
+            look: Look::LogoAndName,
+            event: 20,
             on_channel: true,
             on_event: true,
-        };
+        }
+    }
+
+    fn ago(state: &mut State, seconds: u64) {
+        let at = Instant::now() - std::time::Duration::from_secs(seconds);
+        for timer in [&mut state.channel, &mut state.event, &mut state.message] {
+            timer.0 = timer.0.map(|(_, hold)| (at, hold));
+        }
+    }
+
+    /// チャンネルとメッセージは osd.fade、番組情報は osd.event の秒だけ出る。
+    #[test]
+    fn each_part_stays_for_its_own_seconds() {
         let mut state = State::default();
-        state.show_on(auto, Why::Event);
-        state.shown_at = Some(Instant::now() - std::time::Duration::from_secs(10));
-        assert_eq!(state.opacity(), Some(1.0));
-        state.shown_at = Some(Instant::now() - std::time::Duration::from_secs(21));
-        assert!(state.opacity().is_none());
+        state.show_on(prefs(), Why::Channel);
+        ago(&mut state, 10);
+        let shown = state.shown().expect("番組情報は残る");
+        assert_eq!(shown.channel, 0.0);
+        assert_eq!(shown.event, 1.0);
+        ago(&mut state, 21);
+        assert!(state.shown().is_none());
+
+        let mut state = State::default();
+        state.tell(prefs());
+        let shown = state.shown().expect("メッセージ");
+        assert_eq!((shown.message, shown.channel, shown.event), (1.0, 0.0, 0.0));
+        ago(&mut state, 4);
+        assert!(state.shown().is_none());
     }
 
     #[test]
-    fn the_osd_is_shown_only_when_asked_for() {
-        let channel_only = Auto {
-            seconds: 5,
-            on_channel: true,
+    fn event_information_is_shown_only_when_asked_for() {
+        let channel_only = Prefs {
             on_event: false,
+            ..prefs()
         };
         let mut state = State::default();
         state.show_on(channel_only, Why::Event);
         assert!(!state.is_shown(), "番組変更時に表示しない");
         state.show_on(channel_only, Why::Channel);
-        assert!(state.is_shown());
+        assert_eq!(state.shown().map(|shown| shown.event), Some(1.0));
 
-        let never = Auto {
-            seconds: 0,
+        let never = Prefs {
+            event: 0,
             ..channel_only
         };
         let mut state = State::default();
         state.show_on(never, Why::Channel);
-        assert!(!state.is_shown(), "0 秒なら自動では出さない");
+        assert_eq!(
+            state.shown().map(|shown| shown.event),
+            Some(0.0),
+            "0 秒なら自動では出さない"
+        );
         state.show(never);
-        assert!(state.is_shown(), "キーで頼めば出す");
+        assert_eq!(
+            state.shown().map(|shown| shown.event),
+            Some(1.0),
+            "キーで頼めば出す"
+        );
+    }
+
+    /// osd.channel の綴りと、選局したときの出し方。
+    #[test]
+    fn the_channel_is_shown_as_set() {
+        assert_eq!(Look::of("logo+name"), Look::LogoAndName);
+        assert_eq!(Look::of("name"), Look::Name);
+        assert_eq!(Look::of("number"), Look::Number);
+        assert_eq!(Look::of("off"), Look::Off);
+
+        let off = Prefs {
+            look: Look::Off,
+            on_channel: false,
+            ..prefs()
+        };
+        let mut state = State::default();
+        state.show_on(off, Why::Channel);
+        assert!(!state.is_shown(), "表示しない");
+        state.show(off);
+        assert_eq!(
+            state.shown().map(|shown| (shown.channel, shown.look)),
+            Some((1.0, Look::LogoAndName)),
+            "キーで頼めば出す"
+        );
+
+        let number = Prefs {
+            look: Look::Number,
+            ..prefs()
+        };
+        let mut state = State::default();
+        state.show_on(number, Why::Channel);
+        assert_eq!(state.shown().map(|shown| shown.look), Some(Look::Number));
     }
 }
 

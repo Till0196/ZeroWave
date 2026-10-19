@@ -665,7 +665,7 @@ pub(super) fn osd(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) -> 
         "表示時間",
         &mut edited.osd.fade,
         loaded.osd.fade,
-        0..=30,
+        1..=30,
         "秒",
     );
     form.key("osd.font");

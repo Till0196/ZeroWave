@@ -239,7 +239,7 @@ impl Stage {
             }
             Act::StepChannel(forward) => self.step_channel(forward),
             Act::TuneRemote { band, number } => self.tune_remote(band, number),
-            Act::ShowOsd => self.osd.show(self.osd_auto),
+            Act::ShowOsd => self.osd.show(self.osd_prefs),
             Act::Toast(text) => self.toast(&text),
             Act::Record { .. } => self.record(),
             Act::AddFavourite => self.add_favourite(),
