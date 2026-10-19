@@ -101,24 +101,7 @@ pub(super) fn source(
                     url_was,
                     "http://ホスト:40772",
                 );
-                let by_was = was.map_or("auto", |had| had.by.as_str()).to_owned();
-                labelled_select(
-                    form,
-                    "ストリーム取得",
-                    ("source.by", index),
-                    &mut source.by,
-                    &by_was,
-                    BY,
-                );
-                let decode_was = was.is_none_or(|had| had.decode);
-                form.check(
-                    "",
-                    "Mirakurun でデコードする",
-                    &mut source.decode,
-                    decode_was,
-                );
-                let priority_was = was.map_or(0, |had| had.priority);
-                form.slider("優先度", &mut source.priority, priority_was, -10..=10, "");
+                mirakurun_rows(form, left + 14.0, index, source);
                 if let Some(Err(why)) = told {
                     let colour = form.look.error;
                     let left = form.label_left();
@@ -286,30 +269,6 @@ fn labelled_field(
         id,
         value,
         hint,
-    );
-}
-
-fn labelled_select(
-    form: &mut Form<'_, '_>,
-    label: &str,
-    id: (&str, usize),
-    value: &mut String,
-    was: &str,
-    choices: &[(&str, &str)],
-) {
-    let changed = value != was;
-    let value_rect = form.label_row(label, changed);
-    form.select_at(
-        Rect::from_min_size(
-            pos2(
-                value_rect.left(),
-                value_rect.center().y - skin::SELECT_HEIGHT / 2.0,
-            ),
-            vec2(form.fit(skin::SELECT_WIDTH), skin::SELECT_HEIGHT),
-        ),
-        id,
-        value,
-        choices,
     );
 }
 
@@ -1085,6 +1044,71 @@ fn lnb_row(
             skin::TEXT_SIZE - 1.0,
         );
     }
+}
+
+/// Mirakurun の要求の仕方。coaxd のチューナーごとの設定と同じく一段下げる。
+fn mirakurun_rows(
+    form: &mut Form<'_, '_>,
+    indent: f32,
+    index: usize,
+    source: &mut crate::config::file::Source,
+) {
+    let value_left = indent + 110.0;
+    let top = *form.at;
+    let row = form.line(skin::SELECT_HEIGHT);
+    say(
+        form,
+        pos2(indent, row.center().y),
+        "ストリーム取得",
+        form.look.label,
+        skin::TEXT_SIZE,
+    );
+    form.select_at(
+        Rect::from_min_size(pos2(value_left, row.top()), vec2(180.0, row.height())),
+        ("source.by", index),
+        &mut source.by,
+        BY,
+    );
+    let row = form.line(skin::SELECT_HEIGHT);
+    say(
+        form,
+        pos2(indent, row.center().y),
+        "デコード",
+        form.look.label,
+        skin::TEXT_SIZE,
+    );
+    let tick = Rect::from_min_size(
+        pos2(value_left - 4.0, row.top()),
+        vec2(skin::CHECK + 8.0, row.height()),
+    );
+    if form.tick(tick, ("source.decode", index), source.decode) {
+        source.decode = !source.decode;
+    }
+    let row = form.line(skin::SELECT_HEIGHT);
+    say(
+        form,
+        pos2(indent, row.center().y),
+        "優先度",
+        form.look.label,
+        skin::TEXT_SIZE,
+    );
+    form.number_box(
+        Rect::from_min_size(
+            pos2(value_left, row.center().y - 13.0),
+            vec2(skin::NUMBER, 26.0),
+        ),
+        &mut source.priority,
+        -100..=100,
+    );
+    // coaxd のチューナーごとの設定と同じ縦線。
+    let bottom = *form.at - 2.0;
+    let left = indent - 14.0;
+    form.ui.painter().rect_filled(
+        Rect::from_min_max(pos2(left, top + 2.0), pos2(left + 2.0, bottom)),
+        1.0,
+        form.look.mirakurun.gamma_multiply(0.8),
+    );
+    *form.at += 4.0;
 }
 
 fn gain_row(

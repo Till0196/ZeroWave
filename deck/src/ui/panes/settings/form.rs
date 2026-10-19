@@ -461,6 +461,24 @@ impl Form<'_, '_> {
             pos2(bar.right() + 10.0, value_rect.center().y - 13.0),
             vec2(skin::NUMBER, 26.0),
         );
+        self.number_box(field, value, range);
+        self.ui.painter().text(
+            pos2(field.right() + 6.0, value_rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            unit.trim(),
+            FontId::proportional(skin::TEXT_SIZE),
+            look.label,
+        );
+        slider
+    }
+
+    pub(super) fn number_box<N: egui::emath::Numeric>(
+        &mut self,
+        field: Rect,
+        value: &mut N,
+        range: std::ops::RangeInclusive<N>,
+    ) {
+        let look = self.look;
         let painter = self.ui.painter();
         painter.rect_filled(field, skin::SELECT_ROUNDING, look.select_fill);
         painter.rect_stroke(
@@ -484,14 +502,6 @@ impl Form<'_, '_> {
                 egui::DragValue::new(value).range(range).speed(0.2),
             );
         });
-        self.ui.painter().text(
-            pos2(field.right() + 6.0, value_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            unit.trim(),
-            FontId::proportional(skin::TEXT_SIZE),
-            look.label,
-        );
-        slider
     }
 
     pub(super) fn slider_reset<N: egui::emath::Numeric + PartialEq + Copy + std::fmt::Display>(
