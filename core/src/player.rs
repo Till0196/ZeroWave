@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::time::{Duration, Instant};
 
@@ -83,16 +83,17 @@ impl Options {
 
 const CHUNK: usize = 64 << 10;
 
-const BLOCKS: usize = 128;
-
 const BLOCKS_RECORDING: usize = 1024;
+
+/// 放送のリングバッファに持つ時間の既定（ミリ秒）。
+const HOLD_MS: u32 = 2_000;
 
 /// 録画の読み込みが詰まったとみなす条件と、再開する先読みの量。
 const STARVED_LEAST: std::time::Duration = std::time::Duration::from_millis(100);
 const LEAD_LOW: i64 = HZ / 2;
 const LEAD_RESUME: i64 = 2 * HZ;
 
-/// 表示に間に合わないフレームがこれより多くたまっていたら、一回でまとめて飛ばす。
+/// 表示に間に合わないフレームがこれより多くたまっていたら、一回でまとめて飛ばす（既定）。
 const PILE_MOST: usize = 3;
 
 /// 持ちすぎるとデコーダーのリングバッファで古いフレームが上書きされ、映像が前後に跳ぶ。
@@ -256,6 +257,10 @@ pub struct Player {
     took: u64,
     meter: Meter,
     read_bytes: Arc<AtomicU64>,
+    /// 放送のリングバッファに持つ時間（ミリ秒）。開いているバッファにもすぐ効く。
+    hold: Arc<AtomicU32>,
+    /// 表示に間に合わないフレームがこれより多くたまっていたら、一回でまとめて飛ばす。
+    pile_most: usize,
     read_stamp: Arc<AtomicI64>,
     read_stamp_first: Arc<AtomicI64>,
     dropped_access: Arc<AtomicU64>,
@@ -624,6 +629,17 @@ impl Player {
 
     pub fn options(&self) -> &Options {
         &self.options
+    }
+
+    /// 放送のリングバッファに持つ時間。
+    pub fn set_buffer(&mut self, hold: std::time::Duration) {
+        let millis = u32::try_from(hold.as_millis()).unwrap_or(u32::MAX).max(1);
+        self.hold.store(millis, Ordering::Relaxed);
+    }
+
+    /// 表示に間に合わないフレームを、何枚たまったらまとめて飛ばすか。
+    pub fn set_queue(&mut self, frames: usize) {
+        self.pile_most = frames.max(1);
     }
 
     pub fn set_mix(&mut self, mix: Mix) {

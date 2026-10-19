@@ -517,7 +517,7 @@ impl Player {
             }
             // Something after this one is due, so it is thrown away (drawing late stays late).
             let late = self.due.iter().take_while(|due| due.at <= now).count();
-            if late > PILE_MOST {
+            if late > self.pile_most {
                 // 時刻の列は出力より一つ長いので、飛ばせた出力の分だけ捨てる。
                 for _ in 0..late - 1 {
                     if !video.skip() {
@@ -754,6 +754,23 @@ mod tests {
         assert_eq!(player.skip_to.load(Ordering::Relaxed), 0);
         player.set_hidden(false);
         assert_eq!(player.skip_to.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn the_buffer_and_the_queue_follow_the_settings() {
+        let mut player = quiet_player();
+        player.set_buffer(Duration::from_secs(5));
+        assert_eq!(player.hold.load(Ordering::Relaxed), 5_000);
+        player.set_buffer(Duration::ZERO);
+        assert_eq!(
+            player.hold.load(Ordering::Relaxed),
+            1,
+            "持たないバッファにはしない"
+        );
+        player.set_queue(6);
+        assert_eq!(player.pile_most, 6);
+        player.set_queue(0);
+        assert_eq!(player.pile_most, 1);
     }
 
     #[test]

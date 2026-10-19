@@ -136,11 +136,6 @@ const ASPECT: Choices = &[
 ];
 const PREVIEW_CHANNEL: &str = "ゼロウェーブテレビ";
 const PREVIEW_EVENT: &str = "[新][字]湖と森の一年　第１回";
-const CLOCK: Choices = &[
-    ("auto", "自動"),
-    ("audio", "音声の再生に合わせる"),
-    ("pts", "映像と音声の時刻に合わせる"),
-];
 const ONESEG: Choices = &[
     ("fallback", "受信できないときのみ切り替える"),
     ("never", "切り替えない"),
@@ -411,6 +406,14 @@ pub(super) fn video(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File, g
         &mut edited.video.render.hdr,
         &loaded.video.render.hdr,
         HDR,
+    );
+    form.key("video.render.queue");
+    form.slider(
+        "遅延フレーム数",
+        &mut edited.video.render.queue,
+        loaded.video.render.queue,
+        1..=10,
+        "フレーム",
     );
 }
 
@@ -1229,15 +1232,8 @@ pub(super) fn playback(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File
         "最大バッファ",
         &mut edited.playback.buffer,
         loaded.playback.buffer,
-        0..=30,
+        1..=30,
         "秒",
-    );
-    form.key("playback.clock");
-    form.select(
-        "同期の基準",
-        &mut edited.playback.clock,
-        &loaded.playback.clock,
-        CLOCK,
     );
     form.section("エラーカウント");
     form.key("playback.reset_errors_on_tune");
@@ -1403,7 +1399,6 @@ mod tests {
         assert!(has(DUAL_MONO, &file.audio.dual_mono));
         assert!(has(DOWNMIX, &file.audio.downmix));
         assert!(has(DOWNMIX_22, &file.audio.downmix_22));
-        assert!(has(CLOCK, &file.playback.clock));
         assert!(has(DEINTERLACE, &file.video.deinterlace.method));
         assert!(has(RENDER, &file.video.render.render));
         assert!(has(BACKEND, &file.video.render.backend));

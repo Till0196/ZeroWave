@@ -1,17 +1,22 @@
 // Copyright 2026 Till0196
 // SPDX-License-Identifier: Apache-2.0
 
-//! 一度しか流れてこないバイト列を複数のリーダーに配るリングバッファ。放送では満杯なら一番古いブロックを捨て、
-//! 録画ではいちばん遅いリーダーを待つ。
+//! 一度しか流れてこないバイト列を複数のリーダーに配るリングバッファ。放送では届いてから決めた時間を過ぎたブロックを
+//! 捨て、録画ではいちばん遅いリーダーを待つ。
 
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+/// 放送で持つ量の上限。決めた時間がこれより長くても、メモリーはここまで。
+const MOST_BYTES: usize = 512 << 20;
 
 #[derive(Debug)]
 pub struct Block {
     at: u64,
     bytes: Vec<u8>,
+    arrived: Instant,
 }
 
 impl Block {
@@ -30,11 +35,14 @@ pub struct Buffer {
     woke: Condvar,
     blocks: usize,
     waits: bool,
+    /// 放送で持つ時間（ミリ秒）。届いてからこれを過ぎたブロックは、読まれていなくても捨てる。
+    hold: Option<Arc<AtomicU32>>,
 }
 
 #[derive(Debug)]
 struct Inner {
     held: VecDeque<Arc<Block>>,
+    bytes: usize,
     first: u64,
     next: u64,
     readers: BTreeMap<usize, u64>,
@@ -46,9 +54,19 @@ struct Inner {
 impl Buffer {
     /// `waits` は録画なら真（待たないと、リーダーが触る前に上書きしてしまう）。
     pub fn new(blocks: usize, waits: bool) -> Arc<Self> {
+        Self::make(blocks, waits, None)
+    }
+
+    /// 放送のバッファ。`hold` は持つ時間（ミリ秒）で、変えれば次に届いたブロックから効く。
+    pub fn holding(hold: Arc<AtomicU32>) -> Arc<Self> {
+        Self::make(usize::MAX, false, Some(hold))
+    }
+
+    fn make(blocks: usize, waits: bool, hold: Option<Arc<AtomicU32>>) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
-                held: VecDeque::with_capacity(blocks.max(1)),
+                held: VecDeque::with_capacity(blocks.clamp(1, 1024)),
+                bytes: 0,
                 first: 0,
                 next: 0,
                 readers: BTreeMap::new(),
@@ -59,6 +77,7 @@ impl Buffer {
             woke: Condvar::new(),
             blocks: blocks.max(1),
             waits,
+            hold,
         })
     }
 
@@ -78,7 +97,17 @@ impl Buffer {
     }
 
     pub fn push(&self, bytes: &[u8]) -> bool {
+        let arrived = Instant::now();
         let mut inner = self.lock();
+        if let Some(hold) = &self.hold {
+            let hold = Duration::from_millis(u64::from(hold.load(Ordering::Relaxed)));
+            while inner.held.front().is_some_and(|oldest| {
+                arrived.duration_since(oldest.arrived) > hold
+                    || inner.bytes + bytes.len() > MOST_BYTES
+            }) {
+                inner.drop_oldest();
+            }
+        }
         loop {
             if inner.readers.is_empty() {
                 return false;
@@ -87,16 +116,17 @@ impl Buffer {
                 break;
             }
             if !self.waits || inner.readers.values().all(|at| *at > inner.first) {
-                inner.held.pop_front();
-                inner.first += 1;
+                inner.drop_oldest();
                 break;
             }
             inner = self.woke.wait(inner).unwrap_or_else(|e| e.into_inner());
         }
         let at = inner.next;
+        inner.bytes += bytes.len();
         inner.held.push_back(Arc::new(Block {
             at,
             bytes: bytes.to_vec(),
+            arrived,
         }));
         inner.next += 1;
         inner.starved = None;
@@ -121,11 +151,20 @@ impl Buffer {
     }
 
     pub fn held(&self) -> usize {
-        self.lock().held.iter().map(|block| block.bytes.len()).sum()
+        self.lock().bytes
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl Inner {
+    fn drop_oldest(&mut self) {
+        if let Some(oldest) = self.held.pop_front() {
+            self.bytes -= oldest.bytes.len();
+            self.first += 1;
+        }
     }
 }
 
@@ -425,5 +464,25 @@ mod tests {
         assert_eq!(buffer.held(), 5);
         buffer.push(b"f");
         assert_eq!(buffer.held(), 3);
+    }
+
+    #[test]
+    fn a_broadcast_keeps_only_what_arrived_within_the_time() {
+        let hold = Arc::new(AtomicU32::new(60_000));
+        let buffer = Buffer::holding(Arc::clone(&hold));
+        let mut reader = buffer.reader();
+        for i in 0..4u8 {
+            assert!(buffer.push(&[i]));
+        }
+        assert_eq!(buffer.held(), 4, "時間の内なら数では捨てない");
+        hold.store(20, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(40));
+        assert!(buffer.push(&[4]));
+        assert_eq!(buffer.held(), 1, "変えた時間は次に届いた物から効く");
+        assert_eq!(
+            reader.next().map(|block| block.bytes().to_vec()),
+            Some(vec![4])
+        );
+        assert_eq!(reader.missed(), 4);
     }
 }

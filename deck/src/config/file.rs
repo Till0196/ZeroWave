@@ -292,7 +292,6 @@ pub struct SoundDecoder {
 #[serde(default)]
 pub struct Playback {
     pub buffer: u32,
-    pub clock: String,
     pub oneseg: String,
     pub restore_mute: bool,
     pub reset_errors_on_tune: bool,
@@ -302,7 +301,6 @@ impl Default for Playback {
     fn default() -> Self {
         Self {
             buffer: 2,
-            clock: String::from("auto"),
             oneseg: String::from("fallback"),
             restore_mute: false,
             reset_errors_on_tune: true,

@@ -209,6 +209,7 @@ impl Stage {
         let file = crate::config::load_plain();
         self.plugins_seen = Some((file.data.plugins.clone(), file.data.disabled.clone()));
         self.apply_channel_prefs(&file);
+        self.apply_pacing(&file);
         self.volume_hold = file.osd.fade.max(1) as f32;
         self.osd_prefs = ui::overlay::osd::Prefs::of(&file.osd);
         self.no_sleep = file.general.no_sleep;

@@ -35,6 +35,15 @@ impl Stage {
         }
     }
 
+    /// 放送のバッファの時間と、遅れたフレームをまとめて飛ばす枚数。開いているストリームにもすぐ効く。
+    pub(super) fn apply_pacing(&mut self, file: &crate::config::File) {
+        self.player
+            .set_buffer(std::time::Duration::from_secs(u64::from(
+                file.playback.buffer.max(1),
+            )));
+        self.player.set_queue(file.video.render.queue as usize);
+    }
+
     pub(super) fn settings(&mut self, file: &crate::config::File) {
         self.frame = file.video.frame.clone();
         self.reset_errors_on_tune = file.playback.reset_errors_on_tune;
@@ -61,6 +70,7 @@ impl Stage {
         }
         self.choices.knobs = applied.choices.knobs;
         self.apply_channel_prefs(file);
+        self.apply_pacing(file);
         self.volume_hold = file.osd.fade.max(1) as f32;
         self.osd_prefs = ui::overlay::osd::Prefs::of(&file.osd);
         self.no_sleep = file.general.no_sleep;

@@ -121,6 +121,8 @@ impl Player {
             took: 0,
             meter: Meter::new(),
             read_bytes: Arc::new(AtomicU64::new(0)),
+            hold: Arc::new(AtomicU32::new(HOLD_MS)),
+            pile_most: PILE_MOST,
             read_stamp: Arc::new(AtomicI64::new(i64::MIN)),
             read_stamp_first: Arc::new(AtomicI64::new(i64::MIN)),
             dropped_access: Arc::new(AtomicU64::new(0)),
@@ -707,8 +709,11 @@ impl Player {
         let data = self.data_to.clone().map(Feed::new);
         let paced = Arc::clone(&self.shared);
         // 録画ではライターが待つ（待たずに読み進めると上書きしてしまう）。
-        let buffer =
-            crate::input::buffer::Buffer::new(if live { BLOCKS } else { BLOCKS_RECORDING }, !live);
+        let buffer = if live {
+            crate::input::buffer::Buffer::holding(Arc::clone(&self.hold))
+        } else {
+            crate::input::buffer::Buffer::new(BLOCKS_RECORDING, true)
+        };
         let mut taking = buffer.reader().reading();
         let filling = Arc::clone(&buffer);
         let filled = Arc::clone(&self.spent_filling);
