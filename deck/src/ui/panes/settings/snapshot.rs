@@ -37,7 +37,7 @@ fn shoot(
     let mut output = None;
     // フォントは次のフレームから効き、中身の高さは前のフレームで測るので、何フレームか実行する。
     for _ in 0..4 {
-        let full = context.run_ui(input(), &mut build);
+        let mut full = context.run_ui(input(), &mut build);
         let deltas = full
             .textures_delta
             .set
@@ -71,6 +71,8 @@ fn shoot(
                 }
             }
         }
+        // 写し終えた（片付けないと egui が手放すときに咎める）。
+        full.textures_delta.clear();
         output = Some(full);
     }
     let output = output.expect("一フレーム以上実行した");
