@@ -1095,6 +1095,11 @@ impl Stage {
             (toast.at.elapsed().as_secs_f32() < toast.hold)
                 .then(|| (toast.said.as_str(), toast.shown.progress.is_some()))
         });
+        // 取り下げた準備中が、ほかのトーストの後ろに回っていれば戻さない。
+        if notice.seconds == Some(0.0) {
+            self.toast_behind
+                .take_if(|behind| behind.said == notice.title);
+        }
         if self.noticed.heed(programme, &notice, current) == super::plugging::Heed::Skip {
             return;
         }
