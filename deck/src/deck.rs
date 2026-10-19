@@ -45,6 +45,8 @@ pub struct Deck {
     /// ウィンドウに当てた前面表示。
     told_on_top: Option<bool>,
     full_screen: bool,
+    /// 再生スレッドへ知らせた全画面表示の状態。
+    told_full: bool,
     bar: f32,
     told_area: Option<(u32, u32, u32, u32)>,
     to_broadcast: SyncSender<ToBroadcast>,
@@ -181,6 +183,7 @@ impl Deck {
             on_top,
             told_on_top: None,
             full_screen: false,
+            told_full: false,
             bar: 0.0,
             told_area: None,
             theme: ui::theme::Theme::of(ui::theme::Mode::default()),

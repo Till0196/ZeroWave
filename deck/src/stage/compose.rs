@@ -410,7 +410,10 @@ impl Stage {
         let pan_scan = format
             .as_ref()
             .filter(|_| !self.inset_on)
-            .map(|format| self.frame.pan_scan((format.width, format.height)))
+            .map(|format| {
+                self.frame
+                    .pan_scan((format.width, format.height), &self.pans, self.full_screen)
+            })
             .unwrap_or_default();
         if pan_scan != self.player.pan_scan() {
             tracing::info!(
@@ -423,8 +426,10 @@ impl Stage {
             );
         }
         self.player.set_pan_scan(pan_scan);
-        let ratio = source_ratio.map(|source| pan_scan.shape(source));
-        let crop = source_ratio.map_or([0.0; 4], |source| pan_scan.visible(source));
+        // 全画面ならバーは映像に重なるので、映像の領域はサーフェス全体。
+        let have = self.size.0.max(1) as f32 / self.size.1.max(1) as f32;
+        let ratio = source_ratio.map(|source| pan_scan.shape_in(source, have));
+        let crop = source_ratio.map_or([0.0; 4], |source| pan_scan.visible_in(source, have));
         let scene = scene::Scene {
             menu,
             now: self.player.now().unwrap_or_default(),
@@ -1288,6 +1293,7 @@ impl Stage {
             capture_layers: Vec::new(),
             capture_size: String::new(),
             aspect: String::new(),
+            pans: Vec::new(),
             plugins: plugin_menus(&self.plugin_menus),
         });
         Arc::clone(&self.menu_filling)

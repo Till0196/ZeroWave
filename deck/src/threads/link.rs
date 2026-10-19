@@ -113,6 +113,8 @@ pub enum ToStage {
     Inset(Option<[f32; 5]>),
     Capture(Box<crate::capture::Job>),
     Hidden(bool),
+    /// ウィンドウが全画面表示になった・戻った。
+    FullScreen(bool),
     /// ユーザーがウィンドウを掴んで動かしている。その間サーフェスはコンポジターが保持して返さないので取りに行かない。
     Grabbed(bool),
     Display(u32),
@@ -150,6 +152,7 @@ impl std::fmt::Debug for ToStage {
             Self::Inset(inset) => write!(out, "Inset({inset:?})"),
             Self::Capture(_) => out.write_str("Capture"),
             Self::Hidden(hidden) => write!(out, "Hidden({hidden})"),
+            Self::FullScreen(full) => write!(out, "FullScreen({full})"),
             Self::Grabbed(grabbed) => write!(out, "Grabbed({grabbed})"),
             Self::Display(hz) => write!(out, "Display({hz})"),
             Self::Monitor(monitor) => write!(out, "Monitor({monitor:?})"),

@@ -79,7 +79,7 @@ impl Default for General {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Video {
     pub decoder: Decoder,
@@ -88,8 +88,23 @@ pub struct Video {
     pub render: Render,
     pub picture: Picture,
     pub frame: Frame,
+    /// パン&スキャンのプリセット。比率のメニューに並ぶ。
     #[serde(rename = "pan")]
     pub pans: Vec<Pan>,
+}
+
+impl Default for Video {
+    fn default() -> Self {
+        Self {
+            decoder: Decoder::default(),
+            deinterlace: Deinterlace::default(),
+            scale: Scale::default(),
+            render: Render::default(),
+            picture: Picture::default(),
+            frame: Frame::default(),
+            pans: Pan::samples(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -191,17 +206,28 @@ pub struct Picture {
 pub struct Frame {
     pub track: String,
     pub side_cut: bool,
-    /// `default` / `16:9` / `4:3` / `letterbox` / `double` / `side_cut`。
+    /// `default` / `16:9` / `4:3` / `letterbox` / `double` / `side_cut`、
+    /// パン&スキャンのプリセットは `pan:` に名前を続ける。
     pub aspect: String,
     /// 上右下左。
     pub crop: [u32; 4],
+    /// 全画面表示での合わせ方。`fit` / `fill` / `stretch`。
     pub fullscreen: String,
     pub keep_aspect: bool,
 }
 
+/// 比率のメニューでプリセットを選んだときの `aspect` の頭。
+pub const PAN_PREFIX: &str = "pan:";
+
 impl Frame {
-    pub fn pan_scan(&self, size: (u32, u32)) -> zwcore::output::video::pan_scan::PanScan {
-        use zwcore::output::video::pan_scan::PanScan;
+    /// `full` は全画面表示のとき。
+    pub fn pan_scan(
+        &self,
+        size: (u32, u32),
+        pans: &[Pan],
+        full: bool,
+    ) -> zwcore::output::video::pan_scan::PanScan {
+        use zwcore::output::video::pan_scan::{PanScan, Stretch};
         let (width, height) = (size.0.max(1) as f32, size.1.max(1) as f32);
         let [top, right, bottom, left] = self.crop;
         let mut pan = PanScan {
@@ -220,7 +246,21 @@ impl Frame {
             "letterbox" => pan.cut_to = Some(16.0 / 9.0),
             "side_cut" => pan.cut_to = Some(4.0 / 3.0),
             "double" => pan.crop = pan.crop.map(|f| f + 0.125),
-            _ => {}
+            named => {
+                if let Some(preset) = named
+                    .strip_prefix(PAN_PREFIX)
+                    .and_then(|name| pans.iter().find(|pan| pan.name == name))
+                {
+                    preset.apply(&mut pan);
+                }
+            }
+        }
+        if full {
+            pan.stretch = match self.fullscreen.as_str() {
+                "fill" => Stretch::Fill,
+                "stretch" => Stretch::Stretch,
+                _ => Stretch::Fit,
+            };
         }
         pan
     }
@@ -239,11 +279,72 @@ impl Default for Frame {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+/// パン&スキャンのプリセット。映像のどこを切り出し、どの縦横比で出すか。
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Pan {
     pub name: String,
-    pub crop: [u32; 4],
+    /// 切り出す所の左上と大きさ。映像全体に対する %。
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    /// 切り出した所を出す縦横比（横、縦）。
+    pub aspect: [u32; 2],
+}
+
+impl Default for Pan {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            aspect: [16, 9],
+        }
+    }
+}
+
+impl Pan {
+    /// プリセットの見本。
+    pub fn samples() -> Vec<Self> {
+        let pan = |name: &str, x: f32, y: f32, width: f32, height: f32, aspect: [u32; 2]| Self {
+            name: name.to_owned(),
+            x,
+            y,
+            width,
+            height,
+            aspect,
+        };
+        vec![
+            pan("2.39:1 シネスコ", 0.0, 12.81, 100.0, 74.38, [239, 100]),
+            pan("2.35:1 シネスコ", 0.0, 12.18, 100.0, 75.65, [235, 100]),
+            pan("1.85:1 ビスタ(米)", 0.0, 1.95, 100.0, 96.1, [185, 100]),
+            pan("1.66:1 ビスタ(欧)", 3.31, 0.0, 93.38, 100.0, [166, 100]),
+        ]
+    }
+
+    /// 切り出しと縦横比を `pan` に重ねる（`crop` で切った分の内側を切り出す）。
+    fn apply(&self, pan: &mut zwcore::output::video::pan_scan::PanScan) {
+        let x = (self.x / 100.0).clamp(0.0, 1.0);
+        let y = (self.y / 100.0).clamp(0.0, 1.0);
+        let right = (1.0 - x - self.width / 100.0).clamp(0.0, 1.0);
+        let bottom = (1.0 - y - self.height / 100.0).clamp(0.0, 1.0);
+        let [left_was, top_was, right_was, bottom_was] = pan.crop;
+        let wide = 1.0 - left_was - right_was;
+        let tall = 1.0 - top_was - bottom_was;
+        pan.crop = [
+            left_was + x * wide,
+            top_was + y * tall,
+            right_was + right * wide,
+            bottom_was + bottom * tall,
+        ];
+        let [across, down] = self.aspect;
+        if across > 0 && down > 0 {
+            pan.aspect = Some(across as f32 / down as f32);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -1156,5 +1257,75 @@ status_max_rows = 3
         assert_eq!(ui.status_items, list);
         ui.set_status_list(StatusItem::defaults());
         assert!(ui.status_items.is_empty());
+    }
+
+    #[test]
+    fn the_pan_presets_start_from_the_samples_and_are_read_from_the_file() {
+        assert_eq!(File::default().video.pans, Pan::samples());
+        let file = File::parse(
+            r#"
+[[video.pan]]
+name = "字幕を隠す"
+x = 0
+y = 0
+width = 100
+height = 87.5
+aspect = [16, 9]
+"#,
+        )
+        .expect("読める");
+        assert_eq!(file.video.pans.len(), 1);
+        assert_eq!(file.video.pans[0].name, "字幕を隠す");
+        assert!((file.video.pans[0].height - 87.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_pan_preset_cuts_out_its_part_and_shows_it_in_its_shape() {
+        let pans = Pan::samples();
+        let frame = Frame {
+            aspect: format!("{PAN_PREFIX}2.39:1 シネスコ"),
+            ..Frame::default()
+        };
+        let pan = frame.pan_scan((1920, 1080), &pans, false);
+        let [left, top, right, bottom] = pan.crop;
+        assert!(left.abs() < 1e-6 && right.abs() < 1e-6);
+        assert!((top - 0.1281).abs() < 1e-4, "{top}");
+        assert!((bottom - (1.0 - 0.1281 - 0.7438)).abs() < 1e-4, "{bottom}");
+        assert!((pan.aspect.unwrap_or_default() - 2.39).abs() < 1e-5);
+        // 無くなったプリセットはデフォルトの扱い。
+        let gone = Frame {
+            aspect: format!("{PAN_PREFIX}無い"),
+            ..Frame::default()
+        };
+        assert!(gone.pan_scan((1920, 1080), &pans, false).is_default());
+    }
+
+    #[test]
+    fn the_full_screen_way_is_used_only_in_full_screen() {
+        use zwcore::output::video::pan_scan::Stretch;
+        let frame = Frame {
+            fullscreen: String::from("fill"),
+            ..Frame::default()
+        };
+        assert_eq!(
+            frame.pan_scan((1920, 1080), &[], false).stretch,
+            Stretch::Fit
+        );
+        assert_eq!(
+            frame.pan_scan((1920, 1080), &[], true).stretch,
+            Stretch::Fill
+        );
+        let stretch = Frame {
+            fullscreen: String::from("stretch"),
+            ..Frame::default()
+        };
+        assert_eq!(
+            stretch.pan_scan((1920, 1080), &[], true).stretch,
+            Stretch::Stretch
+        );
+        assert_eq!(
+            Frame::default().pan_scan((1920, 1080), &[], true).stretch,
+            Stretch::Fit
+        );
     }
 }

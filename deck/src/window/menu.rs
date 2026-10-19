@@ -264,6 +264,8 @@ pub struct Filling {
     pub capture_layers: Vec<(String, bool)>,
     pub capture_size: String,
     pub aspect: String,
+    /// パン&スキャンのプリセットの名前。比率のメニューで `ASPECTS` に続く。
+    pub pans: Vec<String>,
 }
 
 pub const ASPECTS: &[(&str, &str)] = &[
@@ -627,13 +629,32 @@ pub fn entries_of(group: Group, filling: &Filling) -> Vec<Entry> {
             .collect(),
         Group::Favourites => favourite_entries(filling),
         Group::Recent => recent_entries(filling),
-        Group::Aspect => ASPECTS
-            .iter()
-            .enumerate()
-            .map(|(at, (spelled, name))| {
-                Entry::choice(*name, filling.aspect == *spelled, Picked::Aspect(at))
-            })
-            .collect(),
+        Group::Aspect => {
+            let mut out: Vec<Entry> = ASPECTS
+                .iter()
+                .enumerate()
+                .map(|(at, (spelled, name))| {
+                    Entry::choice(*name, filling.aspect == *spelled, Picked::Aspect(at))
+                })
+                .collect();
+            let chosen = filling.aspect.strip_prefix(crate::config::file::PAN_PREFIX);
+            out.push(Entry::Separator);
+            out.extend(filling.pans.iter().enumerate().map(|(at, name)| {
+                Entry::choice(
+                    name.as_str(),
+                    chosen == Some(name.as_str()),
+                    Picked::Aspect(ASPECTS.len() + at),
+                )
+            }));
+            if !filling.pans.is_empty() {
+                out.push(Entry::Separator);
+            }
+            out.push(Entry::command(
+                "パン&スキャンの設定(P)...",
+                Command::PanScanSettings,
+            ));
+            out
+        }
         // バッファリセットは受信側のバッファがビューアと分かれていないので無い。
         Group::Reset => vec![
             Entry::command("リセット(R)", Command::Reset),
@@ -698,6 +719,7 @@ pub enum Command {
     OpenCaptureFolder,
     RecordSettings,
     CaptureSettings,
+    PanScanSettings,
     Remote,
     VolumeUp,
     VolumeDown,
@@ -1112,7 +1134,8 @@ mod tests {
             entries_of(Group::CaptureLayers, &filling),
             vec![Entry::choice("字幕", true, Picked::CaptureLayer(0))]
         );
-        assert_eq!(entries_of(Group::Aspect, &filling).len(), ASPECTS.len());
+        // 決まった物、区切り、「パン&スキャンの設定」。
+        assert_eq!(entries_of(Group::Aspect, &filling).len(), ASPECTS.len() + 2);
         assert_eq!(entries_of(Group::Reset, &filling).len(), 4);
         assert!(entries_of(Group::RecentFiles, &filling).is_empty());
     }

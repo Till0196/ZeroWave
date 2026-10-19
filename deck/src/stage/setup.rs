@@ -111,6 +111,8 @@ impl Stage {
             capture_warm: None,
             capture_pending: Vec::new(),
             frame: crate::config::load_plain().video.frame,
+            pans: crate::config::load_plain().video.pans,
+            full_screen: false,
             errors_base: zwcore::filters::Counts::default(),
             errors_reset_due: None,
             reset_errors_on_tune: crate::config::load_plain().playback.reset_errors_on_tune,

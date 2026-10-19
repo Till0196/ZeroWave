@@ -629,11 +629,16 @@ pub(super) fn display(
         FULLSCREEN,
     );
     form.key("video.frame.aspect");
+    let aspects = super::pans::aspect_choices(ASPECT, &edited.video.pans);
+    let aspects: Vec<(&str, &str)> = aspects
+        .iter()
+        .map(|(spelled, name)| (spelled.as_str(), name.as_str()))
+        .collect();
     form.select(
         "比率",
         &mut edited.video.frame.aspect,
         &loaded.video.frame.aspect,
-        ASPECT,
+        &aspects,
     );
     form.key("video.frame.side_cut");
     form.check(
@@ -642,6 +647,7 @@ pub(super) fn display(
         &mut edited.video.frame.side_cut,
         loaded.video.frame.side_cut,
     );
+    super::pans::pans(form, edited, loaded);
     pressed
 }
 

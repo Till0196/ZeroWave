@@ -40,6 +40,10 @@ impl Deck {
         self.plugin_asked(window);
         let skin = self.theme.status;
         let full = window.fullscreen().is_some();
+        if self.told_full != full {
+            self.told_full = full;
+            self.say(ToStage::FullScreen(full));
+        }
         self.full_screen = full;
         let now = Instant::now();
         let moved = ctx.input(|i| i.pointer.delta() != egui::Vec2::ZERO || i.pointer.any_down());

@@ -40,13 +40,24 @@ impl Deck {
                 }
             }
             Picked::Aspect(at) => {
-                if let Some((spelled, _)) = menu::ASPECTS.get(at) {
-                    self.file.video.frame.aspect = (*spelled).to_owned();
+                let spelled = match menu::ASPECTS.get(at) {
+                    Some((spelled, _)) => Some((*spelled).to_owned()),
+                    None => self
+                        .file
+                        .video
+                        .pans
+                        .iter()
+                        .filter(|pan| !pan.name.is_empty())
+                        .nth(at - menu::ASPECTS.len())
+                        .map(|pan| format!("{}{}", crate::config::file::PAN_PREFIX, pan.name)),
+                };
+                if let Some(spelled) = spelled {
+                    self.file.video.frame.aspect.clone_from(&spelled);
                     self.remember(
                         &["video", "frame", "aspect"],
-                        toml::Value::String((*spelled).to_owned()),
+                        toml::Value::String(spelled.clone()),
                     );
-                    self.say(ToStage::Act(Act::Aspect((*spelled).to_owned())));
+                    self.say(ToStage::Act(Act::Aspect(spelled)));
                 }
             }
             Picked::CaptureLayer(at) => {
@@ -134,6 +145,14 @@ impl Deck {
         filling.status_bar = self.file.ui.status_bar;
         filling.capture_size = self.file.capture.size.clone();
         filling.aspect = self.file.video.frame.aspect.clone();
+        filling.pans = self
+            .file
+            .video
+            .pans
+            .iter()
+            .filter(|pan| !pan.name.is_empty())
+            .map(|pan| pan.name.clone())
+            .collect();
         filling.osd = self.file.osd.enabled;
         filling.capture_layers = crate::capture::layer_rows(&self.plugin_layers())
             .into_iter()
@@ -329,6 +348,11 @@ impl Deck {
                 let _ = self
                     .to_panes
                     .send(ToPanes::OpenSettings(ui::panes::settings::Page::Capture));
+            }
+            Command::PanScanSettings => {
+                let _ = self
+                    .to_panes
+                    .send(ToPanes::OpenSettings(ui::panes::settings::Page::Display));
             }
             Command::CopyProgramme => {
                 let line = self.scene.now_playing.clone();

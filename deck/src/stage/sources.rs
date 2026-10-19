@@ -46,6 +46,7 @@ impl Stage {
 
     pub(super) fn settings(&mut self, file: &crate::config::File) {
         self.frame = file.video.frame.clone();
+        self.pans = file.video.pans.clone();
         self.reset_errors_on_tune = file.playback.reset_errors_on_tune;
         zwcore::guide::set_shown_offset(file.guide.offset * 3600);
         if self.title_pattern != file.general.title {

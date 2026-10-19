@@ -9,6 +9,7 @@ mod channels;
 mod codec;
 mod form;
 mod keys;
+mod pans;
 mod plain;
 mod scan;
 #[cfg(test)]
@@ -504,6 +505,7 @@ fn page_changed(page: Page, edited: &File, loaded: &File) -> bool {
         Page::Display => {
             edited.ui != loaded.ui
                 || edited.video.frame != loaded.video.frame
+                || edited.video.pans != loaded.video.pans
                 || edited.general.hide_cursor != loaded.general.hide_cursor
                 || edited.general.title != loaded.general.title
         }

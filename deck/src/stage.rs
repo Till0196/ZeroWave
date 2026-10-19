@@ -395,6 +395,9 @@ pub struct Stage {
     reset_audio_delay: bool,
     stepping: stepping::Stepping,
     frame: crate::config::file::Frame,
+    pans: Vec<crate::config::file::Pan>,
+    /// ウィンドウが全画面表示か（`frame.fullscreen` の合わせ方を使う）。
+    full_screen: bool,
     inset_on: bool,
     history: channels::History,
     favourites: channels::Loaded,
