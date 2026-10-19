@@ -330,12 +330,13 @@ fn filter_bar(
     );
     let ui = &mut child;
     ui.spacing_mut().item_spacing.x = 8.0;
+    // `ui.label` は一行でも最低の高さ（interact_size）を取って字が上に寄るので、自分で置く。
     let label = |ui: &mut Ui, text: &str| {
-        ui.label(
-            egui::RichText::new(text)
-                .font(font(11.0))
-                .color(skin.head_key),
-        );
+        let galley = ui
+            .painter()
+            .layout_no_wrap(text.to_owned(), font(11.0), skin.head_key);
+        let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
+        ui.painter().galley(rect.min, galley, skin.head_key);
     };
 
     label(ui, "ジャンル");
