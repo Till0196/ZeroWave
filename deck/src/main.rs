@@ -120,6 +120,7 @@ fn main() {
     if let Some(path) = &logged {
         tracing::info!("ログファイル {}", path.display());
     }
+    coax::http::name_agent(concat!("ZeroWave/", env!("CARGO_PKG_VERSION")));
     let _finish = Finish;
     let mut path = None;
     let mut program: Option<u16> = None;

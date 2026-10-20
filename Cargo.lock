@@ -169,7 +169,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 [[package]]
 name = "coax"
 version = "0.1.0"
-source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
+source = "git+https://github.com/Till0196/coax-rs#5d3dad3ce60a6223b665e9dac8beed88ebdc7e9e"
 
 [[package]]
 name = "cobs"
@@ -939,10 +939,10 @@ dependencies = [
 [[package]]
 name = "isdb"
 version = "0.1.0"
-source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
+source = "git+https://github.com/Till0196/coax-rs#5d3dad3ce60a6223b665e9dac8beed88ebdc7e9e"
 dependencies = [
  "encoding_rs",
- "miniz_oxide 0.8.9",
+ "miniz_oxide 0.9.1",
  "mmttlv",
  "mpegts",
 ]
@@ -1150,7 +1150,7 @@ dependencies = [
 [[package]]
 name = "mmttlv"
 version = "0.1.0"
-source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
+source = "git+https://github.com/Till0196/coax-rs#5d3dad3ce60a6223b665e9dac8beed88ebdc7e9e"
 dependencies = [
  "mpegts",
 ]
@@ -1158,7 +1158,7 @@ dependencies = [
 [[package]]
 name = "mpegts"
 version = "0.1.0"
-source = "git+https://github.com/Till0196/coax-rs#36c24a6511b0c9cc6ef8a5333e269f034c7033f9"
+source = "git+https://github.com/Till0196/coax-rs#5d3dad3ce60a6223b665e9dac8beed88ebdc7e9e"
 
 [[package]]
 name = "naga"
