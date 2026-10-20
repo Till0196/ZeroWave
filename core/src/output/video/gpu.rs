@@ -174,6 +174,7 @@ pub struct Video {
     display_mhz: u32,
     lost: usize,
     scaling: super::Scaling,
+    adjust: super::Adjust,
     shown: Option<(wgpu::TextureView, [u32; 2], wgpu::TextureFormat)>,
     blit_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,

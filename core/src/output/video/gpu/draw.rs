@@ -123,7 +123,7 @@ impl Video {
             height: self.format.height,
             depth: self.format.depth,
             shape: self.shape,
-            interlaced: !self.format.progressive,
+            interlaced: !(self.format.progressive && crate::output::video::adapt_progressive()),
             aspect: [self.format.aspect.0, self.format.aspect.1],
             rate: [self.format.rate.0, self.format.rate.1],
             transfer: match self.settings.transfer {

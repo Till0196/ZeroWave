@@ -131,6 +131,19 @@ impl Present {
                 if program.rect >= 0 {
                     (gl.Uniform4f)(program.rect, rect[0], rect[1], rect[2], rect[3]);
                 }
+                let base = Conversion::new(
+                    self.settings.matrix,
+                    self.format.depth,
+                    self.settings.limited,
+                );
+                let rows = base
+                    .adjusted(self.adjust, self.format.depth)
+                    .rgb_rows(&base);
+                for (at, row) in program.rows.iter().zip(rows) {
+                    if *at >= 0 {
+                        (gl.Uniform4f)(*at, row[0], row[1], row[2], row[3]);
+                    }
+                }
                 draw_triangle(gl, self.quad, 6);
                 (gl.Disable)(gl::GL_SCISSOR_TEST);
             }
@@ -141,11 +154,12 @@ impl Present {
             };
             return Some(shown);
         }
-        let conversion = Conversion::new(
+        let base = Conversion::new(
             self.settings.matrix,
             self.format.depth,
             self.settings.limited,
         );
+        let conversion = base.adjusted(self.adjust, self.format.depth);
         let rows = filter::Rows::of(&ready.output);
         let params = Params {
             first_row: rows.first,
@@ -156,6 +170,9 @@ impl Present {
             chroma_gain: conversion.chroma_gain,
             kr: conversion.kr,
             kb: conversion.kb,
+            luma_lift: conversion.luma_lift,
+            chroma_cos: conversion.chroma_cos,
+            chroma_sin: conversion.chroma_sin,
         };
         let slots = [ready.before, ready.cur, ready.after];
         let mut bound = [0u32; 6];

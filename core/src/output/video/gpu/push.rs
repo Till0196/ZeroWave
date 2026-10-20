@@ -60,7 +60,10 @@ impl Video {
             .filter(|_| self.counting())
             .map(matcher::Matcher::judge);
         self.last_progressive = about.progressive;
-        let plan = if about.progressive && self.settings.deinterlace != Deinterlace::Weave {
+        let plan = if about.progressive
+            && crate::output::video::adapt_progressive()
+            && self.settings.deinterlace != Deinterlace::Weave
+        {
             field::plan(&about, Deinterlace::Weave)
         } else if judge.is_some_and(|judge| judge.matching()) {
             let cadence = if judge.is_some_and(|judge| judge.drop(index)) {
@@ -361,6 +364,10 @@ impl Video {
 
     pub fn set_scaling(&mut self, scaling: super::Scaling) {
         self.scaling = scaling;
+    }
+
+    pub fn set_adjust(&mut self, adjust: crate::output::video::Adjust) {
+        self.adjust = adjust;
     }
 
     /// レンダリングせずに捨てた出力の数を返して数え直す。

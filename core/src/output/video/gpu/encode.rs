@@ -14,7 +14,8 @@ impl Video {
             self.settings.matrix,
             self.format.depth,
             self.settings.limited,
-        );
+        )
+        .adjusted(self.adjust, self.format.depth);
         let rows = filter::Rows::of(&ready.output);
         let params = Params {
             first_row: rows.first,
@@ -30,6 +31,9 @@ impl Video {
             height: self.format.height,
             comb: matcher::Matcher::STRIPE_DEINT,
             motion: matcher::Matcher::MOTION,
+            luma_lift: conversion.luma_lift,
+            chroma_cos: conversion.chroma_cos,
+            chroma_sin: conversion.chroma_sin,
         };
         self.queue.write_buffer(&self.params, 0, &params.bytes());
         // コーミングは film と判定していない間も数える（履歴が無ければ film と分からない）。

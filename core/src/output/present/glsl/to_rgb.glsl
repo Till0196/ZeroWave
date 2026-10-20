@@ -1,8 +1,10 @@
 
 vec4 to_rgb(float y, float u, float v) {
-    y = (y - luma_offset) * luma_gain;
-    u = (u - chroma_offset) * chroma_gain;
-    v = (v - chroma_offset) * chroma_gain;
+    y = (y - luma_offset) * luma_gain + luma_lift;
+    float cb = (u - chroma_offset) * chroma_gain;
+    float cr = (v - chroma_offset) * chroma_gain;
+    u = cb * chroma_cos + cr * chroma_sin;
+    v = cr * chroma_cos - cb * chroma_sin;
     float kg = 1.0 - kr - kb;
     vec3 rgb = vec3(
         y + 2.0 * (1.0 - kr) * v,

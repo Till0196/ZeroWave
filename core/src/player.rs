@@ -53,6 +53,9 @@ pub struct Options {
     pub volume: u32,
     pub muted: bool,
     pub scaling: crate::output::video::Scaling,
+    /// プログレッシブと示されたシーケンスとフレームはデインターレースしない。
+    pub adapt_progressive: bool,
+    pub adjust: crate::output::video::Adjust,
 }
 
 impl Default for Options {
@@ -71,6 +74,8 @@ impl Default for Options {
             volume: crate::sound::volume::MAX,
             scaling: crate::output::video::Scaling::default(),
             muted: false,
+            adapt_progressive: true,
+            adjust: crate::output::video::Adjust::default(),
         }
     }
 }
@@ -588,14 +593,23 @@ impl Player {
         self.options.scaling
     }
 
-    /// デコーダー・デインターレース・映像の本数は次の選局から反映する。拡大縮小・逆テレシネ・出力の遅延はすぐ反映する。
+    /// デコーダー・デインターレース・映像の本数は次の選局から反映する。
+    /// 拡大縮小・映像の調整・逆テレシネ・出力の遅延はすぐ反映する。
     pub fn set_decoding(&mut self, options: &Options) {
         self.options.decoder = options.decoder;
         self.options.api = options.api;
         crate::decode::set_api(options.api);
         self.options.deinterlace = options.deinterlace;
         self.options.deinterlace_by = options.deinterlace_by;
+        self.options.adapt_progressive = options.adapt_progressive;
+        crate::output::video::set_adapt_progressive(options.adapt_progressive);
         self.options.video = options.video;
+        if self.options.adjust != options.adjust {
+            self.options.adjust = options.adjust;
+            if let Some(video) = self.video.as_mut() {
+                video.set_adjust(options.adjust);
+            }
+        }
         if self.options.scaling != options.scaling {
             self.options.scaling = options.scaling;
             if let Some(video) = self.video.as_mut() {

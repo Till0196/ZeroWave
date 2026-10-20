@@ -593,6 +593,19 @@ impl Screen {
         let _ = scaling;
     }
 
+    pub fn set_adjust(&mut self, adjust: crate::output::video::Adjust) {
+        #[cfg(not(any(feature = "wgpu", unix)))]
+        let _ = adjust;
+        match self {
+            #[cfg(feature = "wgpu")]
+            Self::Wgpu(video) => video.set_adjust(adjust),
+            #[cfg(unix)]
+            Self::Gles(present) => present.set_adjust(adjust),
+            #[cfg(not(any(feature = "wgpu", unix)))]
+            Self::Never(never) => match *never {},
+        }
+    }
+
     pub fn set_settings(&mut self, settings: Settings) {
         match self {
             #[cfg(feature = "wgpu")]
@@ -628,6 +641,11 @@ fn measured(gpu: &Gpu, format: Format) -> (Settings, Upload) {
     static MEASURED: std::sync::Mutex<Vec<(String, Format, Settings, Upload)>> =
         std::sync::Mutex::new(Vec::new());
     let name = gpu.name();
+    // プログレッシブを見ない設定では、インターレースと同じに測って別に覚える。
+    let format = Format {
+        progressive: format.progressive && crate::output::video::adapt_progressive(),
+        ..format
+    };
     if let Some((_, _, settings, upload)) = MEASURED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

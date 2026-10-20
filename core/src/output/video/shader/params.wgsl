@@ -14,4 +14,8 @@ struct Params {
     // （body_match.wgsl）。
     comb: f32,
     motion: f32,
+    // 明るさ・コントラスト・色合い・彩度（`colour::Adjust`）。
+    luma_lift: f32,
+    chroma_cos: f32,
+    chroma_sin: f32,
 };

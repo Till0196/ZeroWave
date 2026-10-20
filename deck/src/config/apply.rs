@@ -132,6 +132,15 @@ pub fn choices(file: &File) -> Result<Applied, String> {
         other => return Err(format!("general.on_start_volume に {other}: last|fixed")),
     };
     choices.knobs = knobs(file)?;
+    choices.options.adapt_progressive = file.video.deinterlace.adapt_progressive;
+    let picture = &file.video.picture;
+    choices.options.adjust = zwcore::output::video::Adjust {
+        brightness: picture.brightness,
+        contrast: picture.contrast,
+        hue: picture.hue,
+        saturation: picture.saturation,
+    }
+    .clamped();
     let passthrough = match file.audio.passthrough.as_str() {
         "" | "off" | "false" => Passthrough::Off,
         "on" | "true" => Passthrough::On,
@@ -529,6 +538,36 @@ restore_mute = true
                 .unwrap_err()
                 .contains("operation.wheel_shift")
         );
+    }
+
+    #[test]
+    fn the_picture_and_progressive_settings_reach_the_player() {
+        let file = File::parse(
+            r#"
+[video.deinterlace]
+adapt_progressive = false
+[video.picture]
+brightness = 10
+contrast = -20
+hue = 270
+saturation = 30
+"#,
+        )
+        .unwrap();
+        let options = choices(&file).unwrap().choices.options;
+        assert!(!options.adapt_progressive);
+        assert_eq!(
+            options.adjust,
+            zwcore::output::video::Adjust {
+                brightness: 10,
+                contrast: -20,
+                hue: 180,
+                saturation: 30,
+            }
+        );
+        let plain = choices(&File::default()).unwrap().choices.options;
+        assert!(plain.adapt_progressive);
+        assert!(plain.adjust.is_identity());
     }
 
     #[test]

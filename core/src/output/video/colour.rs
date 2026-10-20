@@ -413,7 +413,33 @@ pub fn squeeze_one(nits: f32, peak: f32, white: f32) -> f32 {
     pq_to_nits(e2 * top)
 }
 
+/// 明るさ・コントラスト・色合い・彩度
+/// 色合いは度で −180〜180、ほかは −100〜100。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Adjust {
+    pub brightness: i32,
+    pub contrast: i32,
+    pub hue: i32,
+    pub saturation: i32,
+}
+
+impl Adjust {
+    pub fn clamped(self) -> Self {
+        Self {
+            brightness: self.brightness.clamp(-100, 100),
+            contrast: self.contrast.clamp(-100, 100),
+            hue: self.hue.clamp(-180, 180),
+            saturation: self.saturation.clamp(-100, 100),
+        }
+    }
+
+    pub fn is_identity(self) -> bool {
+        self.clamped() == Self::default()
+    }
+}
+
 /// オフセットと利得は保存幅（255、1023）で正規化した値に対して出す。
+/// `luma_lift` と `chroma_cos`・`chroma_sin` は [`Adjust`] の分（掛けなければ 0・1・0）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Conversion {
     pub luma_offset: f32,
@@ -422,6 +448,9 @@ pub struct Conversion {
     pub chroma_gain: f32,
     pub kr: f32,
     pub kb: f32,
+    pub luma_lift: f32,
+    pub chroma_cos: f32,
+    pub chroma_sin: f32,
 }
 
 impl Conversion {
@@ -439,6 +468,9 @@ impl Conversion {
                 chroma_gain: full / (224.0 * step),
                 kr,
                 kb,
+                luma_lift: 0.0,
+                chroma_cos: 1.0,
+                chroma_sin: 0.0,
             }
         } else {
             Self {
@@ -448,15 +480,61 @@ impl Conversion {
                 chroma_gain: full / (255.0 * step),
                 kr,
                 kb,
+                luma_lift: 0.0,
+                chroma_cos: 1.0,
+                chroma_sin: 0.0,
             }
         }
     }
 
+    /// 明るさは 8 ビットの符号値で `brightness × 255 / 100` を足し、コントラストは黒からの幅を
+    /// `1 + contrast / 100` 倍にする。色差は色合いの角度だけ回して `1 + saturation / 100` 倍にする。
+    pub fn adjusted(self, adjust: Adjust, depth: u8) -> Self {
+        let adjust = adjust.clamped();
+        let depth = depth.clamp(8, 16);
+        let full = ((1u32 << depth) - 1) as f32;
+        let step = (1u32 << (depth - 8)) as f32;
+        let contrast = 1.0 + adjust.contrast as f32 / 100.0;
+        let saturation = 1.0 + adjust.saturation as f32 / 100.0;
+        let (sin, cos) = (adjust.hue as f32).to_radians().sin_cos();
+        Self {
+            luma_lift: adjust.brightness as f32 / 100.0 * 255.0 * step / full * self.luma_gain,
+            luma_gain: self.luma_gain * contrast,
+            chroma_cos: saturation * cos,
+            chroma_sin: saturation * sin,
+            ..self
+        }
+    }
+
+    /// 調整を RGB に掛ける形（行ごとに 3 つの係数と足す値）。ドライバーが RGB にして返すフレーム用。
+    pub fn rgb_rows(&self, base: &Self) -> [[f32; 4]; 3] {
+        let kg = 1.0 - self.kr - self.kb;
+        let to_rgb = [
+            [1.0, 0.0, 2.0 * (1.0 - self.kr)],
+            [
+                1.0,
+                -2.0 * (1.0 - self.kb) * self.kb / kg,
+                -2.0 * (1.0 - self.kr) * self.kr / kg,
+            ],
+            [1.0, 2.0 * (1.0 - self.kb), 0.0],
+        ];
+        let contrast = self.luma_gain / base.luma_gain;
+        let adjust = [
+            [contrast, 0.0, 0.0],
+            [0.0, self.chroma_cos, self.chroma_sin],
+            [0.0, -self.chroma_sin, self.chroma_cos],
+        ];
+        let whole = product(&product(&to_rgb, &adjust), &inverse(&to_rgb));
+        whole.map(|row| [row[0], row[1], row[2], self.luma_lift])
+    }
+
     /// フラグメントシェーダーと同じ計算。
     pub fn to_rgb(&self, y: f32, cb: f32, cr: f32) -> [f32; 3] {
-        let luma = (y - self.luma_offset) * self.luma_gain;
-        let u = (cb - self.chroma_offset) * self.chroma_gain;
-        let v = (cr - self.chroma_offset) * self.chroma_gain;
+        let luma = (y - self.luma_offset) * self.luma_gain + self.luma_lift;
+        let cb = (cb - self.chroma_offset) * self.chroma_gain;
+        let cr = (cr - self.chroma_offset) * self.chroma_gain;
+        let u = cb * self.chroma_cos + cr * self.chroma_sin;
+        let v = cr * self.chroma_cos - cb * self.chroma_sin;
         let kg = 1.0 - self.kr - self.kb;
         let rgb = [
             luma + 2.0 * (1.0 - self.kr) * v,
@@ -466,6 +544,20 @@ impl Conversion {
         ];
         rgb.map(|c| c.clamp(0.0, 1.0))
     }
+}
+
+fn product(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()))
+}
+
+fn inverse(m: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let cofactor = |i: usize, j: usize| {
+        let (r0, r1) = ((i + 1) % 3, (i + 2) % 3);
+        let (c0, c1) = ((j + 1) % 3, (j + 2) % 3);
+        m[r0][c0] * m[r1][c1] - m[r0][c1] * m[r1][c0]
+    };
+    let determinant: f32 = (0..3).map(|j| m[0][j] * cofactor(0, j)).sum();
+    std::array::from_fn(|i| std::array::from_fn(|j| cofactor(j, i) / determinant))
 }
 
 pub fn quantise(value: f32) -> u8 {
@@ -851,5 +943,115 @@ mod tests {
         let hlg_onto_pq = Mapping::new(Transfer::Hlg, Primaries::Bt2020, Space::Pq);
         let white = hlg_onto_pq.apply([0.75; 3], false);
         assert!(near(white[0], 0.5807, 0.003), "{white:?}");
+    }
+
+    #[test]
+    fn no_adjustment_leaves_the_conversion_as_it_was() {
+        for depth in [8, 10] {
+            let plain = Conversion::new(Matrix::Bt709, depth, true);
+            assert_eq!(plain.adjusted(Adjust::default(), depth), plain);
+        }
+    }
+
+    #[test]
+    fn brightness_and_contrast_follow_the_formula() {
+        // y = ((c × (Y − 16)) >> 9) + b + 16、c = contrast × 512 / 100 + 512、b = brightness × 255 / 100。
+        for depth in [8u8, 10] {
+            let step = (1u32 << (depth - 8)) as f32;
+            let full = ((1u32 << depth) - 1) as f32;
+            let code = |value: f32| value * step / full;
+            let base = Conversion::new(Matrix::Bt709, depth, true);
+            let adjust = Adjust {
+                brightness: 20,
+                contrast: -50,
+                ..Adjust::default()
+            };
+            let adjusted = base.adjusted(adjust, depth);
+            let y = 126.0;
+            let expected = 0.5 * (y - 16.0) + 20.0 * 255.0 / 100.0 + 16.0;
+            let grey = adjusted.to_rgb(code(y), code(128.0), code(128.0));
+            let want = base.to_rgb(code(expected), code(128.0), code(128.0));
+            for (got, want) in grey.iter().zip(want) {
+                assert!((got - want).abs() < 1e-4, "depth {depth}: {grey:?} {want}");
+            }
+        }
+    }
+
+    #[test]
+    fn half_a_turn_of_hue_swaps_the_colour_for_its_opposite() {
+        let base = Conversion::new(Matrix::Bt709, 8, true);
+        let turned = base.adjusted(
+            Adjust {
+                hue: 180,
+                ..Adjust::default()
+            },
+            8,
+        );
+        let code = |value: f32| value / 255.0;
+        let red = turned.to_rgb(code(81.0), code(90.0), code(240.0));
+        let opposite = base.to_rgb(code(81.0), code(166.0), code(16.0));
+        for (got, want) in red.iter().zip(opposite) {
+            assert!((got - want).abs() < 2e-3, "{red:?} {opposite:?}");
+        }
+    }
+
+    #[test]
+    fn no_saturation_leaves_only_grey() {
+        let base = Conversion::new(Matrix::Bt709, 8, true);
+        let grey = base.adjusted(
+            Adjust {
+                saturation: -100,
+                ..Adjust::default()
+            },
+            8,
+        );
+        let rgb = grey.to_rgb(81.0 / 255.0, 90.0 / 255.0, 240.0 / 255.0);
+        assert!(
+            (rgb[0] - rgb[1]).abs() < 1e-5 && (rgb[1] - rgb[2]).abs() < 1e-5,
+            "{rgb:?}"
+        );
+    }
+
+    #[test]
+    fn the_rows_for_rgb_give_what_the_adjustment_gives_on_ycbcr() {
+        let base = Conversion::new(Matrix::Bt2020, 10, true);
+        let adjust = Adjust {
+            brightness: -15,
+            contrast: 30,
+            hue: 40,
+            saturation: 25,
+        };
+        let adjusted = base.adjusted(adjust, 10);
+        let rows = adjusted.rgb_rows(&base);
+        for (y, cb, cr) in [(0.3, 0.45, 0.6), (0.5, 0.5, 0.5), (0.7, 0.55, 0.42)] {
+            let before = base.to_rgb(y, cb, cr);
+            let after = adjusted.to_rgb(y, cb, cr);
+            let through = rows.map(|row| {
+                (row[0] * before[0] + row[1] * before[1] + row[2] * before[2] + row[3])
+                    .clamp(0.0, 1.0)
+            });
+            for (got, want) in through.iter().zip(after) {
+                assert!((got - want).abs() < 1e-4, "{through:?} {after:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn values_past_the_ends_are_held_to_them() {
+        let wild = Adjust {
+            brightness: 300,
+            contrast: -300,
+            hue: 400,
+            saturation: 101,
+        };
+        assert_eq!(
+            wild.clamped(),
+            Adjust {
+                brightness: 100,
+                contrast: -100,
+                hue: 180,
+                saturation: 100,
+            }
+        );
     }
 }

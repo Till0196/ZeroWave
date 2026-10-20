@@ -52,14 +52,17 @@ pub struct Params {
     /// 縞を見るしきい値（隣の行との差）と動きのしきい値（前のフレームとの差）。
     pub comb: f32,
     pub motion: f32,
+    pub luma_lift: f32,
+    pub chroma_cos: f32,
+    pub chroma_sin: f32,
 }
 
 impl Params {
-    pub const SIZE: usize = 48;
+    pub const SIZE: usize = 64;
 
     pub fn bytes(&self) -> [u8; Self::SIZE] {
         let mut out = [0u8; Self::SIZE];
-        let words: [[u8; 4]; 12] = [
+        let words: [[u8; 4]; 15] = [
             self.first_row.to_le_bytes(),
             self.mate_row.to_le_bytes(),
             self.luma_offset.to_le_bytes(),
@@ -72,6 +75,9 @@ impl Params {
             self.height.to_le_bytes(),
             self.comb.to_le_bytes(),
             self.motion.to_le_bytes(),
+            self.luma_lift.to_le_bytes(),
+            self.chroma_cos.to_le_bytes(),
+            self.chroma_sin.to_le_bytes(),
         ];
         for (at, word) in words.iter().enumerate() {
             out[at * 4..at * 4 + 4].copy_from_slice(word);
@@ -474,6 +480,9 @@ mod tests {
             height: 1080,
             comb: 0.001,
             motion: 0.02,
+            luma_lift: 0.125,
+            chroma_cos: 0.75,
+            chroma_sin: -0.5,
         };
         let bytes = params.bytes();
         assert_eq!(&bytes[0..4], &1u32.to_le_bytes());
@@ -481,6 +490,8 @@ mod tests {
         assert_eq!(&bytes[8..12], &0.5f32.to_le_bytes());
         assert_eq!(&bytes[32..36], &1440u32.to_le_bytes());
         assert_eq!(&bytes[36..40], &1080u32.to_le_bytes());
+        assert_eq!(&bytes[48..52], &0.125f32.to_le_bytes());
+        assert_eq!(&bytes[56..60], &(-0.5f32).to_le_bytes());
         assert_eq!(bytes.len(), Params::SIZE);
     }
 

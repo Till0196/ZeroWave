@@ -94,6 +94,7 @@ impl Stage {
             || was.api != options.api
             || was.deinterlace != options.deinterlace
             || was.deinterlace_by != options.deinterlace_by
+            || was.adapt_progressive != options.adapt_progressive
             || was.video != options.video;
         self.player.set_decoding(&options);
         let recreate = self.choices.present != applied.choices.present

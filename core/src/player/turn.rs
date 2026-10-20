@@ -166,6 +166,7 @@ impl Player {
                             video.set_inset(self.inset);
                             video.set_pan_scan(self.pan_scan);
                             video.set_scaling(self.scaling());
+                            video.set_adjust(self.options.adjust);
                             video.set_display_rate(self.display_mhz);
                             self.video = Some(video);
                         }

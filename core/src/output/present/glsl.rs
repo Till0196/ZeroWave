@@ -36,9 +36,12 @@ pub struct Params {
     pub chroma_gain: f32,
     pub kr: f32,
     pub kb: f32,
+    pub luma_lift: f32,
+    pub chroma_cos: f32,
+    pub chroma_sin: f32,
 }
 
-pub const UNIFORMS: [&str; 8] = [
+pub const UNIFORMS: [&str; 11] = [
     "first_row",
     "mate_row",
     "luma_offset",
@@ -47,10 +50,13 @@ pub const UNIFORMS: [&str; 8] = [
     "chroma_gain",
     "kr",
     "kb",
+    "luma_lift",
+    "chroma_cos",
+    "chroma_sin",
 ];
 
 impl Params {
-    pub fn values(&self) -> [f32; 8] {
+    pub fn values(&self) -> [f32; 11] {
         [
             self.first_row as f32,
             self.mate_row as f32,
@@ -60,6 +66,9 @@ impl Params {
             self.chroma_gain,
             self.kr,
             self.kb,
+            self.luma_lift,
+            self.chroma_cos,
+            self.chroma_sin,
         ]
     }
 }
@@ -519,10 +528,17 @@ pub fn external(tone: &Tone) -> String {
         text.find('\n').map_or(0, |at| at + 1),
         "#extension GL_OES_EGL_image_external : require\n",
     );
-    text.push_str("uniform samplerExternalOES picture;\nvarying vec2 uv;\n");
-    text.push_str(&tone.function());
     text.push_str(
-        "void main() { gl_FragColor = vec4(tone(clamp(texture2D(picture, uv).rgb, 0.0, 1.0)), 1.0); }\n",
+        "uniform samplerExternalOES picture;\nuniform vec4 row_r;\nuniform vec4 row_g;\nuniform vec4 row_b;\nvarying vec2 uv;\n",
+    );
+    text.push_str(&tone.function());
+    // 明るさなどの調整は、ドライバーが返した RGB に掛ける（Y'CbCr に掛けるのと同じ一次変換）。
+    text.push_str(
+        "void main() {\n\
+         \x20   vec4 rgb = vec4(texture2D(picture, uv).rgb, 1.0);\n\
+         \x20   vec3 adjusted = vec3(dot(row_r, rgb), dot(row_g, rgb), dot(row_b, rgb));\n\
+         \x20   gl_FragColor = vec4(tone(clamp(adjusted, 0.0, 1.0)), 1.0);\n\
+         }\n",
     );
     text
 }

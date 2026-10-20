@@ -339,12 +339,52 @@ pub(super) fn video(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File, g
         &loaded.video.deinterlace.method,
         DEINTERLACE,
     );
+    form.key("video.deinterlace.adapt_progressive");
+    form.check(
+        "",
+        "プログレッシブ適応",
+        &mut edited.video.deinterlace.adapt_progressive,
+        loaded.video.deinterlace.adapt_progressive,
+    );
+    form.hint("プログレッシブと示された映像はデインターレースしない");
     form.key("video.deinterlace.telecine");
     form.check(
         "",
         "24p の映像を検出したら逆テレシネする",
         &mut edited.video.deinterlace.telecine,
         loaded.video.deinterlace.telecine,
+    );
+    form.section("色調補正");
+    let picture = &mut edited.video.picture;
+    let was = &loaded.video.picture;
+    form.key("video.picture.brightness");
+    form.slider_reset(
+        "明るさ",
+        &mut picture.brightness,
+        was.brightness,
+        -100..=100,
+        "",
+        0,
+    );
+    form.key("video.picture.contrast");
+    form.slider_reset(
+        "コントラスト",
+        &mut picture.contrast,
+        was.contrast,
+        -100..=100,
+        "",
+        0,
+    );
+    form.key("video.picture.hue");
+    form.slider_reset("色相", &mut picture.hue, was.hue, -180..=180, "度", 0);
+    form.key("video.picture.saturation");
+    form.slider_reset(
+        "彩度",
+        &mut picture.saturation,
+        was.saturation,
+        -100..=100,
+        "",
+        0,
     );
     form.section("拡大縮小");
     form.key("video.scale.upscale");

@@ -78,6 +78,8 @@ struct ExternalProgram {
     name: gl::GLuint,
     rect: gl::GLint,
     picture: gl::GLint,
+    /// 明るさなどの調整を RGB に掛ける 3 行（[`crate::output::video::colour::Conversion::rgb_rows`]）。
+    rows: [gl::GLint; 3],
 }
 
 #[derive(Debug)]
@@ -168,6 +170,7 @@ pub struct Present {
     pan_scan: crate::output::video::pan_scan::PanScan,
     format: Format,
     settings: Settings,
+    adjust: crate::output::video::Adjust,
     /// 映像のトーンの変換先（ウィンドウの画面の色空間、[`Window::space`]）。
     space: Space,
     taps: Taps,
@@ -469,6 +472,7 @@ impl Present {
             pan_scan: Default::default(),
             format,
             settings,
+            adjust: crate::output::video::Adjust::default(),
             space,
             taps,
             pool,
@@ -572,6 +576,10 @@ impl Present {
 
     pub fn format(&self) -> Format {
         self.format
+    }
+
+    pub fn set_adjust(&mut self, adjust: crate::output::video::Adjust) {
+        self.adjust = adjust;
     }
 
     pub fn set_settings(&mut self, settings: Settings) -> Result<(), Error> {
@@ -781,8 +789,9 @@ impl Present {
         let about = picture.about();
         // コピーせずに出すパスの bob はフィールド単位なので、明示の指定が無い weave もこれに替える。
         // HEVC の `field_seq_flag` のフレームは全行そろっているのでフィルターを掛けない。
-        let interlaced =
-            !about.progressive && !about.format.progressive && !about.format.field_pictures;
+        let adapt = crate::output::video::adapt_progressive();
+        let interlaced = !(adapt && (about.progressive || about.format.progressive))
+            && !about.format.field_pictures;
         let field_bob = interlaced
             && (self.settings.deinterlace != Deinterlace::Weave
                 || !self.settings.deinterlace_chosen);
@@ -1000,6 +1009,7 @@ impl Present {
                     name,
                     rect: uniform(&self.gl, name, "rect"),
                     picture: uniform(&self.gl, name, "picture"),
+                    rows: ["row_r", "row_g", "row_b"].map(|row| uniform(&self.gl, name, row)),
                 })
             })
             .flatten();

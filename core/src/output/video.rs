@@ -26,7 +26,7 @@ pub mod telecine;
 /// フィルターが参照中のサーフェスへデコードされてはならない。デコーダーのリングバッファの大きさもこれで決まる。
 pub const HELD_BY_FILTER: usize = 8;
 
-pub use colour::{Mapping, Matrix, Primaries, Space, Transfer};
+pub use colour::{Adjust, Mapping, Matrix, Primaries, Space, Transfer};
 pub use field::{Cadence, Output, Parity, Plan, Source};
 pub use filter::comb;
 
@@ -175,8 +175,13 @@ impl Settings {
     /// デインタレーサーはフレームのフラグではなくシーケンスヘッダーで選ぶ
     /// （MPEG-2 の `progressive_frame` は当てにならない）。
     pub fn of_format(format: mediadecoder::es::Format) -> Self {
+        Self::adapting(format, adapt_progressive())
+    }
+
+    /// `adapt` が偽なら、プログレッシブのシーケンスもインターレースと同じに扱う。
+    pub fn adapting(format: mediadecoder::es::Format, adapt: bool) -> Self {
         // HEVC の `field_seq_flag` のフレームは一フィールドで全行そろっている。
-        let whole = format.progressive || format.field_pictures;
+        let whole = (format.progressive && adapt) || format.field_pictures;
         Self {
             deinterlace: if whole {
                 Deinterlace::Weave
@@ -191,6 +196,18 @@ impl Settings {
             primaries: Primaries::of_format(format),
         }
     }
+}
+
+static ADAPT_PROGRESSIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// プログレッシブと示されたシーケンスとフレームはデインターレースしない。
+/// 切ると、示されていても選んだ方式で全部デインターレースする。
+pub fn set_adapt_progressive(on: bool) {
+    ADAPT_PROGRESSIVE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn adapt_progressive() -> bool {
+    ADAPT_PROGRESSIVE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub const FIELD_BUDGET_MS: f64 = 1000.0 / 59.94;
@@ -235,3 +252,33 @@ impl std::fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_progressive_sequence_is_deinterlaced_only_when_not_adapting() {
+        let progressive = mediadecoder::es::Format {
+            width: 1920,
+            height: 1080,
+            progressive: true,
+            ..mediadecoder::es::Format::default()
+        };
+        assert_eq!(
+            Settings::adapting(progressive, true).deinterlace,
+            Deinterlace::Weave
+        );
+        let forced = Settings::adapting(progressive, false);
+        assert_eq!(forced.deinterlace, Deinterlace::Bob);
+        assert!(forced.telecine);
+        let lone_fields = mediadecoder::es::Format {
+            field_pictures: true,
+            ..progressive
+        };
+        assert_eq!(
+            Settings::adapting(lone_fields, false).deinterlace,
+            Deinterlace::Weave
+        );
+    }
+}

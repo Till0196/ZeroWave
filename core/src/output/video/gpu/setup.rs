@@ -167,6 +167,7 @@ impl Video {
             display_mhz: 0,
             lost: 0,
             scaling: super::Scaling::default(),
+            adjust: crate::output::video::Adjust::default(),
             shown: None,
             content: (0.0, 0.0),
             #[cfg(feature = "plugins")]

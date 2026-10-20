@@ -47,6 +47,7 @@ impl Player {
         // 音声のスレッドはここで起動する。チャネルは選局のたびに [`Player::start`] で作る。
         let shared = Arc::new(Shared::new(rate));
         crate::decode::set_api(options.api);
+        crate::output::video::set_adapt_progressive(options.adapt_progressive);
         let extra = i64::from(options.audio_latency) * i64::from(rate) / 1000;
         let say = crate::sound::sounding::spawn(sound, Arc::clone(&shared), extra, options.mix);
         if let Some(say) = say.as_ref() {
