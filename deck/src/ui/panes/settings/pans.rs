@@ -122,7 +122,6 @@ pub(super) fn pans(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
             ..Pan::default()
         });
     }
-    form.hint("X・Y・幅・高さは映像全体に対する %。切り出した所を比率の縦横比で表示します");
 }
 
 /// 行 `row` の `at` に短い札を書き、その右端を返す。

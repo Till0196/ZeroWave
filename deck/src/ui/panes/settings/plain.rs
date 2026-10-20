@@ -342,11 +342,10 @@ pub(super) fn video(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File, g
     form.key("video.deinterlace.adapt_progressive");
     form.check(
         "",
-        "プログレッシブ適応",
+        "インターレースのみ処理",
         &mut edited.video.deinterlace.adapt_progressive,
         loaded.video.deinterlace.adapt_progressive,
     );
-    form.hint("プログレッシブと示された映像はデインターレースしない");
     form.key("video.deinterlace.telecine");
     form.check(
         "",
@@ -376,7 +375,7 @@ pub(super) fn video(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File, g
         0,
     );
     form.key("video.picture.hue");
-    form.slider_reset("色相", &mut picture.hue, was.hue, -180..=180, "度", 0);
+    form.slider_reset("色相", &mut picture.hue, was.hue, -180..=180, "", 0);
     form.key("video.picture.saturation");
     form.slider_reset(
         "彩度",
@@ -1289,9 +1288,6 @@ pub(super) fn playback(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File
         "チャンネル切り替え時のエラーカウントをリセットする",
         &mut edited.playback.reset_errors_on_tune,
         loaded.playback.reset_errors_on_tune,
-    );
-    form.hint(
-        "選局して 5 秒たち、サービスが分かってから 0 に戻します。録画を始めたときも 0 に戻します",
     );
     form.section("ワンセグ");
     form.key("playback.oneseg");
