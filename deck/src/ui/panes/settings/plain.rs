@@ -103,8 +103,8 @@ const FULLSCREEN: Choices = &[
     ("stretch", "引き伸ばす"),
 ];
 const OSD_CHANNEL: Choices = &[
-    ("logo+name", "ロゴと名前"),
-    ("name", "名前のみ"),
+    ("logo+name", "ロゴとテキスト"),
+    ("name", "テキストのみ"),
     ("number", "番号のみ"),
     ("off", "表示しない"),
 ];
@@ -266,7 +266,7 @@ pub(super) fn operation(form: &mut Form<'_, '_>, edited: &mut File, loaded: &Fil
         &loaded.operation.wheel_ctrl,
         WHEEL,
     );
-    form.section("マウスのクリック");
+    form.section("マウス操作");
     let named: Vec<(String, String)> = [
         (String::from("nothing"), String::from("何もしない")),
         (String::from("menu"), String::from("メニュー")),
@@ -284,14 +284,14 @@ pub(super) fn operation(form: &mut Form<'_, '_>, edited: &mut File, loaded: &Fil
         .collect();
     form.key("operation.double_click");
     form.select(
-        "ダブルクリック",
+        "左ダブルクリック",
         &mut edited.operation.double_click,
         &loaded.operation.double_click,
         &clicks,
     );
     form.key("operation.middle_click");
     form.select(
-        "中クリック",
+        "中央クリック",
         &mut edited.operation.middle_click,
         &loaded.operation.middle_click,
         &clicks,
@@ -656,7 +656,7 @@ pub(super) fn display(
     form.key("video.frame.keep_aspect");
     form.check(
         "",
-        "ウィンドウの縦横比を映像に合わせる",
+        "ウィンドウサイズ変更時に映像のアスペクト比に合わせる",
         &mut edited.video.frame.keep_aspect,
         loaded.video.frame.keep_aspect,
     );
@@ -731,12 +731,12 @@ pub(super) fn osd(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) -> 
     }
     form.key("osd.channel");
     form.select(
-        "チャンネル切替時",
+        "チャンネル切替の表示",
         &mut edited.osd.channel,
         &loaded.osd.channel,
         OSD_CHANNEL,
     );
-    form.section("番組情報");
+    form.section("番組情報OSD");
     form.key("osd.event");
     form.slider(
         "表示時間",
@@ -746,8 +746,8 @@ pub(super) fn osd(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) -> 
         "秒",
     );
     for (flag, said) in [
-        ("channel", "チャンネル切替時に表示する"),
-        ("event", "番組変更時に表示する"),
+        ("channel", "チャンネル切替時に自動表示"),
+        ("event", "番組切り替わり時に自動表示"),
     ] {
         let mut on = edited.osd.event_on.iter().any(|s| s == flag);
         let was = loaded.osd.event_on.iter().any(|s| s == flag);
@@ -1272,10 +1272,10 @@ pub(super) fn capture(
 }
 
 pub(super) fn playback(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
-    form.section("バッファ");
+    form.section("バッファリング");
     form.key("playback.buffer");
     form.slider(
-        "最大バッファ",
+        "最大バッファサイズ",
         &mut edited.playback.buffer,
         loaded.playback.buffer,
         1..=30,

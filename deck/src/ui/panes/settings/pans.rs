@@ -64,31 +64,33 @@ pub(super) fn pans(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
         }
         let row = form.line(skin::SELECT_HEIGHT);
         let mut at = row.left() + 26.0;
-        let fields: [(&str, &mut f32); 4] = [
-            ("X", &mut pan.x),
-            ("Y", &mut pan.y),
-            ("幅", &mut pan.width),
-            ("高さ", &mut pan.height),
+        let groups: [(&str, [(&str, &mut f32); 2]); 2] = [
+            ("位置", [("横", &mut pan.x), ("縦", &mut pan.y)]),
+            ("大きさ", [("横", &mut pan.width), ("縦", &mut pan.height)]),
         ];
-        for (label, value) in fields {
-            at = said(form, at, row, label);
-            form.number_box(
-                Rect::from_min_size(pos2(at, row.top()), vec2(NUMBER, row.height())),
-                value,
-                0.0..=100.0,
-            );
-            at += NUMBER + 4.0;
+        for (title, pair) in groups {
+            at = said(form, at, row, title) + 4.0;
+            for (label, value) in pair {
+                at = said(form, at, row, label);
+                form.number_box(
+                    Rect::from_min_size(pos2(at, row.top()), vec2(NUMBER, row.height())),
+                    value,
+                    0.0..=100.0,
+                );
+                at += NUMBER + 4.0;
+            }
             at = said(form, at, row, "%") + 8.0;
         }
-        at = said(form, at, row, "比率");
+        at = said(form, at, row, "比率") + 4.0;
         let [across, down] = &mut pan.aspect;
+        at = said(form, at, row, "横");
         form.number_box(
             Rect::from_min_size(pos2(at, row.top()), vec2(NUMBER, row.height())),
             across,
             1..=10_000,
         );
         at += NUMBER + 4.0;
-        at = said(form, at, row, ":");
+        at = said(form, at, row, "縦");
         form.number_box(
             Rect::from_min_size(pos2(at, row.top()), vec2(NUMBER, row.height())),
             down,
