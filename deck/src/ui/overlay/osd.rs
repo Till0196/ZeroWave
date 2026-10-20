@@ -53,11 +53,9 @@ impl Look {
 /// OSD の設定（`[osd]`）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Prefs {
-    /// チャンネルとメッセージを出す秒（`osd.fade`）。
+    /// チャンネル・番組情報・メッセージを出す秒（`osd.fade`）。
     pub fade: f32,
     pub look: Look,
-    /// 番組情報を出す秒（`osd.event`）。0 なら自動では出さない。
-    pub event: u32,
     /// 選局したときと番組が替わったときに番組情報を出すか。
     pub on_channel: bool,
     pub on_event: bool,
@@ -69,18 +67,8 @@ impl Prefs {
         Self {
             fade: file.fade.max(1) as f32,
             look: Look::of(&file.channel),
-            event: file.event,
             on_channel: on("channel"),
             on_event: on("event"),
-        }
-    }
-
-    /// 頼まれて番組情報を出すときの秒。自動で出さない設定でも出す。
-    fn asked(self) -> f32 {
-        if self.event == 0 {
-            osd::SHOWN_FOR
-        } else {
-            self.event as f32
         }
     }
 }
@@ -165,7 +153,7 @@ impl State {
             look => look,
         };
         self.channel.start(prefs.fade);
-        self.event.start(prefs.asked());
+        self.event.start(prefs.fade);
     }
 
     /// 選局や番組の切り替わりで出す。設定で出さない物は出さない。
@@ -178,8 +166,8 @@ impl State {
             Why::Channel => prefs.on_channel,
             Why::Event => prefs.on_event,
         };
-        if wanted && prefs.event > 0 {
-            self.event.start(prefs.event as f32);
+        if wanted {
+            self.event.start(prefs.fade);
         }
     }
 
@@ -650,7 +638,6 @@ mod tests {
         Prefs {
             fade: 3.0,
             look: Look::LogoAndName,
-            event: 20,
             on_channel: true,
             on_event: true,
         }
@@ -663,16 +650,14 @@ mod tests {
         }
     }
 
-    /// チャンネルとメッセージは osd.fade、番組情報は osd.event の秒だけ出る。
+    /// チャンネル・番組情報・メッセージは osd.fade の秒だけ出る。
     #[test]
-    fn each_part_stays_for_its_own_seconds() {
+    fn each_part_stays_for_the_fade_seconds() {
         let mut state = State::default();
         state.show_on(prefs(), Why::Channel);
-        ago(&mut state, 10);
-        let shown = state.shown().expect("番組情報は残る");
-        assert_eq!(shown.channel, 0.0);
-        assert_eq!(shown.event, 1.0);
-        ago(&mut state, 21);
+        let shown = state.shown().expect("出る");
+        assert_eq!((shown.channel, shown.event), (1.0, 1.0));
+        ago(&mut state, 4);
         assert!(state.shown().is_none());
 
         let mut state = State::default();
@@ -696,7 +681,7 @@ mod tests {
         assert_eq!(state.shown().map(|shown| shown.event), Some(1.0));
 
         let never = Prefs {
-            event: 0,
+            on_channel: false,
             ..channel_only
         };
         let mut state = State::default();
@@ -704,7 +689,7 @@ mod tests {
         assert_eq!(
             state.shown().map(|shown| shown.event),
             Some(0.0),
-            "0 秒なら自動では出さない"
+            "選局時に表示しない"
         );
         state.show(never);
         assert_eq!(

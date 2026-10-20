@@ -737,14 +737,6 @@ pub(super) fn osd(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) -> 
         OSD_CHANNEL,
     );
     form.section("番組情報OSD");
-    form.key("osd.event");
-    form.slider(
-        "表示時間",
-        &mut edited.osd.event,
-        loaded.osd.event,
-        0..=60,
-        "秒",
-    );
     for (flag, said) in [
         ("channel", "チャンネル切替時に自動表示"),
         ("event", "番組切り替わり時に自動表示"),

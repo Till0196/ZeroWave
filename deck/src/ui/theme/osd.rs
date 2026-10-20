@@ -67,7 +67,6 @@ pub const TOAST_MARGIN: f32 = 40.0;
 /// トーストの文字列の幅の上限（画面の幅に対する割合）。越える文は折り返す。
 pub const TOAST_WIDEST: f32 = 0.5;
 
-pub const SHOWN_FOR: f32 = 6.0;
 pub const FADE: f32 = 0.5;
 
 pub const VOLUME_INK: Color32 = Color32::from_rgb(0xee, 0xee, 0xee);

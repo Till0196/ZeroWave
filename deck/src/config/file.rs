@@ -418,7 +418,6 @@ pub struct Osd {
     pub opacity: u32,
     pub fade: u32,
     pub channel: String,
-    pub event: u32,
     pub event_on: Vec<String>,
 }
 
@@ -430,7 +429,6 @@ impl Default for Osd {
             opacity: 100,
             fade: 3,
             channel: String::from("logo+name"),
-            event: 5,
             event_on: vec![String::from("channel"), String::from("event")],
         }
     }
