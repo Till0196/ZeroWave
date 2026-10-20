@@ -9,6 +9,11 @@ impl Stage {
     pub(super) fn settings(&mut self, file: &crate::config::File) {
         self.frame = file.video.frame.clone();
         self.reset_errors_on_tune = file.playback.reset_errors_on_tune;
+        zwcore::guide::set_shown_offset(file.guide.offset * 3600);
+        if self.title_pattern != file.general.title {
+            self.title_pattern.clone_from(&file.general.title);
+            self.retitle();
+        }
         let applied = match crate::config::apply::choices(file) {
             Ok(applied) => applied,
             Err(why) => {
@@ -204,6 +209,7 @@ impl Stage {
         let _ = self
             .guide_to
             .send(ToGuide::Prefs(crate::config::apply::prefs(file)));
+        let _ = self.guide_to.send(ToGuide::Keep(file.guide.cache));
         self.hidden = file
             .channel
             .hide

@@ -15,6 +15,14 @@ impl Deck {
         self.pending.borrow_mut().clear();
         self.pending_picks.clear();
         let ctx = root.ctx().clone();
+        if self.told_on_top != Some(self.on_top) {
+            self.told_on_top = Some(self.on_top);
+            window.set_window_level(if self.on_top {
+                winit::window::WindowLevel::AlwaysOnTop
+            } else {
+                winit::window::WindowLevel::Normal
+            });
+        }
         let status_size = ui::overlay::status::text_size(self.file.ui.status_font_size);
         let arrange = ui::overlay::status::Arrange::of(&self.file.ui);
         self.status_height = ui::overlay::status::bar_height(
@@ -115,24 +123,48 @@ impl Deck {
             root.scope_id().with("映像"),
             egui::Sense::click_and_drag(),
         );
-        // 右クリックでメニュー。出せる環境では OS のもの、出せなければ egui で。
+        // クリックの動作は設定で決める。メニューは出せる環境では OS のもの、出せなければ egui で。
         let filling = self.filling();
-        if menu::Menus::has_native_context() {
-            if grabbed.secondary_clicked() {
-                self.context_wanted = true;
+        let clicked: Vec<Click> = [
+            (grabbed.double_clicked(), &self.file.operation.double_click),
+            (grabbed.middle_clicked(), &self.file.operation.middle_click),
+            (
+                grabbed.secondary_clicked(),
+                &self.file.operation.right_click,
+            ),
+        ]
+        .into_iter()
+        .filter(|(clicked, _)| *clicked)
+        .map(|(_, named)| Click::parse(named))
+        .collect();
+        let mut menu_click = false;
+        for click in clicked {
+            match click {
+                Click::Nothing => {}
+                Click::Menu => menu_click = true,
+                Click::Act(action) => self.act_on(action, window),
             }
+        }
+        if menu::Menus::has_native_context() {
+            self.context_wanted |= menu_click;
         } else {
+            let opening = if menu_click {
+                Some(egui::SetOpenCommand::Bool(true))
+            } else if grabbed.clicked() {
+                Some(egui::SetOpenCommand::Bool(false))
+            } else {
+                None
+            };
             let mut picked = None;
-            grabbed.context_menu(|ui| {
-                picked = menu::egui::context(ui, &filling);
-            });
+            egui::Popup::menu(&grabbed)
+                .open_memory(opening)
+                .at_pointer_fixed()
+                .show(|ui| picked = menu::egui::context(ui, &filling));
             if let Some(picked) = picked {
                 self.pick(picked, window);
             }
         }
-        if grabbed.double_clicked() {
-            window.set_fullscreen((!full).then_some(Fullscreen::Borderless(None)));
-        } else if grabbed.drag_started() && !full {
+        if grabbed.drag_started() && !full {
             let _ = window.drag_window();
         }
         // データ放送。文書が出ている間は文書の矩形が主で、映像・OSD・字幕はそれに合わせる。
@@ -341,7 +373,7 @@ impl Deck {
         pressed: &mut Option<ui::guide::panel::Pressed>,
         sought: &mut Option<ui::overlay::transport::Pressed>,
     ) -> f32 {
-        use ui::theme::overlay::{HOLD, IDLE_CURSOR};
+        use ui::theme::overlay::HOLD;
         let ctx = root.ctx().clone();
         let now = Instant::now();
         let pointer = ctx.input(|i| i.pointer.latest_pos());
@@ -447,13 +479,19 @@ impl Deck {
                 until.saturating_duration_since(now) + Duration::from_millis(16),
             );
         }
-        let idle = self
-            .pointer_seen
-            .is_none_or(|seen| now.duration_since(seen) >= IDLE_CURSOR);
+        // 0 秒なら隠さない。
+        let idle_cursor = Duration::from_secs(u64::from(self.file.general.hide_cursor));
+        let idle = !idle_cursor.is_zero()
+            && self
+                .pointer_seen
+                .is_none_or(|seen| now.duration_since(seen) >= idle_cursor);
         let hide = idle && !show_bottom && !show_top && !self.menu_open;
         self.show_cursor(window, !hide);
-        if !hide && let Some(seen) = self.pointer_seen {
-            ctx.request_repaint_after((seen + IDLE_CURSOR).saturating_duration_since(now));
+        if !hide
+            && !idle_cursor.is_zero()
+            && let Some(seen) = self.pointer_seen
+        {
+            ctx.request_repaint_after((seen + idle_cursor).saturating_duration_since(now));
         }
         covered
     }
@@ -532,5 +570,43 @@ impl Deck {
         let now =
             Arc::as_ptr(&self.shown_layers.lock().unwrap_or_else(|e| e.into_inner())) as usize;
         Some(now) != self.drawn_layers
+    }
+}
+
+/// 映像の上のクリック（`[operation]` の `double_click`・`middle_click`・`right_click`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Click {
+    Nothing,
+    Menu,
+    Act(crate::keys::Action),
+}
+
+impl Click {
+    /// `nothing`・`menu`、ほかはキー割り当てと同じコマンドの名前。読めなければ何もしない。
+    pub(crate) fn parse(name: &str) -> Self {
+        match name.trim() {
+            "menu" => Self::Menu,
+            "nothing" | "" => Self::Nothing,
+            other => crate::keys::Action::parse(other).map_or(Self::Nothing, Self::Act),
+        }
+    }
+}
+
+#[cfg(test)]
+mod click_tests {
+    use super::Click;
+    use crate::keys::Action;
+    use crate::window::menu::Command;
+
+    #[test]
+    fn a_click_names_a_command_like_a_key() {
+        assert_eq!(Click::parse("menu"), Click::Menu);
+        assert_eq!(Click::parse("nothing"), Click::Nothing);
+        assert_eq!(Click::parse("mute"), Click::Act(Action::Mute));
+        assert_eq!(
+            Click::parse("fullscreen"),
+            Click::Act(Action::Menu(Command::FullScreen))
+        );
+        assert_eq!(Click::parse("知らない"), Click::Nothing);
     }
 }

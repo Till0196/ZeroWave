@@ -384,6 +384,8 @@ pub struct Stage {
     errors_base: zwcore::filters::Counts,
     errors_reset_due: Option<Instant>,
     reset_errors_on_tune: bool,
+    /// ウィンドウの題の形（`general.title`）。
+    title_pattern: String,
     frame: crate::config::file::Frame,
     inset_on: bool,
     history: channels::History,

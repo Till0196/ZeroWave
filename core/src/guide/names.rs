@@ -256,13 +256,40 @@ pub fn audio_name(component_type: u8) -> Option<&'static str> {
     })
 }
 
+static SHOWN_OFFSET: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(super::JST_OFFSET);
+
+/// 時刻を表示する時差（UTC から、秒）。設定の `guide.offset`。
+pub fn shown_offset() -> i32 {
+    SHOWN_OFFSET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_shown_offset(seconds: i32) {
+    SHOWN_OFFSET.store(seconds, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// 放送の時刻（日本標準時）を、表示する時差の時刻に。
+pub fn shown(moment: Moment) -> Moment {
+    shifted(moment, shown_offset())
+}
+
+/// [`shown`] の逆。表示する時差で決めた時刻（日の始まりなど）を放送の時刻に。
+pub fn unshown(moment: Moment) -> Moment {
+    moment - shifted(0, shown_offset())
+}
+
+fn shifted(moment: Moment, offset: i32) -> Moment {
+    moment - i64::from(super::JST_OFFSET) + i64::from(offset)
+}
+
+/// 以下の表示は放送の時刻を受け取り、表示する時差で書く。
 pub fn hhmm(moment: Moment) -> String {
-    let (_, _, _, hour, minute, _) = civil(moment);
+    let (_, _, _, hour, minute, _) = civil(shown(moment));
     format!("{hour:02}:{minute:02}")
 }
 
 pub fn date_label(moment: Moment) -> String {
-    let (_, month, day, _, _, _) = civil(moment);
+    let (_, month, day, _, _, _) = civil(shown(moment));
     format!("{month}/{day}（{}）", weekday(moment))
 }
 
@@ -275,7 +302,7 @@ pub fn airtime(start: Moment, ends: Option<Moment>) -> String {
 
 pub fn weekday(moment: Moment) -> &'static str {
     const WEEKDAYS: [&str; 7] = ["日", "月", "火", "水", "木", "金", "土"];
-    WEEKDAYS[(moment.div_euclid(86_400) + 4).rem_euclid(7) as usize]
+    WEEKDAYS[(shown(moment).div_euclid(86_400) + 4).rem_euclid(7) as usize]
 }
 
 pub fn civil(moment: Moment) -> (i64, u32, u32, u32, u32, u32) {
@@ -314,6 +341,23 @@ mod tests {
             sampling: 0,
             simulcast: None,
         }
+    }
+
+    #[test]
+    fn a_time_is_shown_in_the_offset_of_the_settings() {
+        // 2026-10-16 12:40:04 JST。
+        let moment = epoch(BroadcastTime {
+            year: 2026,
+            month: 10,
+            day: 16,
+            hour: 12,
+            minute: 40,
+            second: 4,
+        });
+        assert_eq!(civil(shifted(moment, 0)).3, 3);
+        let (_, _, day, hour, minute, _) = civil(shifted(moment, -(5 * 3600 + 30 * 60)));
+        assert_eq!((day, hour, minute), (15, 22, 10));
+        assert_eq!(shifted(moment, super::super::JST_OFFSET), moment);
     }
 
     #[test]

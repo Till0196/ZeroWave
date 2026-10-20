@@ -116,7 +116,7 @@ fn channels(ui: &mut Ui, rect: Rect, strip: &Strip<'_>, cells: &Cells) -> Option
         (clock.top() + mini::HEAD_HEIGHT)..=(clock.bottom() - mini::FOOT),
         Stroke::new(1.35, skin.clock_edge),
     );
-    let (_, _, _, from_hour, _, _) = civil(strip.from);
+    let (_, _, _, from_hour, _, _) = civil(zwcore::guide::shown(strip.from));
     let current = strip.moment.and_then(|moment| now_row(moment, strip));
     for row in 0..strip.rows {
         let top = rect.top() + mini::HEAD_HEIGHT + mini::ROW_HEIGHT * row as f32;

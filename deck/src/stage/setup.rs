@@ -113,6 +113,7 @@ impl Stage {
             errors_base: zwcore::filters::Counts::default(),
             errors_reset_due: None,
             reset_errors_on_tune: crate::config::load_plain().playback.reset_errors_on_tune,
+            title_pattern: crate::config::load_plain().general.title,
             inset_on: false,
             history: channels::History::default(),
             favourites: channels::Loaded::default(),

@@ -130,14 +130,11 @@ impl Stage {
         }
     }
 
-    fn retitle(&mut self) {
+    pub(super) fn retitle(&mut self) {
         let tables = self.player.tables();
-        let mut parts: Vec<String> = Vec::new();
-        if let Some(channel) = self.status.channel.as_deref().filter(|c| !c.is_empty()) {
-            parts.push(channel.to_owned());
-        }
+        let channel = self.status.channel.clone().unwrap_or_default();
+        let mut event = String::new();
         if let Some(now) = &tables.now {
-            let mut event = String::new();
             if let Some(start) = now.start {
                 event.push_str(&zwcore::guide::airtime(start, now.ends()));
                 if now.ends().is_none() {
@@ -150,11 +147,8 @@ impl Stage {
                 }
                 event.push_str(&ui::text::badges::bracketed(&now.title));
             }
-            if !event.is_empty() {
-                parts.push(event);
-            }
         }
-        let mut title = parts.join(" / ");
+        let mut title = titled(&self.title_pattern, &channel, &event);
         if title.is_empty() {
             title.push_str("ZeroWave");
         } else {
@@ -875,7 +869,7 @@ fn band_label(key: zwcore::guide::Key, remote_key: Option<u8>) -> String {
 }
 
 fn clock_text(moment: zwcore::guide::Moment) -> String {
-    let (_, _, _, hour, minute, _) = zwcore::guide::civil(moment);
+    let (_, _, _, hour, minute, _) = zwcore::guide::civil(zwcore::guide::shown(moment));
     format!("{hour}:{minute:02}")
 }
 
@@ -1356,6 +1350,16 @@ pub(super) fn sound_codec(tables: &player::Tables) -> Option<String> {
         .map(|stream| codec_of(stream.kind, tables.he_aac))
 }
 
+/// 設定の `general.title` の `{channel}`・`{event}` を置き換える。空の所の前後の空白は詰める。
+pub(super) fn titled(pattern: &str, channel: &str, event: &str) -> String {
+    pattern
+        .replace("{channel}", channel)
+        .replace("{event}", event)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// PC の時計で、放送の時刻ではない。
 pub(super) fn clock_now() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1363,8 +1367,7 @@ pub(super) fn clock_now() -> String {
     let Ok(since) = SystemTime::now().duration_since(UNIX_EPOCH) else {
         return String::from("--:--");
     };
-    // タイムゾーンの情報を持たないので日本標準時を足す。
-    let moment = since.as_secs() as i64 + i64::from(zwcore::guide::JST_OFFSET);
+    let moment = since.as_secs() as i64 + i64::from(zwcore::guide::shown_offset());
     let (_, _, _, hour, minute, _) = zwcore::guide::civil(moment);
     format!("{hour:02}:{minute:02}")
 }

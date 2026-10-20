@@ -348,7 +348,7 @@ fn next_text(next: &Programme) -> String {
     let start = next
         .start
         .map(|start| {
-            let (_, _, _, hour, minute, _) = guide::civil(start);
+            let (_, _, _, hour, minute, _) = guide::civil(guide::shown(start));
             format!("{hour}:{minute:02}")
         })
         .unwrap_or_default();

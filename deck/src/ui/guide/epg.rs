@@ -43,9 +43,10 @@ pub const DAYS: u32 = 8;
 
 pub const DAY_STARTS_AT: i64 = 4 * 3600;
 
+/// 日の始まりは表示する時差の午前 4 時。
 pub fn day_start(moment: Moment) -> Moment {
-    let shifted = moment - DAY_STARTS_AT;
-    shifted - shifted.rem_euclid(86_400) + DAY_STARTS_AT
+    let shifted = zwcore::guide::shown(moment) - DAY_STARTS_AT;
+    zwcore::guide::unshown(shifted - shifted.rem_euclid(86_400) + DAY_STARTS_AT)
 }
 
 /// egui の既定は「ポインターを重ねるまで見えない」細いスクロールバーなので、トラックごといつも出す太めのバーに替える
@@ -76,10 +77,12 @@ pub fn scroll_bars(ui: &mut Ui, skin: &epg::Skin) {
 const MARK_SECONDS: f64 = 6.0;
 
 /// 番組の領域のスクロール量を同じフレームで見出しと時刻に伝えるので一フレーム遅れない。`jump_to` は一度だけ。
+/// `shown_hours` は 1 画面に収める時間（設定の `guide.hours`）。
 pub fn show(
     ui: &mut Ui,
     listing: &Listing,
     jump_to: Option<Key>,
+    shown_hours: u32,
     skin: &epg::Skin,
 ) -> Option<Action> {
     // `run_ui` は `CentralPanel` を置かないので、背景を自分で塗る（別ウィンドウでは黒が残る）。
@@ -91,6 +94,7 @@ pub fn show(
     let head_row = Rect::from_min_size(below.min, vec2(below.width(), epg::HEAD_HEIGHT));
     let body = Rect::from_min_max(pos2(below.left(), head_row.bottom()), below.max);
     let body_right = Rect::from_min_max(pos2(body.left() + epg::CLOCK_WIDTH, body.top()), body.max);
+    let hour = hour_height(body.height(), shown_hours);
 
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body_right));
     scroll_bars(&mut child, skin);
@@ -99,7 +103,7 @@ pub fn show(
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
     if let Some(jump) = listing.jump {
         let seconds = (jump - listing.from).max(0) as f32;
-        area = area.vertical_scroll_offset((seconds / 3600.0 * epg::HOUR - 60.0).max(0.0));
+        area = area.vertical_scroll_offset((seconds / 3600.0 * hour - 60.0).max(0.0));
     }
     // スクロールは一度きりなので、囲む番組は egui のメモリーに置く。
     let marked_id = ui.scope_id().with("送った番組");
@@ -151,7 +155,7 @@ pub fn show(
         area = area.horizontal_scroll_offset(offset);
     }
     let mut scrolled = area.show(&mut child, |ui| {
-        let height = epg::HOUR * listing.hours as f32;
+        let height = hour * listing.hours as f32;
         let width = epg::COLUMN * listing.channels.len() as f32;
         let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
         let mut picked = None;
@@ -167,7 +171,7 @@ pub fn show(
             }
             let column =
                 Rect::from_min_size(pos2(left, rect.top()), vec2(epg::COLUMN, rect.height()));
-            if let Some(happened) = one_channel(ui, column, index, listing, marked, skin) {
+            if let Some(happened) = one_channel(ui, column, index, listing, hour, marked, skin) {
                 picked = Some(happened);
             }
         }
@@ -185,7 +189,7 @@ pub fn show(
     }
 
     let clock_column = Rect::from_min_size(body.min, vec2(epg::CLOCK_WIDTH, seen_height));
-    clock(ui, clock_column, listing, skin, offset.y);
+    clock(ui, clock_column, listing, hour, skin, offset.y);
     let below_clock = Rect::from_min_max(
         pos2(body.left(), clock_column.bottom()),
         pos2(body_right.left(), body.bottom()),
@@ -283,7 +287,7 @@ fn bar(ui: &mut Ui, full: Rect, listing: &Listing, skin: &epg::Skin) -> (Option<
             (0..DAYS)
                 .map(|n| {
                     if n == 0 {
-                        let (_, month, day, _, _, _) = civil(today);
+                        let (_, month, day, _, _, _) = civil(zwcore::guide::shown(today));
                         return format!("今日 ({month}/{day} {})", weekday(today));
                     }
                     date_label(today + i64::from(n) * 86_400)
@@ -512,7 +516,7 @@ fn search_field(ui: &mut Ui, row: Rect) -> Option<String> {
     entered.then_some(text)
 }
 
-fn clock(ui: &mut Ui, column: Rect, listing: &Listing, skin: &epg::Skin, offset: f32) {
+fn clock(ui: &mut Ui, column: Rect, listing: &Listing, height: f32, skin: &epg::Skin, offset: f32) {
     let painter = ui.painter().with_clip_rect(column);
     painter.rect_filled(column, 0.0, skin.clock_background);
     painter.vline(
@@ -520,13 +524,13 @@ fn clock(ui: &mut Ui, column: Rect, listing: &Listing, skin: &epg::Skin, offset:
         column.y_range(),
         Stroke::new(1.35, skin.clock_edge),
     );
-    let (_, _, _, from_hour, _, _) = civil(listing.from);
+    let (_, _, _, from_hour, _, _) = civil(zwcore::guide::shown(listing.from));
     for hour in 0..listing.hours {
-        let top = column.top() + epg::HOUR * hour as f32 - offset;
+        let top = column.top() + height * hour as f32 - offset;
         if top > column.bottom() {
             break;
         }
-        if top + epg::HOUR < column.top() {
+        if top + height < column.top() {
             continue;
         }
         painter.hline(column.x_range(), top, Stroke::new(1.0, skin.head_edge));
@@ -545,6 +549,7 @@ fn one_channel(
     column: Rect,
     index: usize,
     listing: &Listing,
+    hour: f32,
     marked: Option<(Key, Moment, f32)>,
     skin: &epg::Skin,
 ) -> Option<Action> {
@@ -558,7 +563,7 @@ fn one_channel(
         if covered(&listing.channels, index, programme) {
             continue;
         }
-        let Some(mut rect) = place(programme, body, listing) else {
+        let Some(mut rect) = place(programme, body, listing, hour) else {
             continue;
         };
         // 右のサブチャンネルが同じ番組なら、その列までセルを伸ばす。
@@ -587,7 +592,7 @@ fn one_channel(
     }
     // いまの時刻の線は局の列ごとに引く（時刻の列の上には出さない）。
     if let Some(now) = listing.now
-        && let Some(y) = grid_of(listing).at_moment(now, body.top())
+        && let Some(y) = grid_of(listing, hour).at_moment(now, body.top())
     {
         ui.painter().rect_filled(
             Rect::from_min_size(pos2(body.left(), y), vec2(body.width(), epg::NOW_WIDTH)),
@@ -685,12 +690,17 @@ fn head(ui: &mut Ui, column: Rect, channel: &Channel, watching: bool, skin: &epg
     response.clicked()
 }
 
-fn grid_of(listing: &Listing) -> Grid {
+fn grid_of(listing: &Listing, hour: f32) -> Grid {
     Grid {
         from: listing.from,
         hours: listing.hours,
-        hour: epg::HOUR,
+        hour,
     }
+}
+
+/// 1 時間の高さ。見えている高さに `shown_hours` が収まるように（低すぎれば番組名が読めないので下限を置く）。
+pub fn hour_height(visible: f32, shown_hours: u32) -> f32 {
+    (visible / shown_hours.max(1) as f32).max(epg::HOUR_LEAST)
 }
 
 /// 一つのセルが右へ伸びる列の数のいちばん多いところ（サブチャンネルは三つまで）。
@@ -732,8 +742,8 @@ pub fn covered(channels: &[Channel], index: usize, programme: &Programme) -> boo
     siblings(here, left) && left.programmes.iter().any(|p| same_programme(programme, p))
 }
 
-fn place(programme: &Programme, body: Rect, listing: &Listing) -> Option<Rect> {
-    grid_of(listing).place(body, programme.start?, Some(programme.ends()?))
+fn place(programme: &Programme, body: Rect, listing: &Listing, hour: f32) -> Option<Rect> {
+    grid_of(listing, hour).place(body, programme.start?, Some(programme.ends()?))
 }
 
 fn one_programme(
@@ -790,6 +800,9 @@ pub fn badge_colour(name: &str) -> Color32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 4 時間を 688 の高さに収めたときの 1 時間。
+    const HOUR: f32 = 172.0;
 
     fn programme(service: u16, start: i64, seconds: u32, title: &str) -> Programme {
         let mut programme = crate::ui::a_programme(Some(start), Some(seconds));
@@ -911,29 +924,37 @@ mod tests {
 
     #[test]
     fn a_programme_outside_the_hours_shown_is_not_placed() {
-        let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(130.0, epg::HOUR * 4.0));
+        let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(130.0, HOUR * 4.0));
         let listing = Listing {
             from: 0,
             hours: 4,
             ..Listing::default()
         };
         let make = |start, seconds| crate::ui::a_programme(Some(start), Some(seconds));
-        assert!(place(&make(-7200, 3600), body, &listing).is_none());
-        assert!(place(&make(4 * 3600, 3600), body, &listing).is_none());
-        let crossing = place(&make(-1800, 3600), body, &listing).expect("またぐものが置けない");
+        assert!(place(&make(-7200, 3600), body, &listing, HOUR).is_none());
+        assert!(place(&make(4 * 3600, 3600), body, &listing, HOUR).is_none());
+        let crossing =
+            place(&make(-1800, 3600), body, &listing, HOUR).expect("またぐものが置けない");
         assert_eq!(crossing.top(), 0.0);
-        assert!((crossing.height() - epg::HOUR / 2.0).abs() < 0.1);
+        assert!((crossing.height() - HOUR / 2.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn the_hours_of_the_setting_fill_the_height_shown() {
+        assert!((hour_height(800.0, 4) - 200.0).abs() < 0.1);
+        assert!((hour_height(800.0, 24) - epg::HOUR_LEAST).abs() < 0.1);
+        assert!((hour_height(800.0, 0) - 800.0).abs() < 0.1);
     }
 
     #[test]
     fn a_programme_too_short_to_press_is_not_placed() {
-        let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(130.0, epg::HOUR));
+        let body = Rect::from_min_size(pos2(0.0, 0.0), vec2(130.0, HOUR));
         let listing = Listing {
             from: 0,
             hours: 1,
             ..Listing::default()
         };
         let tiny = crate::ui::a_programme(Some(0), Some(20));
-        assert!(place(&tiny, body, &listing).is_none());
+        assert!(place(&tiny, body, &listing, HOUR).is_none());
     }
 }

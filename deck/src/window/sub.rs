@@ -218,10 +218,14 @@ impl Which {
 
     pub fn show(&self, root: &mut egui::Ui, showing: &mut Showing<'_>) -> Option<Happened> {
         match self {
-            Self::Guide => {
-                ui::guide::epg::show(root, showing.listing, showing.jump_to, &showing.skins.epg)
-                    .map(Happened::Epg)
-            }
+            Self::Guide => ui::guide::epg::show(
+                root,
+                showing.listing,
+                showing.jump_to,
+                showing.loaded.guide.hours,
+                &showing.skins.epg,
+            )
+            .map(Happened::Epg),
             Self::Search => {
                 ui::guide::found::show(root, showing.finding, showing.listing, &showing.skins.epg)
                     .map(Happened::Found)

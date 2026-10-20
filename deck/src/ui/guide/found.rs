@@ -70,12 +70,13 @@ pub fn rows(hits: &[Hit], now: Option<Moment>) -> Vec<Row> {
     let mut day: Option<i64> = None;
     for (index, hit) in hits.iter().enumerate() {
         let start = hit.programme.start.unwrap_or(0);
-        let this = start.div_euclid(86_400);
+        let day_of = |start: Moment| zwcore::guide::shown(start).div_euclid(86_400);
+        let this = day_of(start);
         if day != Some(this) {
             day = Some(this);
             let all_ended = hits[index..]
                 .iter()
-                .take_while(|other| other.programme.start.unwrap_or(0).div_euclid(86_400) == this)
+                .take_while(|other| day_of(other.programme.start.unwrap_or(0)) == this)
                 .all(|other| ended(other, now));
             out.push(Row::Day(date_label(start), all_ended));
         }
@@ -105,7 +106,7 @@ pub fn count_line(search: &Search, bands: &[Band]) -> String {
 }
 
 fn long_when(start: Moment, seconds: Option<u32>, ends: Option<Moment>) -> String {
-    let (_, month, day, _, _, _) = civil(start);
+    let (_, month, day, _, _, _) = civil(zwcore::guide::shown(start));
     let mut out = format!(
         "{month}月{day}日（{}）{}",
         weekday(start),

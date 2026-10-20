@@ -42,6 +42,8 @@ pub struct Deck {
     pointer_seen: Option<Instant>,
     cursor_hidden: bool,
     on_top: bool,
+    /// ウィンドウに当てた前面表示。
+    told_on_top: Option<bool>,
     full_screen: bool,
     bar: f32,
     told_area: Option<(u32, u32, u32, u32)>,
@@ -130,6 +132,7 @@ impl Deck {
             &file.caption.superimpose,
         )));
         let _ = to_broadcast.try_send(forced_of(&file.caption));
+        let on_top = file.general.always_on_top;
         Self {
             knobs,
             bindings: crate::keys::Bindings::of(&file.keys),
@@ -175,7 +178,8 @@ impl Deck {
             top_until: None,
             pointer_seen: None,
             cursor_hidden: false,
-            on_top: false,
+            on_top,
+            told_on_top: None,
             full_screen: false,
             bar: 0.0,
             told_area: None,

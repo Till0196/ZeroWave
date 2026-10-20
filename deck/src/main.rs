@@ -290,6 +290,7 @@ fn main() {
     coaxd::install(file.general.launch_coaxd);
     pcsc::apply(&file);
     config::apply::mirakurun_asking(&file);
+    zwcore::guide::set_shown_offset(file.guide.offset * 3600);
     let mut overridden: Vec<String> = flags
         .iter()
         .filter_map(|(flag, _)| config::apply::key_of_flag(flag))
@@ -867,8 +868,15 @@ fn run(mut player: Player, choices: Choices, live: Option<Live>, keep: sound::Ke
     let _ = guide_to.send(zwcore::guide::keeper::ToGuide::Logos(
         config::load_state().logos,
     ));
+    let keep_guide = config::load_plain().guide.cache;
     let guide = window::ending::Thread::spawn("guide", "番組表", move |_told| {
-        zwcore::guide::keeper::keeping(&guide_asked, &guide_merged, &listed_to, state::epg_cache())
+        zwcore::guide::keeper::keeping(
+            &guide_asked,
+            &guide_merged,
+            &listed_to,
+            state::epg_cache(),
+            keep_guide,
+        )
     })
     .inspect_err(|error| tracing::warn!("番組表のスレッドを起動できない: {error}"))
     .ok();

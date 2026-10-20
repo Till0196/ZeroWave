@@ -83,13 +83,13 @@ impl Io {
         self.get(name).is_some_and(|value| truthy(&value))
     }
 
-    /// `net` のキーを宣言し、それが真のときだけ。`no_net` が立っていれば全部「繋がらない」。
+    /// `net` のキーを宣言し、それが真のときだけ。
     pub fn net_allowed(&self) -> bool {
-        self.get("net").is_some_and(|value| truthy(&value)) && !self.on("no_net")
+        self.get("net").is_some_and(|value| truthy(&value))
     }
 
     pub fn net_closed(&self) -> bool {
-        self.get("net").is_some_and(|value| !truthy(&value)) || self.on("no_net")
+        self.get("net").is_some_and(|value| !truthy(&value))
     }
 
     /// ユーザーが `net_local` を入れたときだけで、宣言の既定値は見ない。
@@ -214,7 +214,7 @@ pub use crate::abi::truthy;
 
 pub const NET_INNER: &str = "net_local";
 
-const NET_KEYS: [&str; 3] = ["net", "no_net", NET_INNER];
+const NET_KEYS: [&str; 2] = ["net", NET_INNER];
 
 impl std::fmt::Debug for Io {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -570,13 +570,6 @@ mod tests {
             "ウィンドウで無効にしたら次の呼び出しから"
         );
         assert!(io.net_closed());
-        table
-            .write()
-            .unwrap()
-            .insert(String::from("net"), String::from("true"));
-        let mut io = io;
-        io.cfg.insert(String::from("no_net"), String::from("1"));
-        assert!(!io.net_allowed(), "ZW_NO_NET でも止まる");
     }
 
     #[test]
@@ -589,7 +582,7 @@ mod tests {
         io.defaults
             .insert(String::from(NET_INNER), String::from("true"));
         assert!(!io.net_inner(), "宣言の既定値ではローカルへ接続しない");
-        for key in ["net", "no_net", NET_INNER] {
+        for key in ["net", NET_INNER] {
             assert!(!io.set(String::from(key), String::from("true")), "{key}");
         }
         assert!(!io.net_inner(), "guest は書けない");

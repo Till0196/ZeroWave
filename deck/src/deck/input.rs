@@ -77,7 +77,7 @@ impl Deck {
         }
     }
 
-    fn act_on(&mut self, action: crate::keys::Action, window: &Arc<Window>) {
+    pub(super) fn act_on(&mut self, action: crate::keys::Action, window: &Arc<Window>) {
         use crate::keys::Action;
         let seekable = self.scene.progress.is_some();
         let step = self.knobs.volume_step as i32;
@@ -173,6 +173,9 @@ impl Deck {
             Err(why) => tracing::warn!("設定: {why}"),
         }
         self.bindings = crate::keys::Bindings::of(&file.keys);
+        if file.general.always_on_top != self.file.general.always_on_top {
+            self.on_top = file.general.always_on_top;
+        }
         crate::coaxd::launch_or_not(file.general.launch_coaxd);
         let wanted = shown_number(&file.caption.shown);
         if wanted != self.captions_wanted {

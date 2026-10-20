@@ -269,7 +269,7 @@ fn components(program: &zwcore::filters::Program) -> Vec<Node> {
     if let Some(ntp) = program.emergency_news {
         lines.push(Node::leaf(format!(
             "緊急ニュース : 送出 {}（NTP 0x{ntp:016x}）",
-            ntp_jst(ntp)
+            ntp_time(ntp, zwcore::guide::shown_offset())
         )));
     }
     if program.pcr != 0x1fff {
@@ -289,9 +289,9 @@ fn components(program: &zwcore::filters::Program) -> Vec<Node> {
     lines
 }
 
-/// NTP long format（UTC）の時刻を日本標準時の日時に。
+/// NTP long format（UTC）の時刻を、UTC から `offset` 秒ずれた日時に。
 /// 秒の最上位ビットが 0 なら 2036 年が基準（STD-B60 3.1）。
-pub(super) fn ntp_jst(ntp: u64) -> String {
+pub(super) fn ntp_time(ntp: u64, offset: i32) -> String {
     /// 1900 年から 1970 年までの秒。
     const NTP_TO_UNIX: i64 = 2_208_988_800;
     let seconds = ntp >> 32;
@@ -300,9 +300,21 @@ pub(super) fn ntp_jst(ntp: u64) -> String {
     } else {
         seconds
     };
-    let moment = seconds as i64 - NTP_TO_UNIX + i64::from(zwcore::guide::JST_OFFSET);
+    let moment = seconds as i64 - NTP_TO_UNIX + i64::from(offset);
     let (year, month, day, hour, minute, second) = zwcore::guide::civil(moment);
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} JST")
+    let zone = match offset {
+        zwcore::guide::JST_OFFSET => String::from("JST"),
+        0 => String::from("UTC"),
+        _ => {
+            let sign = if offset < 0 { '-' } else { '+' };
+            let minutes = offset.unsigned_abs() / 60;
+            match minutes % 60 {
+                0 => format!("UTC{sign}{}", minutes / 60),
+                rest => format!("UTC{sign}{}:{rest:02}", minutes / 60),
+            }
+        }
+    };
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} {zone}")
 }
 
 fn frame_header(info: &StreamInfo) -> Option<Node> {

@@ -193,11 +193,20 @@ fn the_network_is_named_only_by_its_table() {
 }
 
 #[test]
-fn an_ntp_time_is_written_in_japan_time() {
+fn an_ntp_time_follows_the_offset_of_the_guide() {
+    let at = 0xee7c_1b14_0000_0000;
     assert_eq!(
-        information::ntp_jst(0xee7c_1b14_0000_0000),
+        information::ntp_time(at, 9 * 3600),
         "2026-10-16 12:40:04 JST"
     );
+    assert_eq!(information::ntp_time(at, 0), "2026-10-16 03:40:04 UTC");
+    assert_eq!(
+        information::ntp_time(at, -(5 * 3600 + 30 * 60)),
+        "2026-10-15 22:10:04 UTC-5:30"
+    );
     // 秒の最上位ビットが 0 なら 2036 年 2 月 7 日 6:28:16 UTC から数える。
-    assert_eq!(information::ntp_jst(1 << 32), "2036-02-07 15:28:17 JST");
+    assert_eq!(
+        information::ntp_time(1 << 32, 9 * 3600),
+        "2036-02-07 15:28:17 JST"
+    );
 }

@@ -23,8 +23,8 @@ mod names;
 pub use lines::{details_lines, region_line};
 pub use logo::Logo;
 pub use names::{
-    Described, airtime, audio_name, civil, date_label, epoch, hhmm, language_name, video_name,
-    weekday,
+    Described, airtime, audio_name, civil, date_label, epoch, hhmm, language_name,
+    set_shown_offset, shown, shown_offset, unshown, video_name, weekday,
 };
 
 /// 映像の伝送形式。TS と MMT の項目を分けて持つ（TS に無い項目を SDR と取り違えないため）。

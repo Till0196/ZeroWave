@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! ソケット（`zw_sock_v1`）。値はユーザーが入れたものだけを使い、宣言の既定値は見ない。
-//! TCP はネットワーク接続なので `net = false` か `no_net` なら拒否する。
+//! TCP はネットワーク接続なので `net = false` なら拒否する。
 //! 値の `$名前`・`${名前}` は本体の環境変数で展開する（`$XDG_RUNTIME_DIR` や macOS の `$TMPDIR` の下のソケット）。
 //! Windows では `\\.\pipe\…` を名前付きパイプとして開く。
 

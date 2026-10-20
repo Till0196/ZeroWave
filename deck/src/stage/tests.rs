@@ -145,3 +145,18 @@ fn a_named_service_needs_every_number_said() {
         None
     );
 }
+
+#[test]
+fn the_title_follows_the_pattern_of_the_settings() {
+    let titled = super::compose::titled;
+    assert_eq!(
+        titled("{channel} {event}", "ゼロ総合", "21:00〜22:00 [番組]"),
+        "ゼロ総合 21:00〜22:00 [番組]"
+    );
+    assert_eq!(
+        titled("{event}／{channel}", "ゼロ総合", "番組"),
+        "番組／ゼロ総合"
+    );
+    assert_eq!(titled("{channel}  {event}", "", "番組"), "番組");
+    assert_eq!(titled("{channel} {event}", "", ""), "");
+}

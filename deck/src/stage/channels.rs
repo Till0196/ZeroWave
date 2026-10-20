@@ -198,7 +198,8 @@ impl Stage {
                 let start = programme
                     .start
                     .map(|start| {
-                        let (_, _, _, hour, minute, _) = zwcore::guide::civil(start);
+                        let (_, _, _, hour, minute, _) =
+                            zwcore::guide::civil(zwcore::guide::shown(start));
                         format!("{hour}:{minute:02} ")
                     })
                     .unwrap_or_default();

@@ -327,7 +327,7 @@ fn when(programme: &Programme) -> String {
     let Some(start) = programme.start else {
         return String::from("—");
     };
-    let (year, ..) = guide::civil(start);
+    let (year, ..) = guide::civil(guide::shown(start));
     let mut out = format!(
         "{year}/{} {}",
         guide::date_label(start),

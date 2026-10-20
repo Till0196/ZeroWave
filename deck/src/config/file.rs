@@ -391,30 +391,14 @@ impl Default for Guide {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Data {
-    pub nvram: bool,
-    pub net: bool,
     pub model_id: String,
     pub maker_id: String,
     pub maker_oui: String,
     pub plugins: String,
     pub disabled: Vec<String>,
-}
-
-impl Default for Data {
-    fn default() -> Self {
-        Self {
-            nvram: true,
-            net: true,
-            model_id: String::new(),
-            maker_id: String::new(),
-            maker_oui: String::new(),
-            plugins: String::new(),
-            disabled: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]

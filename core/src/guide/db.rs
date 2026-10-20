@@ -105,11 +105,19 @@ fn busy(error: &rusqlite::Error) -> bool {
     )
 }
 
+/// ファイルに残さない番組表（検索と過去の番組はこれで引く）。
+pub fn open_in_memory() -> rusqlite::Result<Connection> {
+    prepare(Connection::open_in_memory()?)
+}
+
 fn open_as_is(path: &Path) -> rusqlite::Result<Connection> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let connection = Connection::open(path)?;
+    prepare(Connection::open(path)?)
+}
+
+fn prepare(connection: Connection) -> rusqlite::Result<Connection> {
     connection.busy_timeout(BUSY_WAIT)?;
     connection.pragma_update(None, "journal_mode", "DELETE")?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;

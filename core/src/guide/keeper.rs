@@ -58,14 +58,25 @@ impl Store {
 
 #[cfg(feature = "epg-db")]
 impl Store {
-    fn open(path: Option<PathBuf>) -> Self {
-        let connection = path.as_ref().and_then(|path| match super::db::open(path) {
-            Ok(connection) => Some(connection),
-            Err(error) => {
-                tracing::warn!("番組表 {} を開けない: {error}", path.display());
-                None
-            }
-        });
+    /// `keep` が偽なら番組はメモリーにだけ置き、ファイルは読み書きしない（局ロゴは `path` の隣に残す）。
+    fn open(path: Option<PathBuf>, keep: bool) -> Self {
+        let connection = match (&path, keep) {
+            (Some(path), true) => match super::db::open(path) {
+                Ok(connection) => Some(connection),
+                Err(error) => {
+                    tracing::warn!("番組表 {} を開けない: {error}", path.display());
+                    None
+                }
+            },
+            (Some(_), false) => match super::db::open_in_memory() {
+                Ok(connection) => Some(connection),
+                Err(error) => {
+                    tracing::warn!("番組表をメモリーに作れない: {error}");
+                    None
+                }
+            },
+            (None, _) => None,
+        };
         Self {
             path,
             connection,
@@ -149,7 +160,7 @@ impl Store {
 
 #[cfg(not(feature = "epg-db"))]
 impl Store {
-    fn open(path: Option<PathBuf>) -> Self {
+    fn open(path: Option<PathBuf>, _: bool) -> Self {
         Self { path }
     }
     fn load(&mut self, _: Moment) -> Guide {
@@ -192,6 +203,8 @@ pub enum ToGuide {
     Logos(std::collections::BTreeMap<Key, LogoOf>),
     /// 録画の再生に入る・出る。再生中は録画に含まれる情報だけで組み立て、ファイルは読み書きしない。
     Recording(bool),
+    /// 番組表をファイルに保存するか（設定の `guide.cache`）。
+    Keep(bool),
 }
 
 impl std::fmt::Debug for ToGuide {
@@ -207,6 +220,7 @@ impl std::fmt::Debug for ToGuide {
             Self::Search(query) => write!(out, "Search({query:?})"),
             Self::Logos(map) => write!(out, "Logos({})", map.len()),
             Self::Recording(on) => write!(out, "Recording({on})"),
+            Self::Keep(on) => write!(out, "Keep({on})"),
             Self::Prefs(prefs) => write!(
                 out,
                 "Prefs({} names, {} keys)",
@@ -230,8 +244,10 @@ pub fn keeping(
     merged: &Sender<Arc<Guide>>,
     listed: &Sender<Box<Listing>>,
     cache: Option<PathBuf>,
+    keep: bool,
 ) {
-    let mut store = Store::open(cache);
+    let mut keeping_file = keep;
+    let mut store = Store::open(cache.clone(), keep);
     // 戻さない。録画の再生で時計が過去に飛んでも、ファイルにある過去の番組を消えたと見なさないように。
     let mut kept_from = Guide::new().machine_now() - MEMORY_BEHIND;
     let mut master = store.load(kept_from);
@@ -243,7 +259,7 @@ pub fn keeping(
     let mut found: Option<Arc<Search>> = None;
     let mut logo_map: std::collections::BTreeMap<Key, LogoOf> = std::collections::BTreeMap::new();
     let mut recording: Option<Guide> = None;
-    let blank = Store::open(None);
+    let blank = Store::open(None, true);
     if master.programme_count() > 0 || master.logos().next().is_some() {
         version += 1;
         if merged.send(Arc::new(master.clone())).is_err() {
@@ -327,6 +343,14 @@ pub fn keeping(
                     logo_map = map;
                     fresh = true;
                 }
+                ToGuide::Keep(on) if on != keeping_file => {
+                    keeping_file = on;
+                    store = Store::open(cache.clone(), on);
+                    store.save(&master, kept_from);
+                    dirty = false;
+                    saved = Instant::now();
+                }
+                ToGuide::Keep(_) => {}
             }
         }
         if forgot.elapsed() >= FORGET_EVERY {
@@ -655,6 +679,21 @@ mod tests {
             programmes,
             ..Channel::default()
         }
+    }
+
+    #[cfg(feature = "epg-db")]
+    #[test]
+    fn a_guide_not_kept_never_touches_the_file() {
+        let folder = std::env::temp_dir().join(format!("zw-keep-{}", std::process::id()));
+        let path = folder.join("epg.sqlite");
+        let _ = std::fs::remove_dir_all(&folder);
+        let mut store = Store::open(Some(path.clone()), false);
+        store.save(&Guide::new(), 0);
+        assert!(store.connection.is_some(), "検索はメモリーで引ける");
+        assert!(!path.exists());
+        drop(Store::open(Some(path.clone()), true));
+        assert!(path.exists());
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]

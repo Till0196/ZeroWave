@@ -271,6 +271,43 @@ pub(super) fn operation(form: &mut Form<'_, '_>, edited: &mut File, loaded: &Fil
         &loaded.operation.wheel_ctrl,
         WHEEL,
     );
+    form.section("マウスのクリック");
+    let named: Vec<(String, String)> = [
+        (String::from("nothing"), String::from("何もしない")),
+        (String::from("menu"), String::from("メニュー")),
+    ]
+    .into_iter()
+    .chain(
+        crate::keys::Action::all()
+            .into_iter()
+            .map(|action| (action.name(), action.label())),
+    )
+    .collect();
+    let clicks: Vec<(&str, &str)> = named
+        .iter()
+        .map(|(name, label)| (name.as_str(), label.as_str()))
+        .collect();
+    form.key("operation.double_click");
+    form.select(
+        "ダブルクリック",
+        &mut edited.operation.double_click,
+        &loaded.operation.double_click,
+        &clicks,
+    );
+    form.key("operation.middle_click");
+    form.select(
+        "中クリック",
+        &mut edited.operation.middle_click,
+        &loaded.operation.middle_click,
+        &clicks,
+    );
+    form.key("operation.right_click");
+    form.select(
+        "右クリック",
+        &mut edited.operation.right_click,
+        &loaded.operation.right_click,
+        &clicks,
+    );
     form.section("チャンネル送り");
     form.key("operation.channel_order");
     form.select(

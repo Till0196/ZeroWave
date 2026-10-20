@@ -8,8 +8,8 @@ pub const HEIGHT: f32 = 580.0;
 pub const CLOCK_WIDTH: f32 = 32.0;
 pub const COLUMN: f32 = 130.0;
 pub const HEAD_HEIGHT: f32 = 46.0;
-/// 一時間分の高さ（デザインの値）。
-pub const HOUR: f32 = 172.0;
+/// 1 画面の時間幅を広げても、番組名が一行は読める高さ。
+pub const HOUR_LEAST: f32 = 40.0;
 
 pub const CLOCK_SIZE: f32 = 12.5;
 

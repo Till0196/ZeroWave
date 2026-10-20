@@ -229,14 +229,7 @@ impl Deck {
             return;
         }
         match command {
-            Command::AlwaysOnTop => {
-                self.on_top = !self.on_top;
-                window.set_window_level(if self.on_top {
-                    winit::window::WindowLevel::AlwaysOnTop
-                } else {
-                    winit::window::WindowLevel::Normal
-                });
-            }
+            Command::AlwaysOnTop => self.on_top = !self.on_top,
             Command::Close => {
                 self.say(ToStage::Quit);
                 if !self.asks_before_quit() {

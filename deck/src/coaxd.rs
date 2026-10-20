@@ -83,7 +83,7 @@ pub fn look(endpoint: &str) -> Seen {
         seen.version = run_version(file).unwrap_or_default();
         seen.put_at = std::fs::metadata(file)
             .and_then(|meta| meta.modified())
-            .map(japan_time)
+            .map(shown_time)
             .unwrap_or_default();
     }
     seen.running = zwcore::input::source::coaxd::running(endpoint);
@@ -102,16 +102,18 @@ fn same_file(one: &Path, other: &Path) -> bool {
     }
 }
 
-fn japan_time(at: SystemTime) -> String {
+/// 表示する時差（設定の `guide.offset`）で。
+fn shown_time(at: SystemTime) -> String {
     let Ok(since) = at.duration_since(SystemTime::UNIX_EPOCH) else {
         return String::new();
     };
-    let seconds = i64::try_from(since.as_secs()).unwrap_or_default() + 9 * 3600;
+    let seconds = i64::try_from(since.as_secs()).unwrap_or_default()
+        + i64::from(zwcore::guide::shown_offset());
     let (_, month, day, hour, minute, _) = zwcore::guide::civil(seconds);
     format!("{month}/{day} {hour}:{minute:02}")
 }
 
-pub fn japan_time_of(rfc3339: &str) -> String {
+pub fn shown_time_of(rfc3339: &str) -> String {
     let Ok(parsed) = rfc3339.parse::<toml::value::Datetime>() else {
         return String::new();
     };
@@ -135,7 +137,7 @@ pub fn japan_time_of(rfc3339: &str) -> String {
     let Ok(seconds) = u64::try_from(seconds) else {
         return String::new();
     };
-    japan_time(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds))
+    shown_time(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds))
 }
 
 fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
@@ -645,8 +647,8 @@ mod tests {
     }
 
     #[test]
-    fn the_start_time_is_shown_in_japan_time() {
-        assert_eq!(japan_time_of("2026-08-19T09:41:00Z"), "8/19 18:41");
-        assert_eq!(japan_time_of(""), "");
+    fn the_start_time_is_shown_in_the_offset_of_the_settings() {
+        assert_eq!(shown_time_of("2026-08-19T09:41:00Z"), "8/19 18:41");
+        assert_eq!(shown_time_of(""), "");
     }
 }

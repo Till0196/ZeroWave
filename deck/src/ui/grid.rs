@@ -140,7 +140,7 @@ pub fn cell(
     let mut at = rect.top() + style.top_pad;
     let titled = crate::ui::text::badges::titled(&programme.title, &programme.detail);
     let minute_of = |start: Moment| {
-        let (_, _, _, _, minute, _) = civil(start);
+        let (_, _, _, _, minute, _) = civil(zwcore::guide::shown(start));
         format!("{minute:02}")
     };
     // 短い番組は分と題名を一行に。枠の高さに合わせて文字を小さくする。

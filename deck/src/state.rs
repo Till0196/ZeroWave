@@ -52,16 +52,10 @@ fn beside_binary(name: &str) -> Option<PathBuf> {
 }
 
 pub fn epg_cache() -> Option<PathBuf> {
-    if std::env::var_os("ZW_EPG_CACHE").is_some_and(|v| v == "0") {
-        return None;
-    }
     file("epg.sqlite")
 }
 
 pub fn nvram() -> Option<PathBuf> {
-    if std::env::var_os("ZW_NVRAM").is_some_and(|v| v == "0") {
-        return None;
-    }
     file("nvram.txt")
 }
 
@@ -71,7 +65,6 @@ pub fn plugin_cfg() -> std::collections::BTreeMap<String, String> {
         ("receiver.model_id", "ZW_MODEL_ID"),
         ("receiver.maker_id", "ZW_MAKER_ID"),
         ("receiver.maker_oui", "ZW_MAKER_OUI"),
-        ("no_net", "ZW_NO_NET"),
         ("trace", "ZW_TRACE"),
     ]
     .into_iter()

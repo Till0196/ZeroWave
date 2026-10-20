@@ -141,7 +141,7 @@ pub(super) fn section(
             }
             (None, _) => form.told_in("実行ファイル", "確認できません", look.label),
         }
-        let started = crate::coaxd::japan_time_of(&running.started);
+        let started = crate::coaxd::shown_time_of(&running.started);
         let now = joined(&[
             running.version.as_str(),
             crate::coaxd::shown_arch(&running.arch),

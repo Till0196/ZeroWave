@@ -239,9 +239,6 @@ mod client {
 
     /// UDP ソケットを外向きに connect して経路があるかを見るだけ。ローカルアドレスは見ない（Windows は未定のまま返す）。
     pub fn has_ip() -> bool {
-        if std::env::var_os("ZW_NO_NET").is_some() {
-            return false;
-        }
         let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else {
             return false;
         };
