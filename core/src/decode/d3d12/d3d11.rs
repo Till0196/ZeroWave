@@ -26,6 +26,70 @@ use windows::core::{GUID, Interface};
 use crate::decode::Error;
 use crate::decode::d3d12::dx::{Owned, adapter_by_luid, failed, luid};
 
+/// D3D12 で作って D3D11 でも開いたフェンス（D3D11 がシグナルし、D3D12 が待つ）。
+pub(crate) fn shared_fence(
+    raw: &ID3D12Device,
+    device: &ID3D11Device,
+) -> Result<(ID3D12Fence, ID3D11Fence), Error> {
+    // SAFETY: the device is alive.
+    let fence12: ID3D12Fence = unsafe { raw.CreateFence(0, D3D12_FENCE_FLAG_SHARED) }
+        .map_err(|error| failed("CreateFence", error))?;
+    let handle = Owned::shared(raw, &fence12)?;
+    let device5: ID3D11Device5 = device
+        .cast()
+        .map_err(|error| failed("ID3D11Device5", error))?;
+    let mut fence11: Option<ID3D11Fence> = None;
+    // SAFETY: 共有したフェンスの有効な NT ハンドル。
+    unsafe { device5.OpenSharedFence(handle.raw(), &mut fence11) }
+        .map_err(|error| failed("OpenSharedFence", error))?;
+    let fence11 =
+        fence11.ok_or_else(|| Error::Unavailable(String::from("フェンスが開けません")))?;
+    Ok((fence12, fence11))
+}
+
+/// D3D11 で共有して作った一枚のテクスチャと、D3D12 で開いた同じテクスチャ。
+pub(crate) fn shared_texture(
+    raw: &ID3D12Device,
+    device: &ID3D11Device,
+    width: u32,
+    height: u32,
+    format: DXGI_FORMAT,
+    bind: D3D11_BIND_FLAG,
+) -> Result<(ID3D11Texture2D, ID3D12Resource), Error> {
+    let description = D3D11_TEXTURE2D_DESC {
+        Width: width,
+        Height: height,
+        MipLevels: 1,
+        ArraySize: 1,
+        Format: format,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Usage: D3D11_USAGE_DEFAULT,
+        BindFlags: bind.0 as u32,
+        CPUAccessFlags: 0,
+        MiscFlags: (D3D11_RESOURCE_MISC_SHARED.0 | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0) as u32,
+    };
+    let mut made = None;
+    // SAFETY: the description is a live local and `made` is written at most once.
+    unsafe { device.CreateTexture2D(&description, None, Some(&mut made)) }
+        .map_err(|error| failed("CreateTexture2D", error))?;
+    let texture: ID3D11Texture2D =
+        made.ok_or_else(|| Error::Unavailable(String::from("テクスチャが作れません")))?;
+    let resource: IDXGIResource1 = texture
+        .cast()
+        .map_err(|error| failed("IDXGIResource1", error))?;
+    let handle = Owned::shared_dxgi(&resource)?;
+    let mut opened: Option<ID3D12Resource> = None;
+    // SAFETY: 共有テクスチャの有効な NT ハンドル。
+    unsafe { raw.OpenSharedHandle(handle.raw(), &mut opened) }
+        .map_err(|error| failed("OpenSharedHandle", error))?;
+    let opened =
+        opened.ok_or_else(|| Error::Unavailable(String::from("共有テクスチャが開けません")))?;
+    Ok((texture, opened))
+}
+
 /// ビットストリームバッファのアラインメント（DXVA の H.264・HEVC が 128 バイトの倍数を求める）。
 const ALIGNMENT: usize = 128;
 
@@ -40,7 +104,7 @@ fn raw_for(profile: GUID) -> u32 {
     }
 }
 
-fn device_on(raw: &ID3D12Device) -> Result<(ID3D11Device, ID3D11DeviceContext), Error> {
+pub(crate) fn device_on(raw: &ID3D12Device) -> Result<(ID3D11Device, ID3D11DeviceContext), Error> {
     let adapter: IDXGIAdapter = adapter_by_luid(luid(raw))?;
     let levels: [D3D_FEATURE_LEVEL; 2] = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
     let mut device = None;
@@ -210,7 +274,7 @@ impl Video {
         let decoder = unsafe { video.CreateVideoDecoder(&description, &config) }
             .map_err(|error| failed("CreateVideoDecoder", error))?;
 
-        let texture = |array: u32, bind: D3D11_BIND_FLAG, misc: u32| {
+        let texture = |array: u32, bind: D3D11_BIND_FLAG| {
             let description = D3D11_TEXTURE2D_DESC {
                 Width: width,
                 Height: height,
@@ -224,7 +288,7 @@ impl Video {
                 Usage: D3D11_USAGE_DEFAULT,
                 BindFlags: bind.0 as u32,
                 CPUAccessFlags: 0,
-                MiscFlags: misc,
+                MiscFlags: 0,
             };
             let mut made = None;
             // SAFETY: the description is a live local and `made` is written at most once.
@@ -232,7 +296,7 @@ impl Video {
                 .map_err(|error| failed("CreateTexture2D", error))?;
             made.ok_or_else(|| Error::Unavailable(String::from("テクスチャが作れません")))
         };
-        let array = texture(count as u32, D3D11_BIND_DECODER, 0)?;
+        let array = texture(count as u32, D3D11_BIND_DECODER)?;
         let mut views = Vec::with_capacity(count);
         for slice in 0..count {
             let description = D3D11_VIDEO_DECODER_OUTPUT_VIEW_DESC {
@@ -256,40 +320,18 @@ impl Video {
         let mut shared = Vec::with_capacity(count);
         let mut opened = Vec::with_capacity(count);
         for _ in 0..count {
-            let texture = texture(
-                1,
+            let (texture, resource12) = shared_texture(
+                raw,
+                &device,
+                width,
+                height,
+                format,
                 D3D11_BIND_SHADER_RESOURCE,
-                (D3D11_RESOURCE_MISC_SHARED.0 | D3D11_RESOURCE_MISC_SHARED_NTHANDLE.0) as u32,
             )?;
-            let resource: IDXGIResource1 = texture
-                .cast()
-                .map_err(|error| failed("IDXGIResource1", error))?;
-            let handle = Owned::shared_dxgi(&resource)?;
-            let mut resource12: Option<ID3D12Resource> = None;
-            // SAFETY: 共有テクスチャの有効な NT ハンドル。
-            let result = unsafe { raw.OpenSharedHandle(handle.raw(), &mut resource12) };
-            drop(handle);
-            result.map_err(|error| failed("OpenSharedHandle", error))?;
-            let resource12 = resource12
-                .ok_or_else(|| Error::Unavailable(String::from("共有テクスチャが開けません")))?;
             shared.push(texture);
             opened.push(resource12);
         }
-        // SAFETY: the device is alive.
-        let fence12: ID3D12Fence = unsafe { raw.CreateFence(0, D3D12_FENCE_FLAG_SHARED) }
-            .map_err(|error| failed("CreateFence", error))?;
-        let handle = Owned::shared(raw, &fence12)?;
-        let mut fence11: Option<ID3D11Fence> = None;
-        let result = match device.cast::<ID3D11Device5>() {
-            // SAFETY: 共有したフェンスの有効な NT ハンドル。
-            Ok(device5) => unsafe { device5.OpenSharedFence(handle.raw(), &mut fence11) }
-                .map_err(|error| failed("OpenSharedFence", error)),
-            Err(error) => Err(failed("ID3D11Device5", error)),
-        };
-        drop(handle);
-        result?;
-        let fence11 =
-            fence11.ok_or_else(|| Error::Unavailable(String::from("フェンスが開けません")))?;
+        let (fence12, fence11) = shared_fence(raw, &device)?;
         let signaller: ID3D11DeviceContext4 = context
             .cast()
             .map_err(|error| failed("ID3D11DeviceContext4", error))?;

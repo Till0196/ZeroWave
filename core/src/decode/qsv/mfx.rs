@@ -12,6 +12,10 @@ pub type Session = *mut c_void;
 pub type SyncPoint = *mut c_void;
 
 pub const ERR_NONE: Status = 0;
+#[cfg_attr(not(all(windows, feature = "d3d12")), allow(dead_code))]
+pub const ERR_UNSUPPORTED: Status = -3;
+#[cfg_attr(not(all(windows, feature = "d3d12")), allow(dead_code))]
+pub const ERR_MEMORY_ALLOC: Status = -4;
 pub const ERR_MORE_DATA: Status = -10;
 pub const ERR_MORE_SURFACE: Status = -11;
 pub const ERR_INCOMPATIBLE_VIDEO_PARAM: Status = -14;
@@ -60,6 +64,17 @@ pub const IOPATTERN_IN_VIDEO_MEMORY: u16 = 0x01;
 pub const IOPATTERN_OUT_VIDEO_MEMORY: u16 = 0x10;
 #[cfg_attr(not(all(windows, feature = "d3d12")), allow(dead_code))]
 pub const HANDLE_D3D11_DEVICE: i32 = 3;
+/// `mfxFrameAllocRequest::Type` のビット。
+#[cfg_attr(not(all(windows, feature = "d3d12")), allow(dead_code))]
+pub const MEMTYPE_DXVA2_DECODER_TARGET: u16 = 0x0010;
+#[cfg_attr(not(all(windows, feature = "d3d12")), allow(dead_code))]
+pub const MEMTYPE_SYSTEM_MEMORY: u16 = 0x0040;
+#[cfg_attr(not(all(windows, feature = "d3d12")), allow(dead_code))]
+pub const MEMTYPE_FROM_VPPIN: u16 = 0x0400;
+#[cfg_attr(not(all(windows, feature = "d3d12")), allow(dead_code))]
+pub const MEMTYPE_FROM_DECODE: u16 = 0x0200;
+#[cfg_attr(not(all(windows, feature = "d3d12")), allow(dead_code))]
+pub const MEMTYPE_EXTERNAL_FRAME: u16 = 0x0002;
 #[cfg_attr(not(all(windows, feature = "d3d12")), allow(dead_code))]
 pub const RESOURCE_DX11_TEXTURE: i32 = 5;
 /// `mfxFrameSurfaceInterface` の関数の位置：`Context`（ポインター）と `Version`・`reserved1[3]`（8 バイト）の後に
@@ -489,6 +504,78 @@ impl Default for FrameAllocRequest {
     }
 }
 
+/// `mfxFrameAllocResponse`。
+#[repr(C)]
+#[derive(Debug)]
+pub struct FrameAllocResponse {
+    pub alloc_id: u32,
+    _reserved: [u32; 3],
+    pub mids: *mut *mut c_void,
+    pub num_frame_actual: u16,
+    pub mem_type: u16,
+}
+
+impl Default for FrameAllocResponse {
+    fn default() -> Self {
+        Self {
+            alloc_id: 0,
+            _reserved: [0; 3],
+            mids: std::ptr::null_mut(),
+            num_frame_actual: 0,
+            mem_type: 0,
+        }
+    }
+}
+
+pub type Alloc =
+    unsafe extern "C" fn(*mut c_void, *mut FrameAllocRequest, *mut FrameAllocResponse) -> Status;
+pub type LockFrame = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut FrameData) -> Status;
+pub type GetHdl = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut *mut c_void) -> Status;
+pub type FreeFrames = unsafe extern "C" fn(*mut c_void, *mut FrameAllocResponse) -> Status;
+
+/// `mfxFrameAllocator`。アプリケーションがビデオメモリのサーフェスを確保する。
+#[repr(C)]
+#[derive(Debug)]
+pub struct FrameAllocator {
+    _reserved: [u32; 4],
+    pub pthis: *mut c_void,
+    pub alloc: Alloc,
+    pub lock: LockFrame,
+    pub unlock: LockFrame,
+    pub get_hdl: GetHdl,
+    pub free: FreeFrames,
+}
+
+#[cfg_attr(not(all(windows, feature = "d3d12")), allow(dead_code))]
+impl FrameAllocator {
+    pub fn new(
+        pthis: *mut c_void,
+        alloc: Alloc,
+        lock: LockFrame,
+        get_hdl: GetHdl,
+        free: FreeFrames,
+    ) -> Self {
+        Self {
+            _reserved: [0; 4],
+            pthis,
+            alloc,
+            lock,
+            unlock: lock,
+            get_hdl,
+            free,
+        }
+    }
+}
+
+/// `mfxHDLPair`。D3D11 ではテクスチャとサブリソースの番号。
+#[repr(C)]
+#[derive(Debug)]
+#[cfg_attr(not(all(windows, feature = "d3d12")), allow(dead_code))]
+pub struct HdlPair {
+    pub first: *mut c_void,
+    pub second: *mut c_void,
+}
+
 /// Media SDK のランタイムで HEVC をデコードするのに読み込むプラグイン。
 pub const PLUGIN_HEVC_DECODE_HW: [u8; 16] = [
     0x33, 0xa6, 0x1c, 0x0b, 0x4c, 0x27, 0x45, 0x4c, 0xa8, 0xd8, 0x5d, 0xde, 0x75, 0x7c, 0x6f, 0x8e,
@@ -499,8 +586,9 @@ pub struct Entries {
     pub init_ex: Option<unsafe extern "C" fn(InitParam, *mut Session) -> Status>,
     pub initialize: Option<unsafe extern "C" fn(InitializationParam, *mut Session) -> Status>,
     pub close: unsafe extern "C" fn(Session) -> Status,
-    #[cfg_attr(windows, allow(dead_code))]
     pub set_handle: unsafe extern "C" fn(Session, i32, *mut c_void) -> Status,
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub set_frame_allocator: unsafe extern "C" fn(Session, *mut FrameAllocator) -> Status,
     pub sync_operation: unsafe extern "C" fn(Session, SyncPoint, u32) -> Status,
     pub user_load: Option<unsafe extern "C" fn(Session, *const [u8; 16], u32) -> Status>,
     pub decode_query: unsafe extern "C" fn(Session, *mut VideoParam, *mut VideoParam) -> Status,
@@ -540,6 +628,7 @@ impl Entries {
                 initialize: object.find("MFXInitialize"),
                 close: object.symbol(b"MFXClose\0")?,
                 set_handle: object.symbol(b"MFXVideoCORE_SetHandle\0")?,
+                set_frame_allocator: object.symbol(b"MFXVideoCORE_SetFrameAllocator\0")?,
                 sync_operation: object.symbol(b"MFXVideoCORE_SyncOperation\0")?,
                 user_load: object.find("MFXVideoUSER_Load"),
                 decode_query: object.symbol(b"MFXVideoDECODE_Query\0")?,
@@ -675,6 +764,8 @@ const _: () = {
     assert!(offset_of!(FrameAllocRequest, num_frame_min) == 86);
     assert!(offset_of!(FrameAllocRequest, num_frame_suggested) == 88);
     assert!(size_of::<ExtBuffer>() == 8);
+    assert!(offset_of!(FrameAllocResponse, num_frame_actual) == 8 + size_of::<*mut c_void>() + 8);
+    assert!(offset_of!(FrameAllocator, pthis) == 16);
     assert!(size_of::<ExtVppDeinterlacing>() == 32);
     assert!(offset_of!(ExtVppDeinterlacing, mode) == 8);
     assert!(offset_of!(ExtVppDeinterlacing, telecine_location) == 12);

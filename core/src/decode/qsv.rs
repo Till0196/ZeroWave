@@ -5,6 +5,8 @@
 //! Windows では検索パスに無いことがあるので `DriverStore` の下も探す。
 //! フィールドは同じ session の VPP でデインターレースし、一枚から二枚出す。
 
+#[cfg(all(windows, feature = "d3d12"))]
+mod d3d11;
 pub(crate) mod mfx;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -19,6 +21,9 @@ use super::{About, Decode, Decoded, Error, HwDeinterlace, Offer, Way};
 const ABOUTS: usize = 64;
 
 const SEQUENCE: i64 = 1 << 32;
+
+/// VPP の出力を、同期を待たずに何枚先まで進めるか（一フレームの二フィールド分）。
+const VPP_AHEAD: usize = 2;
 
 const TIMESTAMP_UNKNOWN: u64 = u64::MAX;
 
@@ -437,6 +442,18 @@ struct Surface {
 }
 
 impl Surface {
+    /// ビデオメモリのサーフェス（中身はアロケーターが持つ）。
+    #[cfg(all(windows, feature = "d3d12"))]
+    fn video(info: mfx::FrameInfo, mem_id: *mut std::ffi::c_void) -> Self {
+        let mut surface = mfx::FrameSurface1::default();
+        surface.info = info;
+        surface.data.mem_id = mem_id;
+        Self {
+            surface,
+            _memory: Vec::new(),
+        }
+    }
+
     fn new(info: mfx::FrameInfo) -> Self {
         let wide = info.fourcc == mfx::FOURCC_P010;
         let width = usize::from(info.width);
@@ -488,10 +505,16 @@ pub struct Qsv {
     base: i64,
     format: Format,
     abouts: BTreeMap<i64, About>,
-    ready: VecDeque<Frame>,
+    ready: VecDeque<Decoded>,
     said: bool,
     /// 二枚目のフィールドはタイムスタンプを「不明」で返すので、最後に渡されたタイムスタンプで付け直す。
     vpp_time: u64,
+    /// 同期を待たずに先へ進めた VPP の出力（古い順）。デコードと VPP を重ねて流すため、[`VPP_AHEAD`] 枚まで持つ。
+    /// 三つ目は投げたときの [`Qsv::vpp_time`]（二枚目のフィールドに付け直す時刻）。
+    vpp_pending: VecDeque<(mfx::SyncPoint, *mut mfx::FrameSurface1, u64)>,
+    /// サーフェスを GPU のメモリに置いて D3D12 のレンダラーへ渡す（`None` なら主記憶）。session より後に drop する。
+    #[cfg(all(windows, feature = "d3d12"))]
+    gpu: Option<d3d11::Gpu>,
 }
 
 impl std::fmt::Debug for Qsv {
@@ -512,6 +535,24 @@ impl Qsv {
                 "QSV の動き補償のデインターレースはまだ使いません",
             )));
         }
+        // GPU を指定していなければ、レンダリングする GPU で開く（GPU のメモリで渡せる）。
+        #[cfg(all(windows, feature = "d3d12"))]
+        let drawing = crate::decode::d3d12::dx::adapters()
+            .into_iter()
+            .map(|adapter| adapter.name)
+            .find(|name| crate::decode::d3d12::dx::draws_on(name));
+        #[cfg(all(windows, feature = "d3d12"))]
+        let (session, on_drawing) = match drawing.filter(|_| device.is_empty()) {
+            Some(name) => match Session::open(&name) {
+                Ok(session) => (session, true),
+                Err(_) => (Session::open(device)?, false),
+            },
+            None => (
+                Session::open(device)?,
+                !device.is_empty() && crate::decode::d3d12::dx::draws_on(device),
+            ),
+        };
+        #[cfg(not(all(windows, feature = "d3d12")))]
         let session = Session::open(device)?;
         if !session.decodes(codec) {
             return Err(Error::Unavailable(format!(
@@ -519,6 +560,22 @@ impl Qsv {
                 session.library.name
             )));
         }
+        // 別の GPU でデコードするときは主記憶で渡す。
+        #[cfg(all(windows, feature = "d3d12"))]
+        let gpu = match on_drawing
+            .then_some(())
+            .ok_or_else(|| {
+                Error::Unavailable(String::from("レンダリングと別の GPU でデコードする"))
+            })
+            .and_then(|()| d3d11::Gpu::open())
+            .and_then(|mut gpu| gpu.attach(&session.entries(), session.raw).map(|()| gpu))
+        {
+            Ok(gpu) => Some(gpu),
+            Err(error) => {
+                tracing::info!("QSV: GPU のメモリで受け渡せないので主記憶を使う: {error}");
+                None
+            }
+        };
         Ok(Self {
             session,
             codec,
@@ -539,6 +596,9 @@ impl Qsv {
             ready: VecDeque::new(),
             said: false,
             vpp_time: TIMESTAMP_UNKNOWN,
+            vpp_pending: VecDeque::new(),
+            #[cfg(all(windows, feature = "d3d12"))]
+            gpu,
         })
     }
 
@@ -571,7 +631,11 @@ impl Qsv {
             return Err(failed("MFXVideoDECODE_DecodeHeader", status));
         }
         let wide = self.format.depth > 8;
-        param.io_pattern = mfx::IOPATTERN_OUT_SYSTEM_MEMORY;
+        param.io_pattern = if self.video_memory() {
+            mfx::IOPATTERN_OUT_VIDEO_MEMORY
+        } else {
+            mfx::IOPATTERN_OUT_SYSTEM_MEMORY
+        };
         param.async_depth = 1;
         {
             let info = &mut param.mfx_mut().frame_info;
@@ -603,7 +667,7 @@ impl Qsv {
             }
             None => None,
         };
-        let surfaces = (0..count).map(|_| Surface::new(info)).collect();
+        let surfaces = self.surfaces(&mut request, info, count, vpp.is_some())?;
         // SAFETY: 生きた session と生きたローカル変数。
         let status = unsafe { (entries.decode_init)(self.session.raw, &mut param) };
         if status < mfx::ERR_NONE {
@@ -631,8 +695,13 @@ impl Qsv {
         let mut ext: Box<[*mut mfx::ExtBuffer; 1]> =
             Box::new([std::ptr::from_mut(&mut deinterlacing.header)]);
         let mut param = mfx::VideoParam::default();
-        param.io_pattern = mfx::IOPATTERN_IN_SYSTEM_MEMORY | mfx::IOPATTERN_OUT_SYSTEM_MEMORY;
-        param.async_depth = 1;
+        param.io_pattern = if self.video_memory() {
+            mfx::IOPATTERN_IN_VIDEO_MEMORY | mfx::IOPATTERN_OUT_VIDEO_MEMORY
+        } else {
+            mfx::IOPATTERN_IN_SYSTEM_MEMORY | mfx::IOPATTERN_OUT_SYSTEM_MEMORY
+        };
+        // 同期を待たずに次を投げるので、その分だけ先まで受け付けさせる。
+        param.async_depth = VPP_AHEAD as u16 + 1;
         param.ext_param = ext.as_mut_ptr();
         param.num_ext_param = 1;
         {
@@ -667,15 +736,30 @@ impl Qsv {
             return Err(failed("MFXVideoVPP_Init", status));
         }
         let output = param.vpp_mut().output;
+        // GPU のメモリでは出力をそのままレンダラーへ渡し、持たれている間は出力先にしないので、その分を足す。
+        let held = if self.video_memory() {
+            super::MOST_HELD
+        } else {
+            0
+        };
         let outputs = usize::from(
             requests[1]
                 .num_frame_suggested
                 .max(requests[1].num_frame_min),
         )
-        .max(2);
+        .max(2)
+            + held;
+        let outputs = match self.surfaces(&mut requests[1], output, outputs, false) {
+            Ok(outputs) => outputs,
+            Err(error) => {
+                // SAFETY: 生きた session で、VPP はすぐ上で初期化した。
+                unsafe { (entries.vpp_close)(self.session.raw) };
+                return Err(error);
+            }
+        };
         Ok((
             Vpp {
-                outputs: (0..outputs).map(|_| Surface::new(output)).collect(),
+                outputs,
                 _deinterlacing: deinterlacing,
                 _ext: ext,
             },
@@ -685,6 +769,40 @@ impl Qsv {
                     .max(requests[0].num_frame_min),
             ),
         ))
+    }
+
+    fn video_memory(&self) -> bool {
+        #[cfg(all(windows, feature = "d3d12"))]
+        return self.gpu.is_some();
+        #[cfg(not(all(windows, feature = "d3d12")))]
+        false
+    }
+
+    /// `count` 枚のサーフェス。GPU のメモリならアロケーターで作る（`vpp_input` なら VPP の入力にも使う）。
+    #[cfg_attr(not(all(windows, feature = "d3d12")), allow(unused_variables))]
+    fn surfaces(
+        &mut self,
+        request: &mut mfx::FrameAllocRequest,
+        info: mfx::FrameInfo,
+        count: usize,
+        vpp_input: bool,
+    ) -> Result<Vec<Surface>, Error> {
+        #[cfg(all(windows, feature = "d3d12"))]
+        if let Some(gpu) = self.gpu.as_mut() {
+            request.info = info;
+            request.num_frame_suggested = count as u16;
+            request.num_frame_min = count as u16;
+            request.kind |= mfx::MEMTYPE_EXTERNAL_FRAME;
+            if vpp_input {
+                request.kind |= mfx::MEMTYPE_FROM_VPPIN;
+            }
+            return Ok(gpu
+                .surfaces(request)?
+                .into_iter()
+                .map(|mid| Surface::video(info, mid))
+                .collect());
+        }
+        Ok((0..count).map(|_| Surface::new(info)).collect())
     }
 
     fn run(&mut self, time: Option<i64>, end: bool) -> Result<(), Error> {
@@ -793,13 +911,34 @@ impl Qsv {
             }
         }
         loop {
-            let Some(target) = self
+            // まだ受け取っていない出力は、ランタイムがロックを外していても出力先にしない。
+            let waiting: Vec<*mut mfx::FrameSurface1> = self
+                .vpp_pending
+                .iter()
+                .map(|(_, target, _)| *target)
+                .collect();
+            let target = self
                 .stream
                 .as_mut()
                 .and_then(|stream| stream.vpp.as_mut())
-                .and_then(|vpp| vpp.outputs.iter_mut().find(|surface| surface.free()))
-                .map(|surface| std::ptr::from_mut(&mut surface.surface))
-            else {
+                .and_then(|vpp| {
+                    vpp.outputs.iter_mut().find(|surface| {
+                        if waiting.contains(&std::ptr::from_ref(&surface.surface).cast_mut()) {
+                            return false;
+                        }
+                        #[cfg(all(windows, feature = "d3d12"))]
+                        if self
+                            .gpu
+                            .as_ref()
+                            .is_some_and(|gpu| gpu.busy(surface.surface.data.mem_id))
+                        {
+                            return false;
+                        }
+                        surface.free()
+                    })
+                })
+                .map(|surface| std::ptr::from_mut(&mut surface.surface));
+            let Some(target) = target else {
                 return Err(Error::Unavailable(String::from(
                     "VPP の空いたサーフェスがありません",
                 )));
@@ -823,14 +962,8 @@ impl Qsv {
                 return Err(failed("MFXVideoVPP_RunFrameVPPAsync", status));
             }
             if !sync.is_null() {
-                // SAFETY: ランタイムが返した同期ポイント。
-                let status = unsafe { (entries.sync_operation)(self.session.raw, sync, 60_000) };
-                if status < mfx::ERR_NONE {
-                    return Err(failed("MFXVideoCORE_SyncOperation", status));
-                }
-                // SAFETY: 同期を済ませた、サーフェスの配列の中のサーフェス。
-                let surface = unsafe { &*target };
-                self.read(surface, true);
+                self.vpp_pending.push_back((sync, target, self.vpp_time));
+                self.settle_vpp(VPP_AHEAD)?;
             }
             if !again {
                 return Ok(());
@@ -845,7 +978,30 @@ impl Qsv {
             .is_some_and(|stream| stream.vpp.is_some())
         {
             self.deinterlace_frame(std::ptr::null_mut())?;
+            self.settle_vpp(0)?;
         }
+        Ok(())
+    }
+
+    /// 先へ進めた VPP の出力を、`keep` 枚を残して古い順に同期を待って受け取る。
+    fn settle_vpp(&mut self, keep: usize) -> Result<(), Error> {
+        let entries = self.session.entries();
+        let latest = self.vpp_time;
+        while self.vpp_pending.len() > keep {
+            let Some((sync, target, time)) = self.vpp_pending.pop_front() else {
+                break;
+            };
+            // SAFETY: ランタイムが返した同期ポイント。
+            let status = unsafe { (entries.sync_operation)(self.session.raw, sync, 60_000) };
+            if status < mfx::ERR_NONE {
+                return Err(failed("MFXVideoCORE_SyncOperation", status));
+            }
+            // SAFETY: 同期を済ませた、VPP の出力の配列の中のサーフェス（ストリームを閉じるまで動かない）。
+            let surface = unsafe { &*target };
+            self.vpp_time = time;
+            self.read(surface, true);
+        }
+        self.vpp_time = latest;
         Ok(())
     }
 
@@ -891,6 +1047,22 @@ impl Qsv {
         if !woven {
             self.abouts.remove(&time);
         }
+        #[cfg(all(windows, feature = "d3d12"))]
+        if let Some(handed) = self
+            .gpu
+            .as_mut()
+            .map(|gpu| gpu.hand(data.mem_id, wide, about.format.width, about.format.height))
+        {
+            match handed {
+                Ok(Some(frame)) => self.ready.push_back(Decoded::Surface(super::Surface {
+                    about,
+                    held: super::Held::D3d12(frame),
+                })),
+                Ok(None) => self.say("サーフェスにデータがない"),
+                Err(error) => self.say(&format!("フレームを渡せない: {error:?}")),
+            }
+            return;
+        }
         let width = (about.format.width as usize).min(usize::from(info.width));
         let height = (about.format.height as usize).min(usize::from(info.height));
         let rows = usize::from(info.height);
@@ -910,7 +1082,7 @@ impl Qsv {
             self.say("サーフェスがフレームより小さい");
             return;
         };
-        self.ready.push_back(Frame {
+        self.ready.push_back(Decoded::Planes(Frame {
             tag: about.tag,
             format: about.format,
             planes,
@@ -918,7 +1090,7 @@ impl Qsv {
             top_field_first: about.top_field_first,
             repeat_first_field: about.repeat_first_field,
             progressive: about.progressive,
-        });
+        }));
     }
 
     fn say(&mut self, what: &str) {
@@ -930,6 +1102,8 @@ impl Qsv {
 
     fn close_stream(&mut self) {
         let entries = self.session.entries();
+        // 先へ進めた VPP の出力は捨てる（サーフェスはストリームと一緒に消える）。
+        self.vpp_pending.clear();
         if let Some(stream) = self.stream.take() {
             // SAFETY: 生きた session。閉じてからサーフェスを解放する。
             unsafe {
@@ -939,6 +1113,10 @@ impl Qsv {
                 (entries.decode_close)(self.session.raw);
             }
             drop(stream);
+            #[cfg(all(windows, feature = "d3d12"))]
+            if let Some(gpu) = self.gpu.as_mut() {
+                gpu.forget();
+            }
         }
     }
 }
@@ -1021,7 +1199,7 @@ impl Decode for Qsv {
     }
 
     fn take(&mut self) -> Option<Decoded> {
-        self.ready.pop_front().map(Decoded::Planes)
+        self.ready.pop_front()
     }
 
     fn flush(&mut self) {
@@ -1036,13 +1214,18 @@ impl Decode for Qsv {
         } else {
             self.device.clone()
         };
+        let memory = if self.video_memory() {
+            "・GPU メモリ"
+        } else {
+            ""
+        };
         match self.deinterlace {
             Some(mode) => format!(
-                "QSV ({device}・{}・デインターレース {})",
+                "QSV ({device}・{}{memory}・デインターレース {})",
                 self.session.library.name,
                 mode.name()
             ),
-            None => format!("QSV ({device}・{})", self.session.library.name),
+            None => format!("QSV ({device}・{}{memory})", self.session.library.name),
         }
     }
 
