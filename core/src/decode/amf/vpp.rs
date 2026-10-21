@@ -3,6 +3,7 @@
 
 //! AMF のフレームを同じデバイスの D3D11 Video Processor でデインターレースする（AMF には無い）。
 //! ドライバーが後ろのフレームも要るので、一枚遅らせてデインターレースする。
+//! 出力はレンダラーへ GPU の上で渡す（[`super::Sharer`]）か、渡せなければ主記憶へ読む。
 
 use std::collections::VecDeque;
 
@@ -14,8 +15,8 @@ use windows::Win32::Graphics::Dxgi::Common::{
 };
 use windows::core::{GUID, Interface};
 
-use super::api;
-use crate::decode::{About, Error, HwDeinterlace};
+use super::{Sharer, api};
+use crate::decode::{About, Decoded, Error, HwDeinterlace};
 
 fn failed(what: &str, error: windows::core::Error) -> Error {
     Error::Unavailable(format!("D3D11 ビデオプロセッサー {what}: {error}"))
@@ -118,6 +119,8 @@ pub struct Deinterlacer {
     output: ID3D11Texture2D,
     output_view: ID3D11VideoProcessorOutputView,
     staging: ID3D11Texture2D,
+    /// 共有テクスチャ（[`super::Sharer`]）へ直に書く出力のビュー。テクスチャも持ち、アドレスを使い回させない。
+    shared_views: Vec<(ID3D11Texture2D, ID3D11VideoProcessorOutputView)>,
     width: u32,
     height: u32,
     wide: bool,
@@ -264,6 +267,7 @@ impl Deinterlacer {
             output,
             output_view,
             staging,
+            shared_views: Vec::new(),
             width,
             height,
             wide,
@@ -286,19 +290,13 @@ impl Deinterlacer {
     }
 
     /// 一枚前のフレームをデインターレースして二枚にする。終わりの一枚は [`Self::drain`] が出す。
-    /// # Safety
-    /// `surface` のメモリは DX11。
-    pub unsafe fn process(
+    pub fn process(
         &mut self,
         surface: &api::Surface,
         about: About,
-    ) -> Result<Vec<Frame>, String> {
-        let plane = surface.plane(0).ok_or("プレーンがありません")?;
-        let raw = plane.native();
-        // SAFETY: 呼び出し側が保証するとおり DX11 のプレーンで、`GetNative` はプレーンが生きている間の `ID3D11Texture2D*`。
-        let texture = unsafe { ID3D11Texture2D::from_raw_borrowed(&raw) }
-            .cloned()
-            .ok_or_else(|| String::from("テクスチャがありません"))?;
+        sharer: Option<&mut Sharer>,
+    ) -> Result<Vec<Decoded>, String> {
+        let texture = texture_of(surface)?;
         let slice = self.array_slice(&texture);
         let view_desc = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
             FourCC: 0,
@@ -333,12 +331,12 @@ impl Deinterlacer {
         let Some(held) = self.held.replace(next) else {
             return Ok(Vec::new());
         };
-        self.solve(held, Some(view))
+        self.solve(held, Some(view), sharer)
     }
 
-    pub fn drain(&mut self) -> Result<Vec<Frame>, String> {
+    pub fn drain(&mut self, sharer: Option<&mut Sharer>) -> Result<Vec<Decoded>, String> {
         match self.held.take() {
-            Some(held) => self.solve(held, None),
+            Some(held) => self.solve(held, None, sharer),
             None => Ok(Vec::new()),
         }
     }
@@ -347,7 +345,8 @@ impl Deinterlacer {
         &mut self,
         held: Held,
         future: Option<ID3D11VideoProcessorInputView>,
-    ) -> Result<Vec<Frame>, String> {
+        mut sharer: Option<&mut Sharer>,
+    ) -> Result<Vec<Decoded>, String> {
         let Held { past: this, about } = held;
         let interlaced = !about.progressive || about.structure.field();
         let top_first = if about.structure.field() {
@@ -373,14 +372,39 @@ impl Deinterlacer {
             repeat_first_field: false,
             ..about
         };
-        let mut frames: Vec<Frame> = Vec::with_capacity(2);
+        let mut frames: Vec<Decoded> = Vec::with_capacity(2);
         let mut failure = None;
+        // 共有テクスチャへ渡すときは、出力ごとに空いた共有テクスチャへ直に書く。一枚の出力へ書いて写すと、
+        // 写し終わる前に次の出力が上書きする（D3D11 はビデオの回路とコピーの間の順を守らない）。
+        let mut last = None;
         for field in 0..2u32 {
             if !interlaced && field == 1 {
-                let again = frames[0].clone();
-                frames.push(again);
+                let again = match (sharer.as_deref_mut(), last) {
+                    (Some(sharer), Some(at)) => super::give(sharer, at, woven, self.wide),
+                    _ => self.read(woven).map(Decoded::Planes),
+                };
+                match again {
+                    Ok(again) => frames.push(again),
+                    Err(why) => failure = Some(why),
+                }
                 break;
             }
+            let target = match sharer.as_deref_mut() {
+                Some(sharer) => match super::take(sharer, self.width, self.height, self.wide)
+                    .and_then(|(at, texture)| Ok((at, self.shared_view(&texture)?)))
+                {
+                    Ok(target) => Some(target),
+                    Err(why) => {
+                        failure = Some(why);
+                        break;
+                    }
+                },
+                None => None,
+            };
+            let output_view = target
+                .as_ref()
+                .map_or(&self.output_view, |(_, view)| view)
+                .clone();
             let mut past: Vec<Option<ID3D11VideoProcessorInputView>> = self
                 .past
                 .iter()
@@ -417,7 +441,7 @@ impl Deinterlacer {
             let blt = unsafe {
                 self.video_context.VideoProcessorBlt(
                     &self.processor,
-                    &self.output_view,
+                    &output_view,
                     self.frame * 2 + field,
                     &streams,
                 )
@@ -427,8 +451,18 @@ impl Deinterlacer {
             drop(std::mem::ManuallyDrop::into_inner(stream.pInputSurface));
             match blt
                 .map_err(|error| format!("VideoProcessorBlt: {error}"))
-                .and_then(|()| self.read(woven))
-            {
+                .and_then(|()| match (sharer.as_deref_mut(), &target) {
+                    (Some(sharer), Some((at, _))) => {
+                        last = Some(*at);
+                        // AMF は DX11 のサーフェスの書き終わりを知らせない。前後のフレームを読む処理が
+                        // 次の処理やデコードと重なると書きかけを読むので、出力ごとに書き終わりを待つ。
+                        super::give(sharer, *at, woven, self.wide).and_then(|frame| {
+                            super::finish(sharer)?;
+                            Ok(frame)
+                        })
+                    }
+                    _ => self.read(woven).map(Decoded::Planes),
+                }) {
                 Ok(frame) => frames.push(frame),
                 Err(why) => {
                     failure = Some(why);
@@ -449,34 +483,49 @@ impl Deinterlacer {
     }
 
     fn array_slice(&mut self, texture: &ID3D11Texture2D) -> u32 {
-        let mut desc = D3D11_TEXTURE2D_DESC::default();
-        // SAFETY: 出力は生きたローカル変数。
-        unsafe { texture.GetDesc(&mut desc) };
-        if desc.ArraySize <= 1 {
-            return 0;
-        }
-        const ARRAY_INDEX: GUID = GUID::from_u128(0x28115527_e7c3_4b66_99d3_4f2ae6b47faf);
-        let mut index = 0u32;
-        let mut size = size_of::<u32>() as u32;
-        // SAFETY: 出力は生きたローカル変数で、大きさを指定している。
-        let read = unsafe {
-            texture.GetPrivateData(
-                &ARRAY_INDEX,
-                &mut size,
-                Some(std::ptr::from_mut(&mut index).cast()),
-            )
-        };
-        if !self.said {
+        let (count, index) = array_index(texture);
+        if count > 1 && !self.said {
             self.said = true;
             if super::say() {
                 tracing::info!(
-                    "AMF デインターレース: テクスチャ配列 {} 枚、配列番号のプライベートデータ {:?} → {index}",
-                    desc.ArraySize,
-                    read.as_ref().map(|_| size)
+                    "AMF デインターレース: テクスチャ配列 {count} 枚、配列番号のプライベートデータ → {index:?}"
                 );
             }
         }
-        if read.is_ok() { index } else { 0 }
+        index.unwrap_or(0)
+    }
+
+    fn shared_view(
+        &mut self,
+        texture: &ID3D11Texture2D,
+    ) -> Result<ID3D11VideoProcessorOutputView, String> {
+        if let Some((_, view)) = self
+            .shared_views
+            .iter()
+            .find(|(known, _)| known.as_raw() == texture.as_raw())
+        {
+            return Ok(view.clone());
+        }
+        let view_desc = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
+            ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
+            Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
+                Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
+            },
+        };
+        let mut view = None;
+        // SAFETY: 記述と出力は生きたローカル変数、テクスチャと列挙子は生きている。
+        unsafe {
+            self.video.CreateVideoProcessorOutputView(
+                texture,
+                &self.enumerator,
+                &view_desc,
+                Some(&mut view),
+            )
+        }
+        .map_err(|error| format!("CreateVideoProcessorOutputView: {error}"))?;
+        let view = view.ok_or_else(|| String::from("出力のビューが作れません"))?;
+        self.shared_views.push((texture.clone(), view.clone()));
+        Ok(view)
     }
 
     fn read(&self, about: About) -> Result<Frame, String> {
@@ -518,4 +567,42 @@ impl Deinterlacer {
             progressive: about.progressive,
         })
     }
+}
+
+/// DX11 のサーフェスの D3D11 のテクスチャ（配列のことがある、[`array_index`]）。
+pub(super) fn texture_of(surface: &api::Surface) -> Result<ID3D11Texture2D, String> {
+    let memory = surface.memory_type();
+    if memory != api::AMF_MEMORY_DX11 {
+        return Err(format!(
+            "AMF のフレームが DX11 ではありません（メモリの種類 {memory}）"
+        ));
+    }
+    let plane = surface.plane(0).ok_or("プレーンがありません")?;
+    let raw = plane.native();
+    // SAFETY: DX11 のプレーンの `GetNative` は、プレーンが生きている間の `ID3D11Texture2D*`。
+    unsafe { ID3D11Texture2D::from_raw_borrowed(&raw) }
+        .cloned()
+        .ok_or_else(|| String::from("テクスチャがありません"))
+}
+
+/// AMF のテクスチャ配列の枚数と、このサーフェスの配列番号（プライベートデータ、読めなければ `None`）。
+pub(super) fn array_index(texture: &ID3D11Texture2D) -> (u32, Option<u32>) {
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    // SAFETY: 出力は生きたローカル変数。
+    unsafe { texture.GetDesc(&mut desc) };
+    if desc.ArraySize <= 1 {
+        return (desc.ArraySize, Some(0));
+    }
+    const ARRAY_INDEX: GUID = GUID::from_u128(0x28115527_e7c3_4b66_99d3_4f2ae6b47faf);
+    let mut index = 0u32;
+    let mut size = size_of::<u32>() as u32;
+    // SAFETY: 出力は生きたローカル変数で、大きさを指定している。
+    let read = unsafe {
+        texture.GetPrivateData(
+            &ARRAY_INDEX,
+            &mut size,
+            Some(std::ptr::from_mut(&mut index).cast()),
+        )
+    };
+    (desc.ArraySize, read.ok().map(|()| index))
 }

@@ -17,7 +17,7 @@ use windows::Win32::Graphics::Direct3D::{
 };
 use windows::Win32::Graphics::Direct3D11::{
     D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device,
-    ID3D11Multithread,
+    ID3D11Multithread, ID3D11Texture2D,
 };
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ADAPTER_FLAG, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIAdapter1, IDXGIFactory1,
@@ -28,6 +28,106 @@ use super::order::{Key, Keys};
 use super::{About, Decode, Decoded, Error, HwDeinterlace, Offer, Readback, Way};
 
 const ABOUTS: usize = 64;
+
+/// AMF のテクスチャを主記憶を通さずにレンダラーへ渡す物（D3D12 の機能があるときだけ）。
+#[cfg(feature = "d3d12")]
+pub(crate) type Sharer = super::d3d12::share::Sharer;
+#[cfg(not(feature = "d3d12"))]
+pub(crate) enum Sharer {}
+
+fn hand(
+    sharer: &mut Sharer,
+    texture: &ID3D11Texture2D,
+    index: u32,
+    about: About,
+    wide: bool,
+) -> Result<Decoded, String> {
+    #[cfg(feature = "d3d12")]
+    return sharer
+        .hand(
+            texture,
+            index,
+            about.format.width,
+            about.format.height,
+            wide,
+        )
+        .map(|frame| {
+            Decoded::Surface(super::Surface {
+                about,
+                held: super::Held::D3d12(frame),
+            })
+        })
+        .map_err(|error| error.to_string());
+    #[cfg(not(feature = "d3d12"))]
+    {
+        let _ = (texture, index, about, wide);
+        match *sharer {}
+    }
+}
+
+fn finish(sharer: &Sharer) -> Result<(), String> {
+    #[cfg(feature = "d3d12")]
+    return sharer.finish().map_err(|error| error.to_string());
+    #[cfg(not(feature = "d3d12"))]
+    match *sharer {}
+}
+
+/// 空いている共有テクスチャ（ビデオプロセッサーの出力にする）の番号とテクスチャ。
+fn take(
+    sharer: &mut Sharer,
+    width: u32,
+    height: u32,
+    wide: bool,
+) -> Result<(usize, ID3D11Texture2D), String> {
+    #[cfg(feature = "d3d12")]
+    return sharer
+        .take(width, height, wide)
+        .map(|at| (at, sharer.texture(at).clone()))
+        .map_err(|error| error.to_string());
+    #[cfg(not(feature = "d3d12"))]
+    {
+        let _ = (width, height, wide);
+        match *sharer {}
+    }
+}
+
+fn give(sharer: &mut Sharer, at: usize, about: About, wide: bool) -> Result<Decoded, String> {
+    #[cfg(feature = "d3d12")]
+    return sharer
+        .give(at, about.format.width, about.format.height, wide)
+        .map(|frame| {
+            Decoded::Surface(super::Surface {
+                about,
+                held: super::Held::D3d12(frame),
+            })
+        })
+        .map_err(|error| error.to_string());
+    #[cfg(not(feature = "d3d12"))]
+    {
+        let _ = (at, about, wide);
+        match *sharer {}
+    }
+}
+
+/// レンダリングする GPU の D3D11 のデバイスと、そこへ渡す物。レンダラーが D3D12 のときだけ。
+fn on_drawing() -> Option<(ID3D11Device, Sharer)> {
+    #[cfg(feature = "d3d12")]
+    {
+        let raw12 = super::d3d12::dx::adopted()?;
+        let made = super::d3d12::d3d11::device_on(&raw12).and_then(|(device, context)| {
+            Sharer::open(&raw12, &device, &context).map(|sharer| (device, sharer))
+        });
+        match made {
+            Ok(made) => Some(made),
+            Err(error) => {
+                tracing::info!("AMF: GPU のメモリで受け渡せないので主記憶を使う: {error}");
+                None
+            }
+        }
+    }
+    #[cfg(not(feature = "d3d12"))]
+    None
+}
 
 const SEQUENCE: i64 = 1 << 32;
 
@@ -221,12 +321,15 @@ impl Drop for Context {
     }
 }
 
-fn configure(component: &api::Component, cpu: bool) {
+fn configure(component: &api::Component, deinterlace: bool, on_gpu: bool) {
     component.set(
         api::TIMESTAMP_MODE,
         api::Variant::int(api::AMF_TS_PRESENTATION),
     );
-    component.set(api::SURFACE_CPU, api::Variant::boolean(cpu));
+    component.set(
+        api::SURFACE_CPU,
+        api::Variant::boolean(!deinterlace && !on_gpu),
+    );
     // 既定の数では参照フレームと受け取り待ちのフレームで空きがなくなり、入力も出力も止まる。
     component.set(api::SURFACE_POOL_SIZE, api::Variant::int(SURFACE_POOL));
 }
@@ -311,10 +414,12 @@ pub struct Amf {
     keys: Keys,
     base: i64,
     abouts: BTreeMap<i64, About>,
-    ready: VecDeque<Frame>,
+    ready: VecDeque<Decoded>,
     deinterlace: Option<HwDeinterlace>,
     device3d: Option<ID3D11Device>,
     vpp: Option<vpp::Deinterlacer>,
+    /// GPU の上でレンダラーへ渡す物（無ければ主記憶へ読む）。
+    sharer: Option<Sharer>,
     /// 失敗した後は AMF に触らない（触ると AMF の中でクラッシュする）。
     broken: Option<String>,
     /// フィールドの対の一枚目の付随情報。二枚目のタイムスタンプにも結び付ける。
@@ -342,19 +447,30 @@ impl Amf {
         deinterlace: Option<HwDeinterlace>,
     ) -> Result<Self, Error> {
         let runtime = runtime()?;
-        // デインターレースには D3D11 のデバイスが要るので、名前が空でも最初の AMD の GPU に作る。
-        let device = if device.is_empty() && deinterlace.is_some() {
-            amd_adapters()
-                .into_iter()
-                .next()
-                .map(|(name, _)| name)
+        // レンダリングする AMD の GPU（そこでデコードすれば、主記憶を通さずに渡せる）。
+        #[cfg(feature = "d3d12")]
+        let drawing = amd_adapters()
+            .into_iter()
+            .map(|(name, _)| name)
+            .find(|name| super::d3d12::dx::draws_on(name));
+        #[cfg(not(feature = "d3d12"))]
+        let drawing: Option<String> = None;
+        // 名前が空ならレンダリングする GPU で。デインターレースには D3D11 のデバイスが要るので、
+        // それも無ければ最初の AMD の GPU に作る。
+        let device = if device.is_empty() {
+            drawing
+                .clone()
+                .or_else(|| {
+                    deinterlace
+                        .and_then(|_| amd_adapters().into_iter().next().map(|(name, _)| name))
+                })
                 .unwrap_or_default()
         } else {
             device.to_owned()
         };
         let device = device.as_str();
-        let (name, d3d) = if device.is_empty() {
-            (String::from("既定の GPU"), None)
+        let (name, d3d, sharer) = if device.is_empty() {
+            (String::from("既定の GPU"), None, None)
         } else {
             let (name, adapter) = amd_adapters()
                 .into_iter()
@@ -362,7 +478,11 @@ impl Amf {
                 .ok_or_else(|| {
                     Error::Unavailable(format!("AMD の GPU {device} が見つかりません"))
                 })?;
-            (name, Some(device_on(&adapter)?))
+            // 別の GPU でデコードするときは主記憶で渡す。
+            match on_drawing().filter(|_| drawing.as_deref() == Some(device)) {
+                Some((d3d, sharer)) => (name, Some(d3d), Some(sharer)),
+                None => (name, Some(device_on(&adapter)?), None),
+            }
         };
         if let (Some(mode), Some(d3d)) = (deinterlace, &d3d)
             && !vpp::modes(d3d).contains(&mode)
@@ -389,7 +509,7 @@ impl Amf {
                 }
             }));
         }
-        configure(&component, deinterlace.is_none());
+        configure(&component, deinterlace.is_some(), sharer.is_some());
         if say() {
             tracing::info!(
                 "AMF {codec:?}: {name} を開いた（ランタイム {:#018x}）",
@@ -417,6 +537,7 @@ impl Amf {
             deinterlace,
             device3d,
             vpp: None,
+            sharer,
             broken: None,
             first_field: None,
             submitted: 0,
@@ -457,7 +578,11 @@ impl Amf {
                 self.abouts.clear();
             }
             drop(std::mem::replace(&mut self.component, component));
-            configure(&self.component, self.deinterlace.is_none());
+            configure(
+                &self.component,
+                self.deinterlace.is_some(),
+                self.sharer.is_some(),
+            );
             self.main10 = wanted.wide;
             self.shape = None;
         }
@@ -547,7 +672,7 @@ impl Amf {
         }
     }
 
-    fn read_deinterlaced(&mut self, data: &api::Surface) -> Result<Vec<Frame>, String> {
+    fn read_deinterlaced(&mut self, data: &api::Surface) -> Result<Vec<Decoded>, String> {
         let mode = self
             .deinterlace
             .ok_or("デインターレースは要求されていません")?;
@@ -570,7 +695,7 @@ impl Amf {
             .is_some_and(|vpp| vpp.fits(width, height, wide))
         {
             if let Some(old) = self.vpp.as_mut() {
-                frames.extend(old.drain()?);
+                frames.extend(old.drain(self.sharer.as_mut())?);
             }
             let device = self
                 .device3d
@@ -582,12 +707,19 @@ impl Amf {
             );
         }
         let vpp = self.vpp.as_mut().ok_or("ビデオプロセッサーがありません")?;
-        // SAFETY: メモリが DX11 なのは上で確かめた。
-        frames.extend(unsafe { vpp.process(data, about) }?);
+        frames.extend(vpp.process(data, about, self.sharer.as_mut())?);
         Ok(frames)
     }
 
-    fn read(&mut self, data: &api::Surface) -> Result<Frame, String> {
+    fn read(&mut self, data: &api::Surface) -> Result<Decoded, String> {
+        if self.sharer.is_some() && data.memory_type() == api::AMF_MEMORY_DX11 {
+            let wide = data.format() == api::AMF_SURFACE_P010;
+            let texture = vpp::texture_of(data)?;
+            let (_, index) = vpp::array_index(&texture);
+            let about = self.about_of(data.pts());
+            let sharer = self.sharer.as_mut().ok_or("渡す物がありません")?;
+            return hand(sharer, &texture, index.unwrap_or(0), about, wide);
+        }
         let status = data.convert(api::AMF_MEMORY_HOST);
         if status != api::AMF_OK {
             return Err(format!("Convert(HOST): AMF_RESULT {status}"));
@@ -642,7 +774,7 @@ impl Amf {
             wide,
         )
         .ok_or_else(|| String::from("プレーンがフレームの大きさに足りません"))?;
-        Ok(Frame {
+        Ok(Decoded::Planes(Frame {
             tag: about.tag,
             format: about.format,
             planes,
@@ -650,7 +782,15 @@ impl Amf {
             top_field_first: about.top_field_first,
             repeat_first_field: about.repeat_first_field,
             progressive: about.progressive,
-        })
+        }))
+    }
+
+    fn memory(&self) -> &'static str {
+        if self.sharer.is_some() {
+            "・GPU メモリ"
+        } else {
+            ""
+        }
     }
 
     fn about_of(&mut self, time: i64) -> About {
@@ -806,11 +946,16 @@ impl Decode for Amf {
     }
 
     fn take(&mut self) -> Option<Decoded> {
-        self.ready.pop_front().map(Decoded::Planes)
+        self.ready.pop_front()
     }
 
     fn read_back(&mut self) -> Option<Readback> {
-        let frame = self.ready.pop_front()?;
+        if !matches!(self.ready.front()?, Decoded::Planes(_)) {
+            return None;
+        }
+        let Some(Decoded::Planes(frame)) = self.ready.pop_front() else {
+            return None;
+        };
         let size = if frame.format.depth > 8 { 2 } else { 1 };
         let [luma, blue, red] = &frame.planes;
         let mut chroma = Vec::with_capacity(blue.data.len() * 2);
@@ -840,7 +985,7 @@ impl Decode for Amf {
             tracing::warn!("AMF {:?}: {error}", self.codec);
         }
         if let Some(vpp) = self.vpp.as_mut() {
-            match vpp.drain() {
+            match vpp.drain(self.sharer.as_mut()) {
                 Ok(frames) => self.ready.extend(frames),
                 Err(why) => tracing::warn!("AMF {:?}: {why}", self.codec),
             }
@@ -849,8 +994,13 @@ impl Decode for Amf {
 
     fn name(&self) -> String {
         match self.deinterlace {
-            Some(mode) => format!("AMF ({}・デインターレース {})", self.device, mode.name()),
-            None => format!("AMF ({})", self.device),
+            Some(mode) => format!(
+                "AMF ({}{}・デインターレース {})",
+                self.device,
+                self.memory(),
+                mode.name()
+            ),
+            None => format!("AMF ({}{})", self.device, self.memory()),
         }
     }
 
