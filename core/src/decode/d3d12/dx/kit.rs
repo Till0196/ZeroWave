@@ -26,6 +26,9 @@ const GENERIC_ALL: u32 = 0x1000_0000;
 /// 自分で閉じる NT ハンドル（イベントと共有のハンドル）。
 pub(crate) struct Owned(HANDLE);
 
+// SAFETY: カーネルのハンドルはどのスレッドからでも使え、閉じるのは持ち主だけ。
+unsafe impl Send for Owned {}
+
 impl Owned {
     /// 名前無し、自動リセット、非シグナル状態のイベント。
     pub fn event() -> Result<Self, Error> {

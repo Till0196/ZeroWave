@@ -34,21 +34,24 @@ impl Device {
             let Some(bitstream) = cycle.bitstream.clone() else {
                 return Err(Error::Unavailable(String::from("バッファがありません")));
             };
-            // SAFETY: this entry's own; everything recorded into them has completed.
+            let Some(list) = self.list.clone() else {
+                return Err(Error::Unavailable(String::from(
+                    "D3D12 のデコードのコマンドリストがありません",
+                )));
+            };
+            // SAFETY: このアロケーターで記録した処理は終わっている（上で待った）。リストは閉じている。
             let reset = unsafe {
                 cycle
                     .allocator
                     .Reset()
                     .map_err(|error| failed("Reset allocator", error))
                     .and_then(|()| {
-                        cycle
-                            .list
-                            .Reset(&cycle.allocator)
+                        list.Reset(&cycle.allocator)
                             .map_err(|error| failed("Reset list", error))
                     })
             };
             match reset {
-                Ok(()) => (cycle.list.clone(), bitstream),
+                Ok(()) => (list, bitstream),
                 Err(error) => {
                     self.renew(at);
                     return Err(error);
@@ -268,60 +271,50 @@ impl Device {
 
     pub(super) fn video_queue(
         raw: &ID3D12Device,
-    ) -> Result<(ID3D12CommandQueue, Vec<Cycle>), Error> {
-        let description = D3D12_COMMAND_QUEUE_DESC {
-            Type: D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE,
-            Priority: 0,
-            Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
-            NodeMask: 0,
-        };
-        // SAFETY: `description` is a live local and the device is alive.
-        let queue: ID3D12CommandQueue = unsafe { raw.CreateCommandQueue(&description) }
-            .map_err(|error| failed("CreateCommandQueue", error))?;
-        name(&queue, "zerowave デコードキュー");
+    ) -> Result<(ID3D12CommandQueue, ID3D12VideoDecodeCommandList, Vec<Cycle>), Error> {
+        let queue = shared_queue(raw)?;
         let mut cycle = Vec::with_capacity(CYCLE);
         for _ in 0..CYCLE {
-            let (allocator, list) = Self::make_cycle(raw)?;
             cycle.push(Cycle {
-                allocator,
-                list,
+                allocator: allocator(raw, D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE)?,
                 bitstream: None,
                 capacity: 0,
                 value: 0,
             });
         }
-        Ok((queue, cycle))
+        let list = Self::list(raw, &cycle[0].allocator)?;
+        Ok((queue, list, cycle))
     }
 
-    fn make_cycle(
+    /// 閉じたリスト（最初の `Reset` で開く）。
+    fn list(
         raw: &ID3D12Device,
-    ) -> Result<(ID3D12CommandAllocator, ID3D12VideoDecodeCommandList), Error> {
-        // SAFETY: a fresh allocator of the list's type. A list is made open, so it is
-        // closed for the first reset.
+        allocator: &ID3D12CommandAllocator,
+    ) -> Result<ID3D12VideoDecodeCommandList, Error> {
+        // SAFETY: 生きているデバイスと、このリストの種類のアロケーター。
         unsafe {
-            let allocator: ID3D12CommandAllocator = raw
-                .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE)
-                .map_err(|error| failed("CreateCommandAllocator", error))?;
             let list: ID3D12VideoDecodeCommandList = raw
                 .CreateCommandList(
                     0,
                     D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE,
-                    &allocator,
+                    allocator,
                     None::<&ID3D12PipelineState>,
                 )
                 .map_err(|error| failed("CreateCommandList", error))?;
             list.Close().map_err(|error| failed("Close", error))?;
             name(&list, "zerowave デコードのコマンドリスト");
-            Ok((allocator, list))
+            Ok(list)
         }
     }
 
-    /// 項目を作り直す。閉じられなかったリストとそのアロケーターは再利用できない。
+    /// リストとこの項目のアロケーターを作り直す。閉じられなかったリストとそのアロケーターは再利用できない。
     fn renew(&mut self, at: usize) {
-        match Self::make_cycle(&self.raw) {
+        let made = allocator(&self.raw, D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE)
+            .and_then(|allocator| Self::list(&self.raw, &allocator).map(|list| (allocator, list)));
+        match made {
             Ok((allocator, list)) => {
                 self.cycle[at].allocator = allocator;
-                self.cycle[at].list = list;
+                self.list = Some(list);
             }
             Err(error) => tracing::warn!("D3D12: コマンドリストを作り直せない: {error:?}"),
         }
@@ -434,6 +427,17 @@ impl Device {
         if let Err(error) = self.wait(self.value) {
             tracing::warn!("D3D12: デコードキューの待機に失敗: {error:?}");
         }
+        // 使い回すキューは、ほかのデコーダーの分も含めて空にする。
+        if self.drains
+            && let Some(queue) = self.queue.as_ref()
+        {
+            self.value += 1;
+            // SAFETY: 生きているキューとフェンスでシグナルを投入するだけ。
+            let signalled = unsafe { queue.Signal(&self.fence, self.value) };
+            if signalled.is_err() || self.wait(self.value).is_err() {
+                tracing::warn!("D3D12: デコードキューを空にできない");
+            }
+        }
         let value = self.copy.as_ref().map_or(0, |copy| copy.value);
         if value != 0
             && let Err(error) = self.wait_copy(value)
@@ -441,6 +445,86 @@ impl Device {
             tracing::warn!("D3D12: コピーキューの待機に失敗: {error:?}");
         }
     }
+}
+
+/// デバイスのデコードのキュー。[`one_decode_queue`] の GPU では、デバイスで一本だけ作って使い回す。
+fn shared_queue(raw: &ID3D12Device) -> Result<ID3D12CommandQueue, Error> {
+    struct Shared(usize, ID3D12CommandQueue);
+    static SHARED: Mutex<Option<Shared>> = Mutex::new(None);
+    let one = one_decode_queue(raw);
+    let mut kept = SHARED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if one
+        && let Some(Shared(device, queue)) = kept.as_ref()
+        && *device == raw.as_raw() as usize
+    {
+        return Ok(queue.clone());
+    }
+    let description = D3D12_COMMAND_QUEUE_DESC {
+        Type: D3D12_COMMAND_LIST_TYPE_VIDEO_DECODE,
+        Priority: 0,
+        Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
+        NodeMask: 0,
+    };
+    // SAFETY: `description` is a live local and the device is alive.
+    let queue: ID3D12CommandQueue = unsafe { raw.CreateCommandQueue(&description) }
+        .map_err(|error| failed("CreateCommandQueue", error))?;
+    name(&queue, "zerowave デコードキュー");
+    if one {
+        tracing::info!("D3D12: デコードのキューを一本にして使い回す");
+        *kept = Some(Shared(raw.as_raw() as usize, queue.clone()));
+    }
+    Ok(queue)
+}
+
+/// デコードのキューを複数作ると落ちる Intel の GPU（UMA で、機能レベルが 12.0 以下か、名前に「HD」が入る）。
+pub(super) fn one_decode_queue(raw: &ID3D12Device) -> bool {
+    let Ok(adapter) = adapter_by_luid::<IDXGIAdapter1>(luid(raw)) else {
+        return false;
+    };
+    let Some(desc) = describe_adapter(&adapter) else {
+        return false;
+    };
+    if desc.VendorId != 0x8086 {
+        return false;
+    }
+    let mut architecture = D3D12_FEATURE_DATA_ARCHITECTURE::default();
+    let levels = [
+        windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_12_2,
+        windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_12_1,
+        windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_12_0,
+        windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_1,
+        windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0,
+    ];
+    let mut supported = D3D12_FEATURE_DATA_FEATURE_LEVELS {
+        NumFeatureLevels: levels.len() as u32,
+        pFeatureLevelsRequested: levels.as_ptr(),
+        MaxSupportedFeatureLevel: windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0,
+    };
+    // SAFETY: 大きさどおりのローカルを渡す。
+    let (uma, level) = unsafe {
+        let uma = raw
+            .CheckFeatureSupport(
+                D3D12_FEATURE_ARCHITECTURE,
+                std::ptr::from_mut(&mut architecture).cast(),
+                size_of::<D3D12_FEATURE_DATA_ARCHITECTURE>() as u32,
+            )
+            .is_ok()
+            && architecture.UMA.as_bool();
+        let level = raw
+            .CheckFeatureSupport(
+                D3D12_FEATURE_FEATURE_LEVELS,
+                std::ptr::from_mut(&mut supported).cast(),
+                size_of::<D3D12_FEATURE_DATA_FEATURE_LEVELS>() as u32,
+            )
+            .map(|()| supported.MaxSupportedFeatureLevel)
+            .unwrap_or(windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0);
+        (uma, level)
+    };
+    let name = String::from_utf16_lossy(&desc.Description);
+    uma && (level.0 <= windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_12_0.0
+        || name.contains("HD"))
 }
 
 /// `D3D12_QUERY_DATA_VIDEO_DECODE_STATISTICS` を読む（`Status`・`NumMacroblocksAffected`・

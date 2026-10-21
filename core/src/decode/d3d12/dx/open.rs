@@ -50,7 +50,9 @@ impl Device {
             shared: false,
             adapter: adapter.name.clone(),
             queue: None,
+            drains: false,
             video_error: Some(String::from("問い合わせ用のデバイス")),
+            list: None,
             cycle: Vec::new(),
             at: 0,
             fence,
@@ -71,24 +73,27 @@ impl Device {
             Some(_) => probe_video(&raw).and_then(|()| Self::video_queue(&raw)),
             None => Err(no_video()),
         };
-        let (queue, cycle, video_error) = match made {
-            Ok((queue, cycle)) => (Some(queue), cycle, None),
+        let (queue, list, cycle, video_error) = match made {
+            Ok((queue, list, cycle)) => (Some(queue), Some(list), cycle, None),
             Err(error) => {
                 tracing::warn!("D3D12: ビデオデコードを使えない（{error}）");
-                (None, Vec::new(), Some(error.to_string()))
+                (None, None, Vec::new(), Some(error.to_string()))
             }
         };
         // SAFETY: the device is alive for the whole of this function.
         let fence: ID3D12Fence = unsafe { raw.CreateFence(0, D3D12_FENCE_FLAG_NONE) }
             .map_err(|error| failed("CreateFence", error))?;
         let event = Owned::event()?;
+        let drains = queue.is_some() && decode::one_decode_queue(&raw);
         Ok(Self {
             raw,
             video,
             shared,
             adapter,
+            drains,
             queue,
             video_error,
+            list,
             cycle,
             at: 0,
             fence,
@@ -299,8 +304,6 @@ impl Device {
         }
     }
 
-    /// プールのサーフェスを一枚。まず `ALLOW_SIMULTANEOUS_ACCESS` で（使い終えると自動で `COMMON` へ
-    /// 戻るので wgpu へ渡せる）、拒否されたら無しで。`layers` が 2 以上なら配列（参照専用だけ）。
     pub fn texture(
         &self,
         format: DXGI_FORMAT,
@@ -309,60 +312,7 @@ impl Device {
         reference_only: bool,
         layers: u32,
     ) -> Result<ID3D12Resource, Error> {
-        let properties = D3D12_HEAP_PROPERTIES {
-            Type: D3D12_HEAP_TYPE_DEFAULT,
-            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-            CreationNodeMask: 1,
-            VisibleNodeMask: 1,
-        };
-        let mut description = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-            Alignment: 0,
-            Width: u64::from(width),
-            Height: height,
-            DepthOrArraySize: layers.max(1) as u16,
-            MipLevels: 1,
-            Format: format,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
-            Flags: D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS,
-        };
-        let candidates: &[D3D12_RESOURCE_FLAGS] = if reference_only {
-            &[D3D12_RESOURCE_FLAG_VIDEO_DECODE_REFERENCE_ONLY
-                | D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE]
-        } else {
-            &[
-                D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS,
-                D3D12_RESOURCE_FLAG_NONE,
-            ]
-        };
-        for flags in candidates.iter().copied() {
-            description.Flags = flags;
-            let mut texture: Option<ID3D12Resource> = None;
-            // SAFETY: both descriptions are live locals; `texture` is written at most once.
-            let made = unsafe {
-                self.raw.CreateCommittedResource(
-                    &properties,
-                    D3D12_HEAP_FLAG_NONE,
-                    &description,
-                    D3D12_RESOURCE_STATE_COMMON,
-                    None,
-                    &mut texture,
-                )
-            };
-            if made.is_ok()
-                && let Some(texture) = texture
-            {
-                return Ok(texture);
-            }
-        }
-        Err(Error::Unavailable(String::from(
-            "サーフェスが確保できません",
-        )))
+        texture(&self.raw, format, width, height, reference_only, layers)
     }
 
     pub fn upload(&self, size: u64) -> Result<ID3D12Resource, Error> {
@@ -435,4 +385,70 @@ fn no_video() -> Error {
     Error::Unavailable(String::from(
         "この GPU のドライバーは D3D12 のビデオデコードに対応していません",
     ))
+}
+
+/// プールのサーフェスを一枚。まず `ALLOW_SIMULTANEOUS_ACCESS` で（使い終えると自動で `COMMON` へ
+/// 戻るので wgpu へ渡せる）、拒否されたら無しで。`layers` が 2 以上なら配列（参照専用だけ）。
+pub(crate) fn texture(
+    raw: &ID3D12Device,
+    format: DXGI_FORMAT,
+    width: u32,
+    height: u32,
+    reference_only: bool,
+    layers: u32,
+) -> Result<ID3D12Resource, Error> {
+    let properties = D3D12_HEAP_PROPERTIES {
+        Type: D3D12_HEAP_TYPE_DEFAULT,
+        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+        CreationNodeMask: 1,
+        VisibleNodeMask: 1,
+    };
+    let mut description = D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+        Alignment: 0,
+        Width: u64::from(width),
+        Height: height,
+        DepthOrArraySize: layers.max(1) as u16,
+        MipLevels: 1,
+        Format: format,
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+        Flags: D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS,
+    };
+    let candidates: &[D3D12_RESOURCE_FLAGS] = if reference_only {
+        &[D3D12_RESOURCE_FLAG_VIDEO_DECODE_REFERENCE_ONLY
+            | D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE]
+    } else {
+        &[
+            D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS,
+            D3D12_RESOURCE_FLAG_NONE,
+        ]
+    };
+    for flags in candidates.iter().copied() {
+        description.Flags = flags;
+        let mut texture: Option<ID3D12Resource> = None;
+        // SAFETY: both descriptions are live locals; `texture` is written at most once.
+        let made = unsafe {
+            raw.CreateCommittedResource(
+                &properties,
+                D3D12_HEAP_FLAG_NONE,
+                &description,
+                D3D12_RESOURCE_STATE_COMMON,
+                None,
+                &mut texture,
+            )
+        };
+        if made.is_ok()
+            && let Some(texture) = texture
+        {
+            return Ok(texture);
+        }
+    }
+    Err(Error::Unavailable(String::from(
+        "サーフェスが確保できません",
+    )))
 }

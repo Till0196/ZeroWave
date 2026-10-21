@@ -31,9 +31,10 @@ pub use adapter::{
 };
 pub use copy::profile_name;
 pub(crate) use kit::{
-    Mapping, Owned, adapter_by_luid, create_device, describe, describe_adapter, device_by_luid,
-    factory, footprints, hardware_adapters, luid,
+    Mapping, Owned, adapter_by_luid, completed, create_device, describe, describe_adapter,
+    device_by_luid, factory, footprints, hardware_adapters, luid,
 };
+pub(crate) use open::texture;
 
 /// wgpu が開いたデバイス。`decode::open` はコーデックしか受け取らないので `static` に置く。
 static ADOPTED: Mutex<Option<ID3D12Device>> = Mutex::new(None);
@@ -107,6 +108,35 @@ pub(crate) fn borrow<T: Interface>(from: &T) -> std::mem::ManuallyDrop<Option<T>
     unsafe { std::mem::transmute_copy(from) }
 }
 
+pub(crate) fn allocator(
+    raw: &ID3D12Device,
+    kind: D3D12_COMMAND_LIST_TYPE,
+) -> Result<ID3D12CommandAllocator, Error> {
+    // SAFETY: 生きているデバイス。
+    unsafe { raw.CreateCommandAllocator(kind) }
+        .map_err(|error| failed("CreateCommandAllocator", error))
+}
+
+/// リソース全体の状態遷移のバリア（参照カウントは増やさない、[`borrow`]）。
+pub(crate) fn transition(
+    resource: &ID3D12Resource,
+    before: D3D12_RESOURCE_STATES,
+    after: D3D12_RESOURCE_STATES,
+) -> D3D12_RESOURCE_BARRIER {
+    D3D12_RESOURCE_BARRIER {
+        Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
+        Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
+        Anonymous: D3D12_RESOURCE_BARRIER_0 {
+            Transition: std::mem::ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
+                pResource: borrow(resource),
+                Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                StateBefore: before,
+                StateAfter: after,
+            }),
+        },
+    }
+}
+
 #[derive(Debug)]
 pub struct Readback {
     pub planes: Vec<(Vec<u8>, usize, usize)>,
@@ -149,7 +179,12 @@ pub struct Device {
     pub shared: bool,
     pub adapter: String,
     queue: Option<ID3D12CommandQueue>,
+    /// デコードのキューをほかのデコーダーと使い回している（[`decode::one_decode_queue`]）。止めるときはキューごと空にする。
+    drains: bool,
     pub video_error: Option<String>,
+    /// デコードのコマンドリスト。一本をアロケーターを替えて使う。
+    /// 項目ごとに別のリストで記録すると、Intel の GPU ではピクチャーが書かれないことがある。
+    list: Option<ID3D12VideoDecodeCommandList>,
     cycle: Vec<Cycle>,
     at: usize,
     fence: ID3D12Fence,
@@ -182,7 +217,6 @@ static RATE_SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 
 struct Cycle {
     allocator: ID3D12CommandAllocator,
-    list: ID3D12VideoDecodeCommandList,
     /// このピクチャーのビットストリームのバッファ。割り当てのコストが高いので、大きくして再利用する。
     bitstream: Option<ID3D12Resource>,
     capacity: u64,
