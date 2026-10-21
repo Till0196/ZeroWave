@@ -4,7 +4,7 @@
 //! NVDEC が書いたフレームを、レンダラーが渡した `ID3D12Device` の `ID3D12Resource` へ。
 //! NV12 を CUDA へ配列としてインポートする方法はドキュメントに無いので、共有した線形のバッファへ CUDA がコピーし、
 //! D3D12 がプレーンごとにテクスチャへコピーする。同期は共有したフェンス一本。
-//! wgpu にフェンスを渡す API が無いので、最後にレンダラー側で一度待つ。
+//! CPU が待つのは CUDA のコピーだけ（NVDEC のフレームを手放す前）。D3D12 のコピーはレンダラーが GPU の上で待つ。
 
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
@@ -42,6 +42,12 @@ pub struct Bridge {
     ten_bit: bool,
     width: u32,
     height: u32,
+}
+
+impl Drop for Bridge {
+    fn drop(&mut self) {
+        let _ = self.event.wait_fence(&self.fence, self.step);
+    }
 }
 
 impl std::fmt::Debug for Bridge {
@@ -180,6 +186,9 @@ impl Bridge {
             })?;
         }
         self.shared_fence.signal(&self.stream, self.step + 1)?;
+        // 呼び出し側はこの後 NVDEC のフレームを手放すので、読み終わるまで待つ。前の D3D12 のコピーも
+        // 済んでいる（ストリームが先に待った）ので、アロケーターも使い回せる。
+        self.stream.wait()?;
 
         self.blit(slot)?;
         self.step += 2;
@@ -191,12 +200,13 @@ impl Bridge {
             height: self.format.height,
             ten_bit: self.ten_bit,
             lease: Some(slot.lease.clone()),
+            ready: Some((self.fence.clone(), self.step)),
         })
     }
 
     fn blit(&mut self, slot: usize) -> Result<(), Error> {
         let texture = self.textures[slot].texture.clone();
-        // SAFETY: the allocator and list are ours; the wait at the end means nothing is in flight.
+        // SAFETY: the allocator and list are ours; the CUDA stream waited for the last copy, so nothing is in flight.
         unsafe {
             self.allocator
                 .Reset()
@@ -204,7 +214,7 @@ impl Bridge {
             self.list
                 .Reset(&self.allocator, None)
                 .map_err(|error| failed("CommandList::Reset", error))?;
-            self.list.ResourceBarrier(&[transition(
+            self.list.ResourceBarrier(&[dx::transition(
                 &texture,
                 D3D12_RESOURCE_STATE_COMMON,
                 D3D12_RESOURCE_STATE_COPY_DEST,
@@ -230,7 +240,7 @@ impl Bridge {
                 drop(ManuallyDrop::into_inner(source.pResource));
             }
             // `COMMON` に戻す。受け取る側はそこから始める前提。
-            self.list.ResourceBarrier(&[transition(
+            self.list.ResourceBarrier(&[dx::transition(
                 &texture,
                 D3D12_RESOURCE_STATE_COPY_DEST,
                 D3D12_RESOURCE_STATE_COMMON,
@@ -250,7 +260,7 @@ impl Bridge {
                 .Signal(&self.fence, self.step + 2)
                 .map_err(|error| failed("Queue::Signal", error))?;
         }
-        self.event.wait_fence(&self.fence, self.step + 2)
+        Ok(())
     }
 
     /// 次に書いてよいスロット。まだ使われている（[`Frame::lease`] がある）ものへは書かない。
@@ -402,26 +412,6 @@ fn import_fence(
 ) -> Result<cu::Fence, Error> {
     let handle = Owned::shared(device, fence)?;
     context.import_fence(handle.raw().0)
-}
-
-fn transition(
-    texture: &ID3D12Resource,
-    before: D3D12_RESOURCE_STATES,
-    after: D3D12_RESOURCE_STATES,
-) -> D3D12_RESOURCE_BARRIER {
-    D3D12_RESOURCE_BARRIER {
-        Type: D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-        Flags: D3D12_RESOURCE_BARRIER_FLAG_NONE,
-        Anonymous: D3D12_RESOURCE_BARRIER_0 {
-            Transition: ManuallyDrop::new(D3D12_RESOURCE_TRANSITION_BARRIER {
-                // 参照カウントを増やさずにコピーする（`dx::borrow`）。増やすとリングのテクスチャが解放されない。
-                pResource: dx::borrow(texture),
-                Subresource: D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-                StateBefore: before,
-                StateAfter: after,
-            }),
-        },
-    }
 }
 
 fn luid_of(device: &ID3D12Device) -> Result<[u8; 8], Error> {
