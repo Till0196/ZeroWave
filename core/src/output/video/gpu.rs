@@ -42,6 +42,7 @@ use super::{HEADROOM, colour, hook, schedule};
 use super::import;
 
 mod device;
+mod direct;
 mod draw;
 mod encode;
 mod matcher;
@@ -137,7 +138,9 @@ pub struct Video {
     picture: wgpu::Texture,
     picture_view: wgpu::TextureView,
     planes: wgpu::BindGroupLayout,
-    pipeline: wgpu::RenderPipeline,
+    /// デインタレースのパイプライン。初めて要るときに作る（ビデオプロセスで処理するなら作らない）。
+    /// 遅い PC ではコンパイルに数秒かかる。
+    pipeline: Option<wgpu::RenderPipeline>,
     params: wgpu::Buffer,
     blits: Vec<(Blit, wgpu::RenderPipeline)>,
     blits_coming: Vec<(Blit, std::sync::mpsc::Receiver<wgpu::RenderPipeline>)>,
@@ -153,6 +156,16 @@ pub struct Video {
     import: Option<super::import::videotoolbox::Import>,
     pushed: u64,
     slot_index: Vec<u64>,
+    /// スロットのフレームが一枚で一フィールドなら、そのパリティー（HEVC の `field_seq_flag`）。
+    lone: Vec<Option<Parity>>,
+    /// 今見せているフレームの [`Video::lone`]。縦に伸ばすとき半行ずらす。
+    lone_shown: Option<Parity>,
+    /// 変換のパスを飛ばし、表示のパスで直に読むフレーム（[`direct`]）。
+    direct: Option<direct::Direct>,
+    direct_layout: Option<wgpu::BindGroupLayout>,
+    direct_pipeline: Option<wgpu::RenderPipeline>,
+    /// 前の表示で直に読めたか（画面へ出す大きさで決まる。初めは RGB を作って描く）。
+    direct_fits: bool,
     last_progressive: bool,
     last_slot: Option<usize>,
     /// c/p を選ぶのは GPU、film か 60i かはこちら。
@@ -173,7 +186,11 @@ pub struct Video {
     retime_at: f64,
     display_mhz: u32,
     lost: usize,
+    /// 使う拡大縮小（自動を決めた後）。
     scaling: super::Scaling,
+    /// 頼まれた拡大縮小（自動のまま）と、測った GPU の強さ（[`super::Scaling::resolved`]）。
+    asked_scaling: super::Scaling,
+    strength: Option<Deinterlace>,
     adjust: super::Adjust,
     shown: Option<(wgpu::TextureView, [u32; 2], wgpu::TextureFormat)>,
     blit_layout: wgpu::BindGroupLayout,
@@ -183,6 +200,8 @@ pub struct Video {
     content: (f64, f64),
     #[cfg(feature = "plugins")]
     ahead: Ahead,
+    /// 方式を自動のまま、シェーダーでデインタレースした・拡大縮小を自動で決めた（GPU を測ってよい）。
+    shaded: bool,
 }
 
 struct Encoded {

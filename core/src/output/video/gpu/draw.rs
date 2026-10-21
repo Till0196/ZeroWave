@@ -367,6 +367,8 @@ impl Video {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("read back"),
             });
+        // 直に読んで描いたフレームは RGB を作っていない。
+        self.convert_direct(&mut encoder);
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.picture,

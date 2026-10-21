@@ -362,8 +362,25 @@ pub fn blit() -> &'static str {
     static TEXT: LazyLock<String> = LazyLock::new(|| {
         [
             include_str!("shader/srgb.wgsl"),
+            include_str!("shader/fit.wgsl"),
             include_str!("shader/blit.wgsl"),
             &ewa_table(),
+        ]
+        .concat()
+    });
+    &TEXT
+}
+
+/// デコーダーの 2 プレーンを直に読んで画面へ書くパス（`direct.wgsl`）。
+pub fn direct() -> &'static str {
+    static TEXT: LazyLock<String> = LazyLock::new(|| {
+        [
+            include_str!("shader/srgb.wgsl"),
+            include_str!("shader/fit.wgsl"),
+            include_str!("shader/params.wgsl"),
+            "@group(0) @binding(4) var<uniform> params: Params;\n",
+            include_str!("shader/rgb.wgsl"),
+            include_str!("shader/direct.wgsl"),
         ]
         .concat()
     });
@@ -605,6 +622,7 @@ fn main(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
             }
         }
         validates("blit", blit());
+        validates("direct", direct());
         validates("over", over());
     }
 

@@ -102,15 +102,6 @@ impl Video {
             None,
             "blit",
         );
-        let pipeline = build(
-            device,
-            &planes,
-            shader::deinterlace(settings.deinterlace, format.depth, shape),
-            picture_format(format.depth),
-            None,
-            "deinterlace",
-        );
-
         let live = LIVE_VIDEOS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         tracing::debug!(
             "レンダリング: 映像レンダラーを作成（使用中 {live} 個、{}x{}）",
@@ -133,7 +124,7 @@ impl Video {
             picture,
             picture_view,
             planes,
-            pipeline,
+            pipeline: None,
             params,
             blits: vec![(Blit::default(), blit)],
             blits_coming: Vec::new(),
@@ -149,6 +140,12 @@ impl Video {
             import: super::import::videotoolbox::Import::new(device),
             pushed: 0,
             slot_index: vec![0; pool_slots],
+            lone: vec![None; pool_slots],
+            lone_shown: None,
+            direct: None,
+            direct_layout: None,
+            direct_pipeline: None,
+            direct_fits: false,
             last_slot: None,
             last_progressive: false,
             matcher: None,
@@ -166,12 +163,15 @@ impl Video {
             retime_at: 0.0,
             display_mhz: 0,
             lost: 0,
-            scaling: super::Scaling::default(),
+            scaling: super::Scaling::default().resolved(None),
+            asked_scaling: super::Scaling::default(),
+            strength: None,
             adjust: crate::output::video::Adjust::default(),
             shown: None,
             content: (0.0, 0.0),
             #[cfg(feature = "plugins")]
             ahead: Ahead::default(),
+            shaded: false,
             reduce: reduce::Reduce::new(device),
             split: split::Split::new(device),
             blit_layout,
@@ -185,14 +185,7 @@ impl Video {
 
     pub fn set_settings(&mut self, settings: Settings) {
         if settings.deinterlace != self.settings.deinterlace {
-            self.pipeline = build(
-                &self.device,
-                &self.planes,
-                shader::deinterlace(settings.deinterlace, self.format.depth, self.shape),
-                picture_format(self.format.depth),
-                None,
-                "deinterlace",
-            );
+            self.pipeline = None;
             let dropped = self.schedule.len().min(self.pers.len());
             self.lose(dropped);
             let _ = self.schedule.forget_outputs();
@@ -201,6 +194,25 @@ impl Video {
             self.matcher = None;
         }
         self.settings = settings;
+    }
+
+    pub(super) fn ensure_pipeline(&mut self) {
+        if self.pipeline.is_none() {
+            let began = Instant::now();
+            self.pipeline = Some(build(
+                &self.device,
+                &self.planes,
+                shader::deinterlace(self.settings.deinterlace, self.format.depth, self.shape),
+                picture_format(self.format.depth),
+                None,
+                "deinterlace",
+            ));
+            tracing::debug!(
+                "デインタレースのパイプライン {} を作った（{:.1} ms）",
+                self.settings.deinterlace.name(),
+                began.elapsed().as_secs_f64() * 1e3
+            );
+        }
     }
 
     pub fn upload(&self) -> Upload {
@@ -272,6 +284,8 @@ impl Video {
         let inset = self.inset;
         let pan_scan = self.pan_scan;
         let scaling = self.scaling;
+        let asked_scaling = self.asked_scaling;
+        let strength = self.strength;
         let display_mhz = self.display_mhz;
         #[cfg(feature = "plugins")]
         let hooks = std::mem::take(&mut self.hooks);
@@ -290,6 +304,8 @@ impl Video {
         self.inset = inset;
         self.pan_scan = pan_scan;
         self.scaling = scaling;
+        self.asked_scaling = asked_scaling;
+        self.strength = strength;
         self.display_mhz = display_mhz;
         #[cfg(feature = "plugins")]
         {

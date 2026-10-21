@@ -28,6 +28,8 @@ impl Video {
         self.pushed += 1;
         let before = self.last_slot.replace(slot);
         self.slot_index[slot] = index;
+        self.lone[slot] = (about.format.field_pictures && about.structure.field())
+            .then(|| field::first_field(&about));
         match picture {
             Decoded::Planes(frame) => {
                 if frame.planes[0].width != self.format.width as usize
@@ -173,6 +175,20 @@ impl Video {
         let views = import.views(frame)?;
         if views.len() != self.shape.textures() as usize {
             return Err(Error::Unsupported("a frame of the wrong number of planes"));
+        }
+        // 書き終わるのを、このキューの GPU の上で待つ（後の送信が読むのはそれから）。
+        if let Some((fence, value)) = frame.ready.as_ref() {
+            // SAFETY: キューを借りて、生きているフェンスで待機を投入するだけ。
+            let waited = unsafe {
+                self.queue
+                    .as_hal::<wgpu::hal::api::Dx12>()
+                    .map(|hal| hal.as_raw().Wait(fence, *value))
+            };
+            if !matches!(waited, Some(Ok(()))) {
+                return Err(Error::Unsupported(
+                    "a frame whose fence cannot be waited on",
+                ));
+            }
         }
         // スロットがこのフレームを持つ間、デコーダーにそのテクスチャを使わせない（`decode::d3d12::Frame::lease`）。
         self.pool.adopt(slot, views, frame.lease.clone());
@@ -363,7 +379,19 @@ impl Video {
     }
 
     pub fn set_scaling(&mut self, scaling: super::Scaling) {
-        self.scaling = scaling;
+        self.asked_scaling = scaling;
+        self.scaling = scaling.resolved(self.strength);
+    }
+
+    /// 方式を自動のままシェーダーでデインタレースしたか、拡大縮小を自動にしている（GPU を測る意味がある）。
+    pub fn wants_measure(&self) -> bool {
+        self.shaded
+    }
+
+    /// 測った GPU で間に合うデインタレース。自動の拡大縮小をこれで決める。
+    pub fn set_strength(&mut self, strength: Option<Deinterlace>) {
+        self.strength = strength;
+        self.scaling = self.asked_scaling.resolved(strength);
     }
 
     pub fn set_adjust(&mut self, adjust: crate::output::video::Adjust) {

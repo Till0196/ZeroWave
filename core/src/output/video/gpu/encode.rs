@@ -8,6 +8,7 @@ use super::*;
 impl Video {
     pub(super) fn encode_output(&mut self, encoder: &mut wgpu::CommandEncoder) -> Option<Encoded> {
         let ready = self.schedule.front()?;
+        self.lone_shown = self.lone[ready.cur];
         let sub = self.sub;
         let per = self.front_per();
         let conversion = Conversion::new(
@@ -125,7 +126,26 @@ impl Video {
         #[cfg(not(feature = "plugins"))]
         let by_plugin = false;
         // 補間の 2 回目の出力からは、フレームは 1 回目と同じ（`picture` に残っている）。
-        if sub == 0 && !by_plugin {
+        if sub == 0 && !by_plugin && !matched {
+            self.ensure_pipeline();
+            let auto_scaling = self.asked_scaling.auto_up || self.asked_scaling.auto_down;
+            if (ready.output.field.is_some() && !self.settings.deinterlace_chosen) || auto_scaling {
+                self.shaded = true;
+            }
+        }
+        // デインターレースも逆テレシネも要らなければ、RGB を作らずに表示のパスで直に読む（[`super::direct`]）。
+        let direct = sub == 0
+            && !by_plugin
+            && !matched
+            && !counting
+            && ready.output.field.is_none()
+            && ready.output.weave.is_none()
+            && self.direct_fits
+            && self.can_direct();
+        if direct {
+            self.keep_direct(&group, ready.cur);
+        } else if sub == 0 && !by_plugin {
+            self.direct = None;
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("deinterlace"),
                 color_attachments: &[Some(attachment(&self.picture_view))],
@@ -133,7 +153,7 @@ impl Video {
             });
             pass.set_pipeline(match self.matcher.as_ref() {
                 Some(matcher) if matched => &matcher.render,
-                _ => &self.pipeline,
+                _ => self.pipeline.as_ref().expect("作ってある"),
             });
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
@@ -229,11 +249,28 @@ impl Video {
                 picture_format(self.format.depth),
             )
         });
-        let rect = self.letterbox((onto.width, onto.height));
+        let mut rect = self.letterbox((onto.width, onto.height));
+        // 一枚で一フィールドのフレームは、フレームの半行だけずらす（トップは上、ボトムは下。bob と同じ位置）。
+        if let Some(parity) = self.lone_shown {
+            let half = (rect[3] - rect[1]) / (4.0 * self.format.height.max(1) as f32);
+            let shift = match parity {
+                Parity::Top => half,
+                Parity::Bottom => -half,
+            };
+            rect[1] += shift;
+            rect[3] += shift;
+        }
         let shown = [
             (rect[2] - rect[0]) / 2.0 * onto.width as f32,
             (rect[3] - rect[1]) / 2.0 * onto.height as f32,
         ];
+        if self.show_direct(encoder, view, onto, rect, shown) {
+            return;
+        }
+        // 直に読めない大きさになったら、飛ばした RGB をここで作る。
+        if self.shown.is_none() && self.direct.is_some() {
+            self.convert_direct(encoder);
+        }
         let key = self.blit_key(size, shown);
         self.prefetch_blit(key);
         // 大きく縮めるなら先に画素を残らず平均して縮める（[`reduce`]）。最近傍のときは通さない。
@@ -281,6 +318,19 @@ impl Video {
             &self.fit,
         );
         let at = self.blit_for(key);
+        let pipeline = self.blits[at].1.clone();
+        self.show_pass(encoder, view, onto, &pipeline, &group);
+    }
+
+    /// 表示のパス（ビューポートとマスクを付けて、矩形を一つ描く）。
+    pub(super) fn show_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        onto: Onto,
+        pipeline: &wgpu::RenderPipeline,
+        group: &wgpu::BindGroup,
+    ) {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("show"),
             color_attachments: &[Some(attachment(view))],
@@ -305,8 +355,8 @@ impl Video {
                 pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
             }
         }
-        pass.set_pipeline(&self.blits[at].1);
-        pass.set_bind_group(0, &group, &[]);
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, group, &[]);
         pass.draw(0..6, 0..1);
     }
 

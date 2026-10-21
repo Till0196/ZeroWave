@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Y'CbCr から表示が求める値へ。HDR（BT.2020 の HLG・PQ、ARIB STD-B32 第1部 表4-6）の
-//! マッピングは [`Mapping`] と `shader/blit.wgsl` に二度書き、`tests/video.rs` で突き合わせる。
+//! マッピングは [`Mapping`] と `shader/fit.wgsl` に二度書き、`tests/video.rs` で突き合わせる。
 
 use mediadecoder::es::Format;
 
@@ -217,7 +217,7 @@ impl Mapping {
         }
     }
 
-    /// `encode` はサーフェスが `…Srgb` か。`shader/blit.wgsl` と一行ずつ同じ。
+    /// `encode` はサーフェスが `…Srgb` か。`shader/fit.wgsl` と一行ずつ同じ。
     pub fn apply(&self, rgb: [f32; 3], encode: bool) -> [f32; 3] {
         if self.is_identity() {
             return if encode { rgb.map(to_linear) } else { rgb };
