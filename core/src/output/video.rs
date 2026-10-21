@@ -130,6 +130,9 @@ pub struct Scaling {
     pub upscale: Scaler,
     pub downscale: Scaler,
     pub antiring: bool,
+    /// 拡大・縮小の方式を GPU の性能で選ぶ（[`Scaling::resolved`]）。選ぶまでは `upscale`・`downscale` は使わない。
+    pub auto_up: bool,
+    pub auto_down: bool,
 }
 
 impl Default for Scaling {
@@ -138,6 +141,39 @@ impl Default for Scaling {
             upscale: Scaler::Lanczos3,
             downscale: Scaler::Mitchell,
             antiring: true,
+            auto_up: true,
+            auto_down: true,
+        }
+    }
+}
+
+impl Scaling {
+    /// 自動の方式を決める。`strength` は測った GPU で間に合うデインタレース（測っていなければ `None` で、軽い方式）。
+    /// 拡大縮小はデインタレースと同じく毎フレーム画面の大きさで掛かるので、同じ物差しで選ぶ。
+    pub fn resolved(self, strength: Option<Deinterlace>) -> Self {
+        let upscale = if self.auto_up {
+            match strength {
+                Some(Deinterlace::Bwdif) => Scaler::Lanczos3,
+                Some(Deinterlace::Yadif) => Scaler::CatmullRom,
+                _ => Scaler::Bilinear,
+            }
+        } else {
+            self.upscale
+        };
+        let downscale = if self.auto_down {
+            match strength {
+                Some(Deinterlace::Bwdif | Deinterlace::Yadif) => Scaler::Mitchell,
+                _ => Scaler::Bilinear,
+            }
+        } else {
+            self.downscale
+        };
+        Self {
+            upscale,
+            downscale,
+            auto_up: false,
+            auto_down: false,
+            ..self
         }
     }
 }

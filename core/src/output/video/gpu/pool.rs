@@ -74,6 +74,8 @@ impl Capability {
     pub fn measure_with(device: &wgpu::Device, queue: &wgpu::Queue, format: Format) -> Self {
         const ROUNDS: usize = 30;
         const WARMUP: usize = 6;
+        const GIVE_UP_AFTER: usize = 3;
+        const GIVE_UP_OVER: f64 = 3.0;
         let (upload, staged_ms, mapped_ms) = Upload::measure(device, queue);
         // Weave は候補に無いが基準として計測する（他との差がフィルターそのものの負荷）。
         let mut costs = Vec::new();
@@ -121,6 +123,14 @@ impl Capability {
                 device.poll(wgpu::PollType::wait_indefinitely()).ok();
                 if round >= WARMUP {
                     taken.push(started.elapsed().as_secs_f64() * 1e3);
+                }
+                // 予算を大きく超える方式は、何回か測れば十分（遅い GPU では一回に 100 ms を超え、測り切ると数十秒かかる）。
+                if taken.len() >= GIVE_UP_AFTER
+                    && taken
+                        .iter()
+                        .all(|ms| *ms > FIELD_BUDGET_MS * AFFORDABLE * GIVE_UP_OVER)
+                {
+                    break;
                 }
             }
             taken.sort_by(f64::total_cmp);

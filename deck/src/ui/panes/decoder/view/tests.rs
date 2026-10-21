@@ -55,7 +55,11 @@ fn sample() -> Decoding {
         video,
         sound,
         painter: Some(String::from("Apple M2 (Metal, AGX)")),
-        scaling: Some(zwcore::output::video::Scaling::default()),
+        scaling: Some(zwcore::output::video::Scaling {
+            auto_up: false,
+            auto_down: false,
+            ..zwcore::output::video::Scaling::default()
+        }),
         sound_codec: Some(String::from("AAC-LC ADTS")),
         dual_mono: true,
     }

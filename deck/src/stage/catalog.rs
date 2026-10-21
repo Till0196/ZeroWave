@@ -7,10 +7,11 @@
 use super::*;
 use zwcore::input::source::Source as _;
 
+/// 局一覧を先に、ほかの Mirakurun の全局の番組表は取れたものから送る（番組表は重く、局一覧を待たせない）。
 #[derive(Debug)]
-pub(crate) struct Built {
-    pub offers: Vec<Offer>,
-    pub guides: Vec<zwcore::guide::Guide>,
+pub(crate) enum Built {
+    Offers(Vec<Offer>),
+    Guide(zwcore::guide::Guide),
 }
 
 #[derive(Debug)]
@@ -211,32 +212,43 @@ impl Stage {
         let spawned = std::thread::Builder::new()
             .name(String::from("catalog"))
             .spawn(move || {
-                let mut guides = Vec::new();
-                let mut offers = Vec::new();
-                for (label, opening) in openings {
-                    let channels = asked(&label, &opening);
-                    if let Opening::Mirakurun { url, .. } = &opening
-                        && Some(opening.came()) != now
-                        && !channels.is_empty()
-                    {
-                        match zwcore::input::source::mirakurun::Mirakurun::at(url)
-                            .map_err(|why| why.to_string())
-                            .and_then(|mut source| source.guide().map_err(|why| why.to_string()))
-                        {
-                            Ok(Some(guide)) => guides.push(guide),
-                            Ok(None) => {}
-                            Err(why) => {
-                                tracing::warn!("{label}: 全局の番組表を取得できない: {why}")
-                            }
-                        }
-                    }
-                    offers.push(Offer {
-                        channels,
+                crate::threads::background::lower();
+                let offers: Vec<Offer> = openings
+                    .into_iter()
+                    .map(|(label, opening)| Offer {
+                        channels: asked(&label, &opening),
                         label,
                         opening,
-                    });
+                    })
+                    .collect();
+                let guided: Vec<(String, String)> = offers
+                    .iter()
+                    .filter_map(|offer| match &offer.opening {
+                        Opening::Mirakurun { url, .. }
+                            if Some(offer.opening.came()) != now && !offer.channels.is_empty() =>
+                        {
+                            Some((offer.label.clone(), url.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if send.send(Built::Offers(offers)).is_err() {
+                    return;
                 }
-                let _ = send.send(Built { offers, guides });
+                for (label, url) in guided {
+                    match zwcore::input::source::mirakurun::Mirakurun::at(&url)
+                        .map_err(|why| why.to_string())
+                        .and_then(|mut source| source.guide().map_err(|why| why.to_string()))
+                    {
+                        Ok(Some(guide)) => {
+                            if send.send(Built::Guide(guide)).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(why) => tracing::warn!("{label}: 全局の番組表を取得できない: {why}"),
+                    }
+                }
             });
         match spawned {
             Ok(_) => self.catalog_back = Some(back),
@@ -251,23 +263,33 @@ impl Stage {
         let Some(back) = self.catalog_back.as_ref() else {
             return;
         };
-        match back.try_recv() {
-            Ok(Built { offers, guides }) => {
-                self.catalog_back = None;
-                for guide in guides {
+        let mut took = Vec::new();
+        loop {
+            match back.try_recv() {
+                Ok(built) => took.push(built),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.catalog_back = None;
+                    break;
+                }
+            }
+        }
+        for built in took {
+            match built {
+                Built::Guide(guide) => {
                     let _ = self.guide_to.send(ToGuide::Merge(Box::new(guide)));
                 }
-                let counts: Vec<String> = offers
-                    .iter()
-                    .map(|offer| format!("{} {} 局", offer.label, offer.channels.len()))
-                    .collect();
-                tracing::info!("ソース別の局数: {}", counts.join("、"));
-                self.catalog = offers;
-                self.roster_seeded = false;
-                self.listed_mark = None;
+                Built::Offers(offers) => {
+                    let counts: Vec<String> = offers
+                        .iter()
+                        .map(|offer| format!("{} {} 局", offer.label, offer.channels.len()))
+                        .collect();
+                    tracing::info!("ソース別の局数: {}", counts.join("、"));
+                    self.catalog = offers;
+                    self.roster_seeded = false;
+                    self.listed_mark = None;
+                }
             }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.catalog_back = None,
         }
     }
 

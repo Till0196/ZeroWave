@@ -7,6 +7,7 @@ use super::*;
 
 impl Stage {
     pub fn new(boot: Boot) -> Self {
+        measuring::recall();
         let mut notices: std::collections::VecDeque<String> = crate::config::take_notices().into();
         let notice = notices.pop_front();
         let telling_since = notice.as_ref().map(|_| Instant::now());
@@ -167,6 +168,7 @@ impl Stage {
             painted: Instant::now(),
             spent: Outside::default(),
             gpu_late: GpuLate::default(),
+            measuring: false,
             recovery: recover::Recovery::from_env(),
         }
     }

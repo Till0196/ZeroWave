@@ -277,15 +277,26 @@ impl Choices {
                 };
             }
             "--upscale" | "--downscale" => {
-                let scaler = zwcore::output::video::Scaler::parse(named).ok_or_else(|| {
-                    format!(
-                        "{flag} に {named}: nearest|bilinear|mitchell|catmull-rom|spline36|lanczos3|ewa-lanczos"
-                    )
-                })?;
-                if flag == "--upscale" {
-                    into.options.scaling.upscale = scaler;
+                let up = flag == "--upscale";
+                if named == "auto" {
+                    if up {
+                        into.options.scaling.auto_up = true;
+                    } else {
+                        into.options.scaling.auto_down = true;
+                    }
                 } else {
-                    into.options.scaling.downscale = scaler;
+                    let scaler = zwcore::output::video::Scaler::parse(named).ok_or_else(|| {
+                        format!(
+                            "{flag} に {named}: auto|nearest|bilinear|mitchell|catmull-rom|spline36|lanczos3|ewa-lanczos"
+                        )
+                    })?;
+                    if up {
+                        into.options.scaling.upscale = scaler;
+                        into.options.scaling.auto_up = false;
+                    } else {
+                        into.options.scaling.downscale = scaler;
+                        into.options.scaling.auto_down = false;
+                    }
                 }
             }
             "--antiring" => {

@@ -53,6 +53,7 @@ mod capture;
 mod catalog;
 mod channels;
 mod compose;
+mod measuring;
 mod plugging;
 use plugging::Noticed;
 mod reception;
@@ -451,11 +452,14 @@ pub struct Stage {
     painted: Instant,
     spent: Outside,
     gpu_late: GpuLate,
+    /// GPU の性能を測っている（トーストを出している）。
+    measuring: bool,
     recovery: recover::Recovery,
 }
 
 /// サーフェスの取得がフレーム間隔の 1.5 倍より遅れたループを数える。時々の遅れが続くのは GPU の
 /// レンダリングが間に合っていないので通知する。毎回遅れるのはディスプレイの側が遅いので通知しない。
+/// 選局と全画面の切り替えの直後は数えない（番組表の読み込みや作り直しで一時的に遅れ、通知がさらに描画を増やす）。
 #[derive(Debug)]
 struct GpuLate {
     since: Instant,
@@ -463,6 +467,9 @@ struct GpuLate {
     late: u32,
     streak: u32,
     warned: bool,
+    /// これまでは数えない。
+    calm: Instant,
+    full: bool,
 }
 
 impl Default for GpuLate {
@@ -473,6 +480,8 @@ impl Default for GpuLate {
             late: 0,
             streak: 0,
             warned: false,
+            calm: Instant::now() + GPU_LATE_GRACE,
+            full: false,
         }
     }
 }
@@ -480,6 +489,7 @@ impl Default for GpuLate {
 const GPU_LATE_OVER: Duration = Duration::from_secs(1);
 const GPU_LATE_LEAST: u32 = 2;
 const GPU_LATE_STREAK: u32 = 3;
+const GPU_LATE_GRACE: Duration = Duration::from_secs(15);
 
 /// 速いディスプレイ（165 Hz など）でも垂直同期ではなくこの間隔で遅れを測る。
 const OUTPUT_LEAST: Duration = Duration::from_micros(16_683);
@@ -739,6 +749,7 @@ fn fetch_guide(url: String) -> Receiver<Guide> {
     let spawned = std::thread::Builder::new()
         .name(String::from("guide"))
         .spawn(move || {
+            crate::threads::background::lower();
             let began = Instant::now();
             let Ok(mut source) = zwcore::input::source::mirakurun::Mirakurun::at(&url) else {
                 return;

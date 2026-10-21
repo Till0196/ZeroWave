@@ -49,6 +49,7 @@ impl Stage {
             .feed(self.painter.as_ref().expect("レンダリング先"));
         self.save_volume_when_quiet();
         self.next_notice();
+        self.watch_measuring();
         self.take_started();
         self.take_switched();
         self.take_catalog();
@@ -348,12 +349,29 @@ impl Stage {
             Duration::from_secs_f64(1000.0 / f64::from(self.refresh.clamp(24_000, 480_000)))
                 .max(OUTPUT_LEAST);
         let settled = self.player.settled();
+        let full = self.full_screen;
         let late = &mut self.gpu_late;
         if !settled {
-            *late = GpuLate::default();
+            *late = GpuLate {
+                full,
+                ..GpuLate::default()
+            };
             return;
         }
         if late.warned {
+            return;
+        }
+        if late.full != full || Instant::now() < late.calm {
+            let calm = if late.full == full {
+                late.calm
+            } else {
+                Instant::now() + GPU_LATE_GRACE
+            };
+            *late = GpuLate {
+                calm,
+                full,
+                ..GpuLate::default()
+            };
             return;
         }
         if drew && acquire < STALLED {

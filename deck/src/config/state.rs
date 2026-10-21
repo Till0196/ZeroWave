@@ -28,6 +28,8 @@ pub struct State {
     pub services: BTreeMap<String, Lineup>,
     pub favourites: super::favourites::All,
     pub fonts: Option<toml::Table>,
+    /// GPU の性能を測った結果（`[gpu]`）。中身は [`crate::gpu_measure`] が決める。
+    pub gpu: Option<toml::Table>,
     pub panel: Panel,
 }
 
@@ -167,6 +169,7 @@ impl State {
             }
         }
         state.fonts = table.get("fonts").and_then(toml::Value::as_table).cloned();
+        state.gpu = table.get("gpu").and_then(toml::Value::as_table).cloned();
         state.window = table
             .get("window")
             .and_then(toml::Value::as_table)
@@ -480,10 +483,13 @@ impl State {
             favourites: &'a super::favourites::All,
             #[serde(skip_serializing_if = "Option::is_none")]
             fonts: &'a Option<toml::Table>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            gpu: &'a Option<toml::Table>,
         }
         let rest = Rest {
             favourites: &self.favourites,
             fonts: &self.fonts,
+            gpu: &self.gpu,
         };
         if let Ok(text) = toml::to_string(&rest)
             && let Ok(more) = text.parse::<DocumentMut>()

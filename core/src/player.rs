@@ -58,6 +58,21 @@ pub struct Options {
     pub adjust: crate::output::video::Adjust,
 }
 
+impl Options {
+    /// D3D12 のデコーダーでビデオプロセスに通すか。方式が自動なら適応型、bob なら bob、ほかはシェーダー。
+    pub fn video_process(&self) -> crate::decode::VideoProcess {
+        use crate::decode::VideoProcess;
+        if self.deinterlace_by == DeinterlaceBy::Software {
+            return VideoProcess::Off;
+        }
+        match self.deinterlace {
+            None => VideoProcess::Adaptive,
+            Some(crate::output::video::Deinterlace::Bob) => VideoProcess::Bob,
+            Some(_) => VideoProcess::Off,
+        }
+    }
+}
+
 impl Default for Options {
     fn default() -> Self {
         Self {
@@ -220,6 +235,8 @@ pub struct Player {
     options: Options,
     plugins: Option<Arc<Loaded>>,
     said_no_hardware: bool,
+    /// 映像の設定が、GPU を測り終える前の既定。
+    provisional: bool,
     skip_to: Arc<AtomicI64>,
     /// 最初にデコードできたフレームの時刻。音声は映像より早く届くことがあるので、音声のスレッドが参照する。
     video_first: Arc<AtomicI64>,
@@ -601,6 +618,7 @@ impl Player {
         crate::decode::set_api(options.api);
         self.options.deinterlace = options.deinterlace;
         self.options.deinterlace_by = options.deinterlace_by;
+        crate::decode::set_video_process(options.video_process());
         self.options.adapt_progressive = options.adapt_progressive;
         crate::output::video::set_adapt_progressive(options.adapt_progressive);
         self.options.video = options.video;

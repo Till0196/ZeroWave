@@ -871,6 +871,7 @@ fn run(mut player: Player, choices: Choices, live: Option<Live>, keep: sound::Ke
     ));
     let keep_guide = config::load_plain().guide.cache;
     let guide = window::ending::Thread::spawn("guide", "番組表", move |_told| {
+        threads::background::lower();
         zwcore::guide::keeper::keeping(
             &guide_asked,
             &guide_merged,

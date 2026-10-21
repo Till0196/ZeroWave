@@ -171,9 +171,57 @@ impl Painter {
     pub fn settings(&self, format: Format) -> Settings {
         match self {
             #[cfg(feature = "wgpu")]
-            Self::Wgpu { gpu, .. } => measured(gpu, format).0,
+            // 測り終えるまでは、重い逆テレシネの判定を切っておく。
+            Self::Wgpu { gpu, .. } => measured(gpu, format).map_or_else(
+                || Settings {
+                    telecine: false,
+                    ..Settings::of_format(format)
+                },
+                |(settings, _, _)| settings,
+            ),
             #[cfg(unix)]
             Self::Gles { .. } => Settings::of_format(format),
+            #[cfg(not(any(feature = "wgpu", unix)))]
+            Self::Never(never) => match *never {},
+        }
+    }
+
+    /// この形式で GPU の性能を測り始める（シェーダーでデインタレースするときだけ要る）。
+    pub fn measure(&self, format: Format) {
+        match self {
+            #[cfg(feature = "wgpu")]
+            Self::Wgpu { gpu, .. } => start_measure(gpu, format),
+            #[cfg(unix)]
+            Self::Gles { .. } => {}
+            #[cfg(not(any(feature = "wgpu", unix)))]
+            Self::Never(never) => match *never {},
+        }
+    }
+
+    /// この形式を測り終えているか（[`Painter::settings`] が測った結果を返すか）。
+    pub fn settled(&self, format: Format) -> bool {
+        match self {
+            #[cfg(feature = "wgpu")]
+            Self::Wgpu { gpu, .. } => {
+                let format = Format {
+                    progressive: format.progressive && crate::output::video::adapt_progressive(),
+                    ..format
+                };
+                let name = gpu.name();
+                MEASURED
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .any(|have| {
+                        have.gpu == name
+                            && have.width == format.width
+                            && have.height == format.height
+                            && have.depth == format.depth
+                            && have.progressive == format.progressive
+                    })
+            }
+            #[cfg(unix)]
+            Self::Gles { .. } => true,
             #[cfg(not(any(feature = "wgpu", unix)))]
             Self::Never(never) => match *never {},
         }
@@ -199,7 +247,9 @@ impl Painter {
                 white,
                 peak,
             } => Video::new(&gpu.device, &gpu.queue, *target, format, settings).map(|mut video| {
-                video.set_upload(measured(gpu, format).1);
+                let measured = measured(gpu, format);
+                video.set_upload(measured.map_or_else(Upload::default, |(_, upload, _)| upload));
+                video.set_strength(measured.map(|(_, _, strength)| strength));
                 video.set_space(*space);
                 video.set_sdr_white(*white);
                 video.set_hlg_peak(*peak);
@@ -584,6 +634,15 @@ impl Screen {
         let _ = program;
     }
 
+    /// 方式を自動のままシェーダーでデインタレースしている（GPU を測って方式を選ぶ）。
+    pub fn wants_measure(&self) -> bool {
+        #[cfg(feature = "wgpu")]
+        if let Some(video) = self.wgpu() {
+            return video.wants_measure();
+        }
+        false
+    }
+
     pub fn set_scaling(&mut self, scaling: crate::output::video::Scaling) {
         #[cfg(feature = "wgpu")]
         if let Some(video) = self.wgpu_mut() {
@@ -633,48 +692,173 @@ impl Screen {
     }
 }
 
-/// 測った設定を GPU とフレームの形式ごとに覚える。測るたびにビルドすると 8K の 10 ビットで
-/// 1 GB を超える確保が実際の確保と重なる。
+/// 測った結果。GPU（名前にドライバーの版が入る）とフレームの大きさごと。アプリが保存して次の起動で [`recall`] する。
 #[cfg(feature = "wgpu")]
-fn measured(gpu: &Gpu, format: Format) -> (Settings, Upload) {
-    const MOST: usize = 16;
-    static MEASURED: std::sync::Mutex<Vec<(String, Format, Settings, Upload)>> =
-        std::sync::Mutex::new(Vec::new());
-    let name = gpu.name();
-    // プログレッシブを見ない設定では、インターレースと同じに測って別に覚える。
-    let format = Format {
-        progressive: format.progressive && crate::output::video::adapt_progressive(),
-        ..format
-    };
-    if let Some((_, _, settings, upload)) = MEASURED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .find(|(gpu, shape, _, _)| *gpu == name && *shape == format)
-    {
-        return (*settings, *upload);
-    }
-    let capability = Capability::measure(gpu, format);
-    let settings = capability.settings(format);
-    let upload = capability.upload;
-    tracing::info!(
-        "GPU への転送 {upload:?}（ステージング {:.2} ms、マップ {:.2} ms）、デインターレース {:?}（{}）",
-        capability.staged_ms,
-        capability.mapped_ms,
-        settings.deinterlace,
-        capability
-            .costs
-            .iter()
-            .map(|(quality, ms)| format!("{} {ms:.2} ms", quality.name()))
-            .collect::<Vec<_>>()
-            .join("、")
-    );
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Measure {
+    pub gpu: String,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u8,
+    pub progressive: bool,
+    pub deinterlace: crate::output::video::Deinterlace,
+    pub upload: Upload,
+}
+
+#[cfg(feature = "wgpu")]
+static MEASURED: std::sync::Mutex<Vec<Measure>> = std::sync::Mutex::new(Vec::new());
+
+/// 測っている最中の物（GPU と形式）。
+#[cfg(feature = "wgpu")]
+static MEASURING: std::sync::Mutex<Vec<(String, Format)>> = std::sync::Mutex::new(Vec::new());
+
+/// 前に測った結果を入れる（起動したとき）。
+#[cfg(feature = "wgpu")]
+pub fn recall(measures: Vec<Measure>) {
     let mut kept = MEASURED
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if kept.len() >= MOST {
-        kept.remove(0);
+    for measure in measures {
+        if !kept.iter().any(|have| same(have, &measure)) {
+            kept.push(measure);
+        }
     }
-    kept.push((name, format, settings, upload));
-    (settings, upload)
+}
+
+/// これまでに測った結果（保存する物）。
+#[cfg(feature = "wgpu")]
+pub fn measures() -> Vec<Measure> {
+    MEASURED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+#[cfg(feature = "wgpu")]
+pub fn measuring() -> bool {
+    !MEASURING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_empty()
+}
+
+#[cfg(feature = "wgpu")]
+fn same(a: &Measure, b: &Measure) -> bool {
+    a.gpu == b.gpu
+        && a.width == b.width
+        && a.height == b.height
+        && a.depth == b.depth
+        && a.progressive == b.progressive
+}
+
+/// プログレッシブを見ない設定では、インターレースと同じに測って別に覚える。
+#[cfg(feature = "wgpu")]
+fn measured_shape(format: Format) -> Format {
+    Format {
+        progressive: format.progressive && crate::output::video::adapt_progressive(),
+        ..format
+    }
+}
+
+#[cfg(feature = "wgpu")]
+fn wanted(gpu: &Gpu, format: Format) -> Measure {
+    Measure {
+        gpu: gpu.name(),
+        width: format.width,
+        height: format.height,
+        depth: format.depth,
+        progressive: format.progressive,
+        deinterlace: crate::output::video::Deinterlace::Bob,
+        upload: Upload::default(),
+    }
+}
+
+/// 測った設定。まだ測っていなければ `None`（測るのは [`Painter::measure`]、それまでは軽い既定で表示する）。
+#[cfg(feature = "wgpu")]
+fn measured(
+    gpu: &Gpu,
+    format: Format,
+) -> Option<(Settings, Upload, crate::output::video::Deinterlace)> {
+    let format = measured_shape(format);
+    let wanted = wanted(gpu, format);
+    let found = MEASURED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|have| same(have, &wanted))
+        .cloned()?;
+    let mut settings = Settings::of_format(format);
+    if settings.deinterlace != crate::output::video::Deinterlace::Weave {
+        settings.deinterlace = found.deinterlace;
+    }
+    Some((settings, found.upload, found.deinterlace))
+}
+
+/// 別のスレッドで測り始める（もう測ったか測っている最中なら何もしない）。UI のスレッドで測ると、遅い GPU では数十秒止まる。
+#[cfg(feature = "wgpu")]
+fn start_measure(gpu: &Gpu, format: Format) {
+    const MOST: usize = 16;
+    if measured(gpu, format).is_some() {
+        return;
+    }
+    let format = measured_shape(format);
+    let name = gpu.name();
+    let wanted = wanted(gpu, format);
+    {
+        let mut measuring = MEASURING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if measuring
+            .iter()
+            .any(|(gpu, shape)| *gpu == name && *shape == format)
+        {
+            return;
+        }
+        measuring.push((name.clone(), format));
+    }
+    let (device, queue) = (gpu.device.clone(), gpu.queue.clone());
+    let spawned = std::thread::Builder::new()
+        .name(String::from("GPU の計測"))
+        .spawn(move || {
+            let began = std::time::Instant::now();
+            let capability = Capability::measure_with(&device, &queue, format);
+            let settings = capability.settings(format);
+            tracing::info!(
+                "GPU への転送 {:?}（ステージング {:.2} ms、マップ {:.2} ms）、デインターレース {:?}（{}）、計測 {:.1} 秒",
+                capability.upload,
+                capability.staged_ms,
+                capability.mapped_ms,
+                settings.deinterlace,
+                capability
+                    .costs
+                    .iter()
+                    .map(|(quality, ms)| format!("{} {ms:.2} ms", quality.name()))
+                    .collect::<Vec<_>>()
+                    .join("、"),
+                began.elapsed().as_secs_f64()
+            );
+            {
+                let mut kept = MEASURED
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if kept.len() >= MOST {
+                    kept.remove(0);
+                }
+                kept.push(Measure {
+                    deinterlace: capability.affordable(),
+                    upload: capability.upload,
+                    ..wanted
+                });
+            }
+            MEASURING
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|(gpu, shape)| !(*gpu == name && *shape == format));
+        });
+    if spawned.is_err() {
+        MEASURING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
 }

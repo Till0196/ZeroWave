@@ -77,8 +77,11 @@ fn render(decoding: &Decoding) -> Vec<String> {
         decoding.painter.as_deref().unwrap_or("—")
     )];
     if let Some(scaling) = decoding.scaling {
-        lines.push(format!("拡大: {}", scaling.upscale.label()));
-        lines.push(format!("縮小: {}", scaling.downscale.label()));
+        let name = |auto: bool, scaler: zwcore::output::video::Scaler| {
+            if auto { "自動" } else { scaler.label() }
+        };
+        lines.push(format!("拡大: {}", name(scaling.auto_up, scaling.upscale)));
+        lines.push(format!("縮小: {}", name(scaling.auto_down, scaling.downscale)));
     }
     lines
 }

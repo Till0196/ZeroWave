@@ -48,6 +48,7 @@ const DEINTERLACE: Choices = &[
     ("bwdif", "Bwdif"),
 ];
 const SCALER: Choices = &[
+    ("auto", "自動"),
     ("nearest", "最近傍 (Nearest neighbor)"),
     ("bilinear", "バイリニア (Bilinear)"),
     ("mitchell", "バイキュービック（Mitchell）"),
@@ -58,6 +59,7 @@ const SCALER: Choices = &[
 ];
 /// 縮小の選択肢。EWA は重い。
 const SCALER_DOWN: Choices = &[
+    ("auto", "自動"),
     ("nearest", "最近傍 (Nearest neighbor)"),
     ("bilinear", "バイリニア (Bilinear)"),
     ("mitchell", "バイキュービック（Mitchell）"),

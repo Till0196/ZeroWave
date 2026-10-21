@@ -150,8 +150,8 @@ pub struct Scale {
 impl Default for Scale {
     fn default() -> Self {
         Self {
-            upscale: String::from("lanczos3"),
-            downscale: String::from("mitchell"),
+            upscale: String::from("auto"),
+            downscale: String::from("auto"),
             antiring: true,
         }
     }
@@ -275,7 +275,7 @@ impl Default for Frame {
             aspect: String::from("default"),
             crop: [0; 4],
             fullscreen: String::from("fit"),
-            keep_aspect: true,
+            keep_aspect: false,
         }
     }
 }

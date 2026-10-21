@@ -25,6 +25,7 @@ pub(super) fn open_mirakurun(
     std::thread::Builder::new()
         .name(String::from("guide"))
         .spawn(move || {
+            crate::threads::background::lower();
             let Ok(mut source) = zwcore::input::source::mirakurun::Mirakurun::at(&far) else {
                 return;
             };

@@ -67,8 +67,11 @@ impl Player {
             Out::Picture { at, picture } => {
                 self.first_picture.get_or_insert_with(Instant::now);
                 let about = picture.about();
-                if self.video.is_none() || self.format != Some(about.format) {
+                // 測り終えたら、測った設定で作り直す（測る間は軽い既定で表示している）。
+                let settled = self.provisional && painter.settled(about.format);
+                if self.video.is_none() || self.format != Some(about.format) || settled {
                     self.format = Some(about.format);
+                    self.provisional = !painter.settled(about.format);
                     self.tell_speed();
                     self.settings = painter.settings(about.format);
                     let deinterlaced = self
@@ -175,6 +178,13 @@ impl Player {
                 }
                 if self.video.is_none() {
                     return;
+                }
+                // シェーダーでデインタレースしていると分かったら、GPU を測って方式を選び直す。
+                if self.provisional
+                    && let (Some(video), Some(format)) = (self.video.as_ref(), self.format)
+                    && video.wants_measure()
+                {
+                    painter.measure(format);
                 }
                 self.ready.push_back((at, picture));
             }
