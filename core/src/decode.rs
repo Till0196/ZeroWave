@@ -259,6 +259,11 @@ pub trait Decode: Send {
         false
     }
 
+    /// 一枚が一フィールドのピクチャーに、自分でどちらのフィールドかを付けてそのまま渡す（読み戻して組まない）。
+    fn marks_fields(&self) -> bool {
+        false
+    }
+
     fn pictures_per_frame(&self) -> u32 {
         1
     }
@@ -409,6 +414,49 @@ pub fn api() -> Api {
         2 => Api::D3d11,
         _ => Api::Auto,
     }
+}
+
+/// D3D12 のデコーダーが、ビデオプロセスでデインターレースするか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VideoProcess {
+    #[default]
+    Adaptive,
+    Bob,
+    Off,
+}
+
+static VIDEO_PROCESS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn set_video_process(process: VideoProcess) {
+    let value = match process {
+        VideoProcess::Adaptive => 0,
+        VideoProcess::Bob => 1,
+        VideoProcess::Off => 2,
+    };
+    VIDEO_PROCESS.store(value, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn video_process() -> VideoProcess {
+    match VIDEO_PROCESS.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => VideoProcess::Bob,
+        2 => VideoProcess::Off,
+        _ => VideoProcess::Adaptive,
+    }
+}
+
+/// 映像を出す画面の大きさ（物理画素、幅を上位 32 ビットに）。0 なら分からない。
+static DISPLAY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// ウィンドウのある画面の大きさを知らせる。デコーダーは、これの二倍以上あるフレームを出す前に縮める。
+pub fn set_display_size(width: u32, height: u32) {
+    let packed = (u64::from(width) << 32) | u64::from(height);
+    DISPLAY.store(packed, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn display_size() -> Option<[u32; 2]> {
+    let packed = DISPLAY.load(std::sync::atomic::Ordering::Relaxed);
+    let size = [(packed >> 32) as u32, packed as u32];
+    (size[0] > 0 && size[1] > 0).then_some(size)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

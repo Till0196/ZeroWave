@@ -231,6 +231,10 @@ impl Shell {
     }
 
     fn tell_monitor(&self, window: &Window) {
+        if let Some(monitor) = window.current_monitor() {
+            let size = monitor.size();
+            zwcore::decode::set_display_size(size.width, size.height);
+        }
         let Some(name) = window.current_monitor().and_then(|monitor| monitor.name()) else {
             return;
         };

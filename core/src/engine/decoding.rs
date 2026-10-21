@@ -122,6 +122,7 @@ impl Decoding {
             open.weaver.clear();
         }
         if unit.format.field_pictures
+            && !open.decoder.marks_fields()
             && let Some(field) = unit.picture.lone_field
         {
             open.fields

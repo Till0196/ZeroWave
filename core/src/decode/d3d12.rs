@@ -4,15 +4,17 @@
 //! D3D12 Video Decode. The decoder writes into wgpu's own device, so nothing is copied.
 //! D3D11VA ([`d3d11`]) is the fallback, by default only on AMD; `ZW_DECODE_API` pins either.
 
-mod d3d11;
+pub(crate) mod d3d11;
 pub mod dx;
 mod dxva;
 mod h264;
 mod hevc;
 mod mpeg2;
 pub(crate) mod pool;
+mod process;
+pub(crate) mod share;
 
-use mediadecoder::es::{Codec, Format, Framing, Picture};
+use mediadecoder::es::{Codec, Format, Framing, Picture, Structure};
 use windows::Win32::Graphics::Direct3D12::{ID3D12Device, ID3D12Resource};
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_NV12, DXGI_FORMAT_P010};
 use windows::Win32::Media::MediaFoundation::{
@@ -39,6 +41,22 @@ pub struct Frame {
     /// このフレームがまだどこかで保持されていることを示すリース。実際に解放されたかで判定する（数え合わせだと別のフレームが出る）。
     /// `None` は DXVA のリング。
     pub lease: Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+    /// 書き終わるフェンスと値。読む側は自分のキューで GPU の上で待つ。`None` は渡す前に CPU で待ってある。
+    pub ready: Option<(windows::Win32::Graphics::Direct3D12::ID3D12Fence, u64)>,
+}
+
+impl Clone for Frame {
+    fn clone(&self) -> Self {
+        Self {
+            device: self.device.clone(),
+            texture: self.texture.clone(),
+            width: self.width,
+            height: self.height,
+            ten_bit: self.ten_bit,
+            lease: self.lease.clone(),
+            ready: self.ready.clone(),
+        }
+    }
 }
 
 impl std::fmt::Debug for Frame {
@@ -214,6 +232,12 @@ pub struct D3d12 {
     d3d11: bool,
     /// レンダリングと違う GPU でデコードしている。別デバイスのテクスチャは読めないのでメインメモリへ読み戻す。
     transfer: bool,
+    /// ビデオプロセスでデインターレースするか（開いたときの設定）。
+    wants: crate::decode::VideoProcess,
+    deinterlacer: Option<process::Deinterlacer>,
+    processed: std::collections::VecDeque<Decoded>,
+    /// 一枚が一フィールドのピクチャーのパリティー（tag ごと、トップなら真）。
+    parities: std::collections::BTreeMap<u64, bool>,
 }
 
 /// 固定の指定。環境変数 `ZW_DECODE_API` が優先で、無ければ設定（[`crate::decode::api`]）。
@@ -333,15 +357,106 @@ impl D3d12 {
             framing,
             buffering: None,
             d3d11,
+            wants: crate::decode::video_process(),
+            deinterlacer: None,
+            processed: std::collections::VecDeque::new(),
+            parities: std::collections::BTreeMap::new(),
         })
     }
 
     pub fn name(&self) -> String {
-        if self.d3d11 {
+        let name = if self.d3d11 {
             self.device.name().replacen("D3D12", "D3D11VA", 1)
         } else {
             self.device.name()
+        };
+        match self.wants {
+            _ if !self.processes() => name,
+            crate::decode::VideoProcess::Bob => format!("{name}・デインターレース bob"),
+            _ => format!("{name}・デインターレース 適応型"),
         }
+    }
+
+    /// デコードと同じスレッドでビデオプロセスに通してデインターレースする。
+    fn processes(&self) -> bool {
+        self.wants != crate::decode::VideoProcess::Off
+            && !self.transfer
+            && !self
+                .deinterlacer
+                .as_ref()
+                .is_some_and(process::Deinterlacer::refused)
+    }
+
+    /// 一枚が一フィールドのピクチャーに、どちらのフィールドかを付ける（組まずに渡し、レンダラーが半行ずらして
+    /// 縦に伸ばす）。
+    fn mark_field(&mut self, decoded: &mut Decoded) {
+        let Decoded::Surface(surface) = decoded else {
+            return;
+        };
+        if !surface.about.format.field_pictures {
+            return;
+        }
+        if let Some(top) = self.parities.remove(&surface.about.tag) {
+            surface.about.structure = if top {
+                Structure::Top
+            } else {
+                Structure::Bottom
+            };
+        }
+    }
+
+    /// インターレースのフレームと画面よりずっと大きいフレームをビデオプロセスへ渡し、出来たフレームを `processed` に
+    /// 積む。渡さなければ返す。
+    fn process(&mut self, decoded: Decoded) -> Option<Decoded> {
+        let Decoded::Surface(Surface {
+            about,
+            held: Where::D3d12(frame),
+        }) = decoded
+        else {
+            return Some(decoded);
+        };
+        // インターレースはデインターレースする。プログレッシブは画面の二倍以上あるときだけ半分に縮める。
+        let output = if about.format.progressive {
+            crate::decode::display_size()
+                .filter(|[wide, tall]| frame.width >= wide * 2 && frame.height >= tall * 2)
+                .map(|_| [(frame.width / 2) & !1, (frame.height / 2) & !1])
+        } else {
+            Some([frame.width, frame.height])
+        };
+        let output = output.filter(|_| self.processes() && !about.format.field_pictures);
+        let Some(output) = output else {
+            return Some(Decoded::Surface(Surface {
+                about,
+                held: Where::D3d12(frame),
+            }));
+        };
+        if self.deinterlacer.is_none() {
+            match process::Deinterlacer::new(
+                &frame.device,
+                self.wants == crate::decode::VideoProcess::Bob,
+            ) {
+                Ok(made) => self.deinterlacer = Some(made),
+                Err(error) => {
+                    tracing::info!("D3D12: ビデオプロセスが使えない: {error:?}");
+                    self.wants = crate::decode::VideoProcess::Off;
+                    return Some(Decoded::Surface(Surface {
+                        about,
+                        held: Where::D3d12(frame),
+                    }));
+                }
+            }
+        }
+        let deinterlacer = self.deinterlacer.as_mut()?;
+        match deinterlacer.push(frame, about, output) {
+            Ok(made) => self.processed.extend(made),
+            Err(error) => {
+                tracing::warn!(
+                    "D3D12: ビデオプロセスに失敗したので、シェーダーで処理する: {error:?}"
+                );
+                self.wants = crate::decode::VideoProcess::Off;
+            }
+        }
+        None
     }
 
     fn wait_written(&self, value: u64) -> Result<(), Error> {
@@ -514,6 +629,12 @@ impl D3d12 {
     }
 
     fn teardown(&mut self) {
+        // デインターレースを待つフレームはデコーダーのサーフェスを持っている。先に放す。
+        self.processed.clear();
+        self.parities.clear();
+        if let Some(deinterlacer) = self.deinterlacer.as_mut() {
+            deinterlacer.reset();
+        }
         let Some(mut session) = self.session.take() else {
             return;
         };
@@ -558,6 +679,14 @@ impl Decode for D3d12 {
         data: &[u8],
     ) -> Result<(), Error> {
         self.configure(format, data)?;
+        if format.field_pictures
+            && let Some(field) = picture.lone_field
+        {
+            self.parities.insert(tag, field == Structure::Top);
+            while self.parities.len() > 64 {
+                self.parities.pop_first();
+            }
+        }
         let Some(session) = self.session.as_mut() else {
             return Err(Error::Unavailable(String::from("サーフェスがありません")));
         };
@@ -576,8 +705,16 @@ impl Decode for D3d12 {
             return None;
         }
         loop {
+            if let Some(made) = self.processed.pop_front() {
+                return Some(made);
+            }
             match self.take_one() {
-                Taken::Picture(decoded) => return Some(decoded),
+                Taken::Picture(mut decoded) => {
+                    self.mark_field(&mut decoded);
+                    if let Some(decoded) = self.process(decoded) {
+                        return Some(decoded);
+                    }
+                }
                 Taken::Skipped => {}
                 Taken::Empty => return None,
             }
@@ -592,7 +729,25 @@ impl Decode for D3d12 {
         let Some(session) = self.session.as_mut() else {
             return;
         };
-        each_front!(&mut self.front, |front| front.flush(&mut session.pool))
+        each_front!(&mut self.front, |front| front.flush(&mut session.pool));
+        // 後ろの参照を待っているフレームも出す。
+        if self.deinterlacer.is_some() {
+            loop {
+                match self.take_one() {
+                    Taken::Picture(mut decoded) => {
+                        self.mark_field(&mut decoded);
+                        if let Some(decoded) = self.process(decoded) {
+                            self.processed.push_back(decoded);
+                        }
+                    }
+                    Taken::Skipped => {}
+                    Taken::Empty => break,
+                }
+            }
+            if let Some(deinterlacer) = self.deinterlacer.as_mut() {
+                self.processed.extend(deinterlacer.flush());
+            }
+        }
     }
 
     fn read_back(&mut self) -> Option<Readback> {
@@ -634,6 +789,22 @@ impl Decode for D3d12 {
         };
         each_front!(&mut self.front, |front| front.reset(&mut session.pool));
         session.pool.forget_recent();
+        self.processed.clear();
+        if let Some(deinterlacer) = self.deinterlacer.as_mut() {
+            deinterlacer.reset();
+        }
+    }
+
+    fn deinterlaces(&self) -> bool {
+        self.processes()
+    }
+
+    fn marks_fields(&self) -> bool {
+        !self.transfer
+    }
+
+    fn pictures_per_frame(&self) -> u32 {
+        if self.processes() { 2 } else { 1 }
     }
 }
 
@@ -708,6 +879,7 @@ impl D3d12 {
                 height: self.format.height,
                 ten_bit: self.format.depth > 8,
                 lease: Some(lease),
+                ready: None,
             }),
         }))
     }
