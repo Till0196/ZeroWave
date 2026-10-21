@@ -512,7 +512,7 @@ pub struct Qsv {
     /// 同期を待たずに先へ進めた VPP の出力（古い順）。デコードと VPP を重ねて流すため、[`VPP_AHEAD`] 枚まで持つ。
     /// 三つ目は投げたときの [`Qsv::vpp_time`]（二枚目のフィールドに付け直す時刻）。
     vpp_pending: VecDeque<(mfx::SyncPoint, *mut mfx::FrameSurface1, u64)>,
-    /// サーフェスを GPU のメモリに置いて D3D12 のレンダラーへ渡す（`None` なら主記憶）。session より後に drop する。
+    /// サーフェスを GPU のメモリに置いて D3D12 のレンダラーへ渡す（`None` ならメインメモリ）。session より後に drop する。
     #[cfg(all(windows, feature = "d3d12"))]
     gpu: Option<d3d11::Gpu>,
 }
@@ -560,7 +560,7 @@ impl Qsv {
                 session.library.name
             )));
         }
-        // 別の GPU でデコードするときは主記憶で渡す。
+        // 別の GPU でデコードするときはメインメモリで渡す。
         #[cfg(all(windows, feature = "d3d12"))]
         let gpu = match on_drawing
             .then_some(())
@@ -572,7 +572,7 @@ impl Qsv {
         {
             Ok(gpu) => Some(gpu),
             Err(error) => {
-                tracing::info!("QSV: GPU のメモリで受け渡せないので主記憶を使う: {error}");
+                tracing::info!("QSV: GPU のメモリで受け渡せないのでメインメモリを使う: {error}");
                 None
             }
         };

@@ -29,7 +29,7 @@ use super::{About, Decode, Decoded, Error, HwDeinterlace, Offer, Readback, Way};
 
 const ABOUTS: usize = 64;
 
-/// AMF のテクスチャを主記憶を通さずにレンダラーへ渡す物（D3D12 の機能があるときだけ）。
+/// AMF のテクスチャをメインメモリを通さずにレンダラーへ渡す物（D3D12 の機能があるときだけ）。
 #[cfg(feature = "d3d12")]
 pub(crate) type Sharer = super::d3d12::share::Sharer;
 #[cfg(not(feature = "d3d12"))]
@@ -120,7 +120,7 @@ fn on_drawing() -> Option<(ID3D11Device, Sharer)> {
         match made {
             Ok(made) => Some(made),
             Err(error) => {
-                tracing::info!("AMF: GPU のメモリで受け渡せないので主記憶を使う: {error}");
+                tracing::info!("AMF: GPU のメモリで受け渡せないのでメインメモリを使う: {error}");
                 None
             }
         }
@@ -418,7 +418,7 @@ pub struct Amf {
     deinterlace: Option<HwDeinterlace>,
     device3d: Option<ID3D11Device>,
     vpp: Option<vpp::Deinterlacer>,
-    /// GPU の上でレンダラーへ渡す物（無ければ主記憶へ読む）。
+    /// GPU の上でレンダラーへ渡す物（無ければメインメモリへ読む）。
     sharer: Option<Sharer>,
     /// 失敗した後は AMF に触らない（触ると AMF の中でクラッシュする）。
     broken: Option<String>,
@@ -447,7 +447,7 @@ impl Amf {
         deinterlace: Option<HwDeinterlace>,
     ) -> Result<Self, Error> {
         let runtime = runtime()?;
-        // レンダリングする AMD の GPU（そこでデコードすれば、主記憶を通さずに渡せる）。
+        // レンダリングする AMD の GPU（そこでデコードすれば、メインメモリを通さずに渡せる）。
         #[cfg(feature = "d3d12")]
         let drawing = amd_adapters()
             .into_iter()
@@ -478,7 +478,7 @@ impl Amf {
                 .ok_or_else(|| {
                     Error::Unavailable(format!("AMD の GPU {device} が見つかりません"))
                 })?;
-            // 別の GPU でデコードするときは主記憶で渡す。
+            // 別の GPU でデコードするときはメインメモリで渡す。
             match on_drawing().filter(|_| drawing.as_deref() == Some(device)) {
                 Some((d3d, sharer)) => (name, Some(d3d), Some(sharer)),
                 None => (name, Some(device_on(&adapter)?), None),
