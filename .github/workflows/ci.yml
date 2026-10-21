@@ -13,7 +13,7 @@ env:
   CARGO_TERM_COLOR: always
   ZIG_VERSION: "0.17.0"
   ZIG_PUBKEY: "RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U"
-  ZIGBUILD_VERSION: "0.23.4"
+  ZIGBUILD_VERSION: "0.24.0"
   PACKAGER_VERSION: "0.11.8"
   LINUX_FEATURES: zerowave-core/vaapi,zerowave-core/v4l2,zerowave-core/nvdec,zerowave-core/wgpu,zerowave-core/coaxd,zerowave-core/mirakurun,zerowave-core/plugins,zwsdk/host
 
