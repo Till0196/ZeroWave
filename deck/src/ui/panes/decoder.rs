@@ -81,7 +81,10 @@ fn render(decoding: &Decoding) -> Vec<String> {
             if auto { "自動" } else { scaler.label() }
         };
         lines.push(format!("拡大: {}", name(scaling.auto_up, scaling.upscale)));
-        lines.push(format!("縮小: {}", name(scaling.auto_down, scaling.downscale)));
+        lines.push(format!(
+            "縮小: {}",
+            name(scaling.auto_down, scaling.downscale)
+        ));
     }
     lines
 }

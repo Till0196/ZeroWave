@@ -12,6 +12,7 @@ mod hevc;
 mod mpeg2;
 pub(crate) mod pool;
 mod process;
+#[cfg(any(feature = "qsv", feature = "amf"))]
 pub(crate) mod share;
 
 use mediadecoder::es::{Codec, Format, Framing, Picture, Structure};

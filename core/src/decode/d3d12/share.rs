@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! D3D11 で動くデコーダー（QSV・AMF）のフレームを、レンダラーの D3D12 のデバイスへ渡す。
-//! 同じ GPU の上で共有テクスチャへ写し、共有フェンスで待ち合わせる（主記憶を通さない）。
+//! 同じ GPU の上で共有テクスチャへ写し、共有フェンスで待ち合わせる（メインメモリを通さない）。
 //! 共有テクスチャは、受け取る側が全部持っていれば足す。
 
 use std::sync::Arc;
@@ -75,6 +75,7 @@ impl Sharer {
         &self.raw12
     }
 
+    #[cfg(feature = "amf")]
     pub fn finish(&self) -> Result<(), Error> {
         self.event.wait_fence(&self.fence12, self.value)
     }
@@ -150,6 +151,7 @@ impl Sharer {
         Ok(self.ring.len() - 1)
     }
 
+    #[cfg(feature = "amf")]
     pub fn texture(&self, at: usize) -> &ID3D11Texture2D {
         &self.ring[at].texture
     }

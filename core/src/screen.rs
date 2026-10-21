@@ -188,6 +188,8 @@ impl Painter {
 
     /// この形式で GPU の性能を測り始める（シェーダーでデインタレースするときだけ要る）。
     pub fn measure(&self, format: Format) {
+        #[cfg(not(feature = "wgpu"))]
+        let _ = format;
         match self {
             #[cfg(feature = "wgpu")]
             Self::Wgpu { gpu, .. } => start_measure(gpu, format),
@@ -200,6 +202,8 @@ impl Painter {
 
     /// この形式を測り終えているか（[`Painter::settings`] が測った結果を返すか）。
     pub fn settled(&self, format: Format) -> bool {
+        #[cfg(not(feature = "wgpu"))]
+        let _ = format;
         match self {
             #[cfg(feature = "wgpu")]
             Self::Wgpu { gpu, .. } => {
