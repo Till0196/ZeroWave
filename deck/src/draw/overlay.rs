@@ -111,12 +111,16 @@ impl Mixer {
     }
 
     /// プラグインのレイヤーが変わったら、次の [`Self::draw`] で画面ごと貼り直す（絵の並びは描くときに読む）。
-    pub fn notice(&mut self, present: &zwcore::layers::Present) {
+    /// `at` はこれから提示する画面の垂直同期の時刻。補間して動かしている絵があれば、提示のたびに置き直す。
+    pub fn notice(&mut self, present: &zwcore::layers::Present, at: std::time::Instant) {
         let now = present.published();
-        if now != self.layers {
+        if now != self.layers || present.moving() {
             self.layers = now;
             self.blank = true;
         }
+        self.renderer
+            .callback_resources
+            .insert(super::sprites::PresentAt(at));
     }
 
     /// サーフェスの形式か色空間が変わった。`white` は SDR の白の高さ（cd/m²）。

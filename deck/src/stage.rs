@@ -69,6 +69,7 @@ mod surface;
 mod tests;
 pub(crate) mod tuning;
 mod verify;
+mod vsync;
 
 pub(crate) use catalog::{listed_asked, listed_at_hand};
 pub(crate) use compose::shown_size;
@@ -313,6 +314,7 @@ pub struct Stage {
     presented: Arc<Presented>,
     broadcast: SyncSender<ToBroadcast>,
     present: zwcore::layers::Present,
+    vsync: vsync::Vsync,
     told_broadcast: Option<zwsdk::layer::Broadcast>,
     told_clock: Option<zwcore::guide::Moment>,
     told_scene: Option<SceneMark>,

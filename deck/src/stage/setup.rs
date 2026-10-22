@@ -44,6 +44,7 @@ impl Stage {
             presented: boot.presented,
             broadcast: boot.broadcast,
             present: boot.present,
+            vsync: super::vsync::Vsync::default(),
             told_broadcast: None,
             told_clock: None,
             told_scene: None,

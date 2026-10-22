@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -40,8 +40,18 @@ pub enum Picture {
     /// 貼った絵の並び（`frame` の幅×高さの画素）。提示する側が GPU で重ねる。重ねられない所は [`Layer::image`]。
     Sprites {
         sprites: Vec<zwsdk::host::Placed>,
+        /// プラグインに見せた時刻（この並びはこの時刻の絵）。
+        time: Instant,
+        /// 一つ前の並び。提示する側は二つの間を提示の時刻で補間して置く。
+        earlier: Option<Earlier>,
         image: OnceLock<Arc<Rgba>>,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct Earlier {
+    pub time: Instant,
+    pub sprites: Vec<zwsdk::host::Placed>,
 }
 
 impl Layer {
@@ -49,7 +59,7 @@ impl Layer {
     pub fn image(&self) -> &Arc<Rgba> {
         match &self.picture {
             Picture::Image(image) => image,
-            Picture::Sprites { sprites, image } => image
+            Picture::Sprites { sprites, image, .. } => image
                 .get_or_init(|| Arc::new(compose(sprites, self.frame.width, self.frame.height))),
         }
     }
@@ -58,6 +68,14 @@ impl Layer {
         match &self.picture {
             Picture::Image(_) => None,
             Picture::Sprites { sprites, .. } => Some(sprites),
+        }
+    }
+
+    /// 絵の並びの時刻と、一つ前の並び。
+    pub fn motion(&self) -> Option<(Instant, Option<&Earlier>)> {
+        match &self.picture {
+            Picture::Image(_) => None,
+            Picture::Sprites { time, earlier, .. } => Some((*time, earlier.as_ref())),
         }
     }
 }
@@ -118,6 +136,7 @@ pub struct Present {
     beats: Arc<Mutex<Vec<Sender<ToLayer>>>>,
     sprites: Arc<AtomicBool>,
     published: Arc<AtomicU64>,
+    moving: Arc<AtomicUsize>,
 }
 
 impl Present {
@@ -137,6 +156,11 @@ impl Present {
 
     pub fn sprites(&self) -> bool {
         self.sprites.load(Ordering::Relaxed)
+    }
+
+    /// 補間して動かしている絵の並びがあるか（その間は提示のたびに置き直す）。
+    pub fn moving(&self) -> bool {
+        self.moving.load(Ordering::Relaxed) > 0
     }
 
     /// 表示中のレイヤーを出し直した回数（変わったかを見る。`Latest` のアドレスは使い回されることがある）。
@@ -281,6 +305,9 @@ impl Spawner {
             name: name.clone(),
             id: IDS.fetch_add(1, Ordering::Relaxed),
             shown: std::cell::Cell::new(None),
+            made_at: std::cell::Cell::new(Instant::now()),
+            last: std::cell::RefCell::new(None),
+            moving: std::cell::Cell::new(false),
             queued: Arc::clone(&queued),
             place,
             own: plugins.io_for(plugin),
@@ -382,6 +409,11 @@ struct Worker {
     id: u64,
     /// 最後に出した絵の並びの形（同じ形の間は画面を作り直さなくてよい）。
     shown: std::cell::Cell<Option<Shape>>,
+    /// 今作っている一枚の、プラグインに見せた時刻。
+    made_at: std::cell::Cell<Instant>,
+    last: std::cell::RefCell<Option<Earlier>>,
+    /// [`Present::moving`] に数えている。
+    moving: std::cell::Cell<bool>,
     place: Place,
     queued: Arc<std::sync::atomic::AtomicUsize>,
     plugin: Arc<Plugin>,
@@ -516,6 +548,7 @@ impl Worker {
                 beat_made = clock;
             }
             layer.set_clock(clock);
+            self.made_at.set(clock.unwrap_or_else(Instant::now));
             if reopen_after.is_some_and(|at| ticked < at) {
                 continue;
             }
@@ -582,10 +615,19 @@ impl Worker {
                     zwsdk::host::Picture::Rgba(rgba) => {
                         Picture::Image(Arc::new(Rgba::new(frame.width, frame.height, rgba)))
                     }
-                    zwsdk::host::Picture::Sprites(sprites) => Picture::Sprites {
-                        sprites,
-                        image: OnceLock::new(),
-                    },
+                    zwsdk::host::Picture::Sprites(sprites) => {
+                        let time = self.made_at.get();
+                        let earlier = self.last.replace(Some(Earlier {
+                            time,
+                            sprites: sprites.clone(),
+                        }));
+                        Picture::Sprites {
+                            sprites,
+                            time,
+                            earlier: earlier.filter(|earlier| earlier.time < time),
+                            image: OnceLock::new(),
+                        }
+                    }
                 };
                 self.publish(Some((frame, picture)));
             }
@@ -663,6 +705,19 @@ impl Worker {
                 .map(|(frame, _)| shape(frame));
             let quiet = now.is_some() && self.shown.get() == now;
             self.shown.set(now);
+            if now.is_none() {
+                self.last.replace(None);
+            }
+            let moving = painted.as_ref().is_some_and(|(_, picture)| {
+                matches!(picture, Picture::Sprites { sprites, earlier: Some(_), .. } if !sprites.is_empty())
+            });
+            if moving != self.moving.replace(moving) {
+                if moving {
+                    self.setup.present.moving.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    self.setup.present.moving.fetch_sub(1, Ordering::Relaxed);
+                }
+            }
             if let Some((frame, picture)) = painted {
                 layers.push(Arc::new(Layer {
                     name: self.name.clone(),

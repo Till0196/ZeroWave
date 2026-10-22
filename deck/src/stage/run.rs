@@ -223,6 +223,7 @@ impl Stage {
         };
         self.recovery.surface_ok();
         let got = Instant::now();
+        let shown_at = self.vsync.at(got, self.refresh);
         self.spent.acquire += got - began;
         self.spent.acquire_most = self.spent.acquire_most.max(got - began);
         if self.surface.seen() {
@@ -249,7 +250,7 @@ impl Stage {
         if !self.split()
             && let (Some(mixer), Some(drawn)) = (self.mixer.as_mut(), self.drawn.as_mut())
         {
-            mixer.notice(&self.present);
+            mixer.notice(&self.present, shown_at);
             mixer.draw(&gpu.device, &gpu.queue, &frame.texture, size, drawn);
         }
         if !self.split() {
@@ -259,7 +260,7 @@ impl Stage {
         let whole = self.split() || self.drawn.as_ref().is_none_or(|drawn| drawn.size == size);
         // 取ったサーフェスは必ず出す。
         gpu.queue.present(frame);
-        self.present.beat(got);
+        self.present.beat(shown_at);
         self.presented.say(size, whole);
         let presented = Instant::now();
         self.spent.present += presented - painted;
