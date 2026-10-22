@@ -50,6 +50,17 @@ export interface ZwHost {
   nowMs(): number;
   /** 1970 年からのミリ秒。 */
   unixMs(): number;
+  /** HTTP を開く。0 は開けなかった（`net` が無効など）。`headers` は `名前: 値` の行。 */
+  netOpen(method: string, url: string, headers: string, body: Uint8Array | null): number;
+  /** WebSocket を開く。`protocols` は `,` 区切り。 */
+  netWs(url: string, protocols: string, headers: string): number;
+  /** 届いた記録（zwsdk::net::conn）。無ければ null。 */
+  netPoll(id: number): Uint8Array | null;
+  /** WebSocket に送る。`kind` は 1 テキスト、2 バイナリ、8 close（u16 BE のコードと理由）。 */
+  netSend(id: number, kind: number, bytes: Uint8Array): boolean;
+  netClose(id: number): void;
+  /** プラグインの設定の値。無ければ null。 */
+  cfg(name: string): string | null;
 }
 
 // 本体（zwjavy）が呼ぶ関数。zwsdk の index が定義する。

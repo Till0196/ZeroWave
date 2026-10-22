@@ -65,10 +65,16 @@ fn javy_imports_only_named_namespaces() {
     let used = import_modules_in(&source);
     assert_eq!(
         used,
-        [abi::import::DRAW, abi::import::LAYER, abi::import::BUF]
-            .into_iter()
-            .map(String::from)
-            .collect()
+        [
+            abi::import::DRAW,
+            abi::import::LAYER,
+            abi::import::BUF,
+            abi::import::NET,
+            abi::import::CFG,
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
     );
     for name in [
         abi::export::LAYER_NEW,

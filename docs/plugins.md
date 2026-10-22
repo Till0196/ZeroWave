@@ -8,6 +8,9 @@
   `Stream` を実装して `zwsdk::export_stream!` で公開します。
   native にビルドすればそのままテストできます（`plug::abi::native`）。
   `plug::host` は本体が提供する汎用の API（時計・設定・フォント・通信・プロセス・ソケット・ファイル・チューナー・リモコン・通知）です。
+  通信は、待って応答を全部受け取る `net::request` と、待たない `net::Conn` があります。
+  `net::Conn` は HTTP の本文を届いた分ずつ、WebSocket（`ws://`・`wss://`）はメッセージごとに `poll` で受け取ります（一つの接続に本体のスレッドが一つ）。
+  どちらも、プラグインが設定 `net` を宣言して有効なときだけ繋がり、内部ネットワークへは `net_local` が有効なときだけです。
   ソケット（`zw_sock_v1`）の接続先は `kind = "socket"` のキーにユーザーが入れた値で、ドメインソケットのパス、`host:port`（TCP）、Windows の名前付きパイプ（`\\.\pipe\…`）のどれかです。
   値の `$名前`・`${名前}` は本体の環境変数で展開するので、`$XDG_RUNTIME_DIR/…` や macOS の `$TMPDIR/…` のようにも書けます。
 - `zwsdk::host`（feature `host`）：ホスト側。
@@ -32,6 +35,10 @@
 - `zwsdk::draw`：canvas 2D の API でレンダリングして画像にします（ホスト側だけ、feature `host`）。
 - `zwsdk::net`：データ放送の通信など。本体がプラグインの代わりに通信します。
 - `sdk/ts`・`sdk/javy`：TypeScript でレイヤーを書くための SDK と、それを wasm にする Javy のプラグイン。
+  canvas 2D・タイマーのほか、`fetch`・`WebSocket`（`net::Conn` の上に作ったもの）と設定（`cfg`）が使えます。
+  設定は `package.json` の `zerowave.config` に書くと、ビルドのときにマニフェストに入ります。
+- `sdk/examples/layer.rs`：レイヤーのプラグインを本体なしで動かし、最後の画面を PNG に書きます
+  （`cargo run -p zwsdk --features host --example layer -- <プラグイン> <フレーム数> out.png --cfg net=true --clock live`）。
 
 プラグインは [zerowave_plugins](https://github.com/Till0196/zerowave_plugins) にあります。
 

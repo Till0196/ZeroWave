@@ -65,3 +65,8 @@ windows = { version = "0.62", default-features = false, features = [
     "Win32_System_IO",
     "Win32_System_Pipes",
 ] }
+
+# レイヤーのプラグインを本体なしで動かす（`--example layer`）。
+[[example]]
+name = "layer"
+required-features = ["host"]
