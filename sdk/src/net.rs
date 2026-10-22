@@ -134,6 +134,86 @@ pub fn escape(bytes: &[u8]) -> String {
     out
 }
 
+/// 待たない通信（`zw_net_v1` の `open`・`ws`・`poll`・`send`・`close`）の記録。
+/// `poll` が返すのは記録の並び：種類（u8）、長さ（u32 BE）、中身。
+pub mod conn {
+    pub mod kind {
+        /// i32 BE の番号（[`super::super::Failure::code`]）。
+        pub const FAIL: u8 = 0;
+        /// u16 BE の status と、`名前: 値` を `\r\n` で並べたもの。
+        pub const HEAD: u8 = 1;
+        /// HTTP の本文、WebSocket のバイナリのメッセージ。
+        pub const DATA: u8 = 2;
+        /// WebSocket のテキストのメッセージ。
+        pub const TEXT: u8 = 3;
+        /// u16 BE の終わり方（WebSocket の close のコード、HTTP は 0）と理由。
+        pub const END: u8 = 4;
+    }
+
+    /// `send` の種類。`CLOSE` の中身は u16 BE のコードと理由。
+    pub mod send {
+        pub const TEXT: u32 = 1;
+        pub const BINARY: u32 = 2;
+        pub const CLOSE: u32 = 8;
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Arrived {
+        Head {
+            status: u16,
+            headers: Vec<(String, String)>,
+        },
+        Data(Vec<u8>),
+        Text(String),
+        End {
+            code: u16,
+            reason: String,
+        },
+        Fail(i32),
+    }
+
+    pub fn decode(mut bytes: &[u8]) -> Vec<Arrived> {
+        let mut out = Vec::new();
+        while let Some((&kind, rest)) = bytes.split_first() {
+            let Some((len, rest)) = rest.split_first_chunk::<4>() else {
+                break;
+            };
+            let Some(body) = rest.get(..u32::from_be_bytes(*len) as usize) else {
+                break;
+            };
+            bytes = &rest[body.len()..];
+            let u16_and_text = |body: &[u8]| {
+                let (n, text) = body
+                    .split_first_chunk::<2>()
+                    .map_or((0, &[][..]), |(n, t)| (u16::from_be_bytes(*n), t));
+                (n, String::from_utf8_lossy(text).into_owned())
+            };
+            out.push(match kind {
+                kind::HEAD => {
+                    let (status, text) = u16_and_text(body);
+                    let headers = text
+                        .split("\r\n")
+                        .filter_map(|line| line.split_once(": "))
+                        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                        .collect();
+                    Arrived::Head { status, headers }
+                }
+                kind::DATA => Arrived::Data(body.to_vec()),
+                kind::TEXT => Arrived::Text(String::from_utf8_lossy(body).into_owned()),
+                kind::END => {
+                    let (code, reason) = u16_and_text(body);
+                    Arrived::End { code, reason }
+                }
+                _ => Arrived::Fail(
+                    body.first_chunk::<4>()
+                        .map_or(-2, |n| i32::from_be_bytes(*n)),
+                ),
+            });
+        }
+        out
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod client {
     use std::io::{BufRead, BufReader, Read, Write};
@@ -143,7 +223,7 @@ mod client {
 
     use super::{Failure, Reply, TIMEOUT, Url, join, parse_url};
 
-    const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+    pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 
     /// 選局で通信を全部止める。文書のスレッドは同期で待つので、止めないと前の局の文書が残る。
     static HOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -391,7 +471,7 @@ mod client {
             true
         }
 
-        fn tls_config(&self) -> Arc<rustls::ClientConfig> {
+        pub(crate) fn tls_config(&self) -> Arc<rustls::ClientConfig> {
             let now = generation();
             let roots: Vec<Vec<u8>> = {
                 let mut roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
@@ -503,6 +583,43 @@ mod client {
         headers: &[(String, String)],
         body: Option<usize>,
     ) -> Result<String, Failure> {
+        head_with(method, url, headers, body, &[])
+    }
+
+    /// WebSocket のハンドシェイク（RFC 6455 4.1）。`Upgrade` などはここで書き、guest の同じ名前のヘッダーは落とす。
+    #[cfg_attr(not(feature = "host"), allow(dead_code))]
+    pub(crate) fn upgrade_head(
+        url: &Url,
+        headers: &[(String, String)],
+        key: &str,
+        protocols: &str,
+    ) -> Result<String, Failure> {
+        let mut upgrade = vec![
+            ("Upgrade", String::from("websocket")),
+            ("Sec-WebSocket-Version", String::from("13")),
+            ("Sec-WebSocket-Key", key.to_owned()),
+        ];
+        let protocols = protocols.trim();
+        if !protocols.is_empty() {
+            if protocols
+                .bytes()
+                .any(|b| b == b'\r' || b == b'\n' || b == 0)
+            {
+                return Err(Failure::Argument);
+            }
+            upgrade.push(("Sec-WebSocket-Protocol", protocols.to_owned()));
+        }
+        head_with("GET", url, headers, None, &upgrade)
+    }
+
+    /// `upgrade` が空でなければ `Connection: Upgrade` にして、その行を足す。
+    fn head_with(
+        method: &str,
+        url: &Url,
+        headers: &[(String, String)],
+        body: Option<usize>,
+        upgrade: &[(&str, String)],
+    ) -> Result<String, Failure> {
         if !is_token(method) || !is_host(&url.host) {
             return Err(Failure::Argument);
         }
@@ -520,10 +637,18 @@ mod client {
         }
         let host = url.authority();
         let has = |name: &str| headers.iter().any(|(n, _)| n.eq_ignore_ascii_case(name));
+        let connection = if upgrade.is_empty() {
+            "close"
+        } else {
+            "Upgrade"
+        };
         let mut head =
-            format!("{method} {escaped} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
+            format!("{method} {escaped} HTTP/1.1\r\nHost: {host}\r\nConnection: {connection}\r\n");
         if !has("accept") {
             head.push_str("Accept: */*\r\n");
+        }
+        for (name, value) in upgrade {
+            head.push_str(&format!("{name}: {value}\r\n"));
         }
         for (name, value) in headers {
             if !is_token(name)
@@ -531,6 +656,9 @@ mod client {
                 || name.eq_ignore_ascii_case("content-length")
                 || name.eq_ignore_ascii_case("transfer-encoding")
                 || name.eq_ignore_ascii_case("connection")
+                || upgrade
+                    .iter()
+                    .any(|(own, _)| name.eq_ignore_ascii_case(own))
                 || value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
             {
                 continue;

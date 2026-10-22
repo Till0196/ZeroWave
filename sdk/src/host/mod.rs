@@ -13,6 +13,7 @@ pub use wasmtime::Engine;
 use crate::abi;
 use crate::slots::Slots;
 
+mod conn;
 mod files;
 pub mod fonts;
 mod io;
@@ -373,6 +374,7 @@ pub struct HostState {
     procs: proc::Procs,
     borrowed: tuner::Borrowed,
     socks: sock::Socks,
+    conns: conn::Conns,
     began: std::time::Instant,
     /// 書きかけ（`eprintln!` は一行を何度かに分けて書く）。
     stdio: [Vec<u8>; 2],
@@ -516,6 +518,7 @@ impl Made {
                 io,
                 procs: Slots::with_most(16),
                 socks: Slots::with_most(64),
+                conns: Slots::with_most(16),
                 borrowed: Slots::with_most(16),
                 began: std::time::Instant::now(),
                 stdio: [Vec::new(), Vec::new()],
@@ -842,6 +845,7 @@ fn link_all(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
     files::link(linker)?;
     proc::link(linker)?;
     sock::link(linker)?;
+    conn::link(linker)?;
     video::link(linker)?;
     tuner::link(linker)
 }

@@ -11,19 +11,23 @@
 // `layer` は番号 1 の canvas（座標は本体が渡す設定の `size`、既定 1920×1080）。
 // 本体は、メッセージが来れば `__zwMessage`、時刻を進めるとき `__zwTick`（タイマー・
 // requestAnimationFrame はここで実行される）、レンダリングのとき `__zwFrame`、要求を取得するとき
-// `__zwEvents` を呼ぶ。どのレイヤーか・何が必要かは package.json の
+// `__zwEvents` を呼ぶ。通信（fetch・WebSocket）は `__zwTick` のたびに届いた分を配る。
+// どのレイヤーか・何が必要かは package.json の
 // `zerowave.layer`（`{"above":"captions","wants":["clock"],"fps":60}`）。
 // esbuild で一つにまとめ、javy で wasm にする（zwsdk/javy/zwjavy.wasm）。
 
 import { ZwCanvas } from "./canvas";
 import { installDom, runQueues, takePainted } from "./dom";
 import { host } from "./host";
+import { installNet, pollNet } from "./net";
 
 export { ZwCanvas, ZwContext2D } from "./canvas";
 export { host } from "./host";
 export type { ZwHost } from "./host";
+export { ZwHeaders, ZwResponse, ZwWebSocket, zwFetch } from "./net";
 
 installDom();
+installNet();
 
 /** 本体が起動時に渡すもの（`zwsdk::layer::Config`）。 */
 export interface Config {
@@ -76,6 +80,11 @@ export function now(): number {
   return host.nowMs();
 }
 
+/** プラグインの設定（package.json の `zerowave.config` で宣言したキー）の値。無ければ null。 */
+export function cfg(name: string): string | null {
+  return host.cfg(name);
+}
+
 function guarded(what: string, fn: () => void): void {
   try {
     fn();
@@ -110,6 +119,7 @@ globalThis.__zwMessage = (json: string, bytes: Uint8Array | null) => {
 };
 
 globalThis.__zwTick = () => {
+  pollNet();
   runQueues();
 };
 

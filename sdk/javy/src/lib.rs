@@ -105,6 +105,37 @@ unsafe extern "C" {
     fn buf_read(buf: u32, from: u32, ptr: *mut u8, len: u32) -> u32;
     #[link_name = "create"]
     safe fn buf_create(ptr: *const u8, len: u32) -> u32;
+    #[link_name = "drop"]
+    safe fn buf_drop(buf: u32);
+}
+
+// `net` を宣言して有効なときだけ繋がる。待たない通信は `poll` で届いた分を受け取る。
+#[link(wasm_import_module = "zw_net_v1")]
+unsafe extern "C" {
+    safe fn open(
+        method_ptr: *const u8,
+        method_len: u32,
+        url_ptr: *const u8,
+        url_len: u32,
+        headers: u32,
+        body: u32,
+    ) -> u32;
+    safe fn ws(
+        url_ptr: *const u8,
+        url_len: u32,
+        protocols_ptr: *const u8,
+        protocols_len: u32,
+        headers: u32,
+    ) -> u32;
+    safe fn poll(handle: u32) -> u32;
+    safe fn send(handle: u32, kind: u32, ptr: *const u8, len: u32) -> u32;
+    safe fn close(handle: u32);
+}
+
+#[link(wasm_import_module = "zw_cfg_v1")]
+unsafe extern "C" {
+    #[link_name = "get"]
+    safe fn cfg_get(ptr: *const u8, len: u32) -> u32;
 }
 
 /// 本体のバイト列をコピーする。0 なら空。
@@ -121,9 +152,48 @@ fn bytes_of(buf: u32) -> Vec<u8> {
     out
 }
 
+/// 本体が渡したバイト列を受け取って手放す。0 なら `None`。
+fn take(buf: u32) -> Option<Vec<u8>> {
+    if buf == 0 {
+        return None;
+    }
+    let bytes = bytes_of(buf);
+    buf_drop(buf);
+    Some(bytes)
+}
+
 /// バイト列を本体に渡す（buf の番号）。
 fn buf_of(bytes: &[u8]) -> u32 {
     buf_create(bytes.as_ptr(), bytes.len() as u32)
+}
+
+/// 呼び出しの間だけ本体に預けるバイト列。空なら 0（無し）。
+struct Lent(u32);
+
+impl Lent {
+    fn of(bytes: &[u8]) -> Self {
+        Self(if bytes.is_empty() { 0 } else { buf_of(bytes) })
+    }
+}
+
+impl Drop for Lent {
+    fn drop(&mut self) {
+        if self.0 != 0 {
+            buf_drop(self.0);
+        }
+    }
+}
+
+fn net_poll<'js>(ctx: Ctx<'js>, id: u32) -> Option<TypedArray<'js, u8>> {
+    take(poll(id)).and_then(|bytes| TypedArray::new(ctx, bytes).ok())
+}
+
+fn bytes_in(array: &Option<TypedArray<'_, u8>>) -> Vec<u8> {
+    array
+        .as_ref()
+        .and_then(|a| a.as_bytes())
+        .map(<[u8]>::to_vec)
+        .unwrap_or_default()
 }
 
 fn config() -> Config {
@@ -250,6 +320,45 @@ fn modify_runtime(runtime: Runtime) -> Runtime {
         put!("layerHeight", || height());
         put!("nowMs", || now_ms());
         put!("unixMs", || unix_ms());
+        // 通信。番号 0 は開けなかった。`netPoll` は記録の並び（zwsdk::net::conn）か、無ければ null。
+        put!(
+            "netOpen",
+            |method: String, url: String, headers: String, body: Option<TypedArray<'_, u8>>| {
+                let headers = Lent::of(headers.as_bytes());
+                let body = body.as_ref().map(|_| Lent::of(&bytes_in(&body)));
+                open(
+                    method.as_ptr(),
+                    method.len() as u32,
+                    url.as_ptr(),
+                    url.len() as u32,
+                    headers.0,
+                    body.as_ref().map_or(0, |b| b.0),
+                )
+            }
+        );
+        put!("netWs", |url: String, protocols: String, headers: String| {
+            let headers = Lent::of(headers.as_bytes());
+            ws(
+                url.as_ptr(),
+                url.len() as u32,
+                protocols.as_ptr(),
+                protocols.len() as u32,
+                headers.0,
+            )
+        });
+        put!("netPoll", net_poll);
+        put!(
+            "netSend",
+            |id: u32, kind: u32, bytes: Option<TypedArray<'_, u8>>| {
+                let bytes = bytes_in(&bytes);
+                send(id, kind, bytes.as_ptr(), bytes.len() as u32) != 0
+            }
+        );
+        put!("netClose", |id: u32| close(id));
+        put!("cfg", |name: String| {
+            take(cfg_get(name.as_ptr(), name.len() as u32))
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        });
         ctx.globals().set("__zw", zw).expect("__zw");
     });
     CONTEXT.with(|slot| *slot.borrow_mut() = Some(runtime.context().clone()));

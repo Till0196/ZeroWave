@@ -125,6 +125,24 @@ mod wasm {
             body: u32,
         ) -> u32;
         pub safe fn add_root_certificate(der: u32) -> u32;
+        pub safe fn open(
+            method_ptr: *const u8,
+            method_len: u32,
+            url_ptr: *const u8,
+            url_len: u32,
+            headers: u32,
+            body: u32,
+        ) -> u32;
+        pub safe fn ws(
+            url_ptr: *const u8,
+            url_len: u32,
+            protocols_ptr: *const u8,
+            protocols_len: u32,
+            headers: u32,
+        ) -> u32;
+        pub safe fn poll(handle: u32) -> u32;
+        pub safe fn send(handle: u32, kind: u32, ptr: *const u8, len: u32) -> u32;
+        pub safe fn close(handle: u32);
     }
 
     #[link(wasm_import_module = "zw_tuner_v1")]
@@ -568,6 +586,125 @@ pub mod net {
         {
             let _ = der;
             false
+        }
+    }
+
+    pub use crate::net::conn::Arrived;
+
+    /// 待たない通信。HTTP は本文を届いた分ずつ、WebSocket はメッセージごとに [`Conn::poll`] で受け取る。
+    /// 落とすと切る。
+    #[derive(Debug)]
+    pub struct Conn {
+        #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+        handle: u32,
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn header_buf(headers: &[(String, String)]) -> Option<Buf> {
+        let text: String = headers.iter().map(|(k, v)| format!("{k}: {v}\n")).collect();
+        (!text.is_empty()).then(|| Buf::of(text.as_bytes()))
+    }
+
+    impl Conn {
+        /// 本体が開けなければ（`net` が無効、接続の数の上限）`None`。接続の失敗は `poll` の [`Arrived::Fail`] で来る。
+        pub fn open(
+            method: &str,
+            url: &str,
+            headers: &[(String, String)],
+            body: Option<&[u8]>,
+        ) -> Option<Self> {
+            #[cfg(target_arch = "wasm32")]
+            {
+                let header_buf = header_buf(headers);
+                let body_buf = body.map(Buf::of);
+                let handle = super::wasm::open(
+                    method.as_ptr(),
+                    method.len() as u32,
+                    url.as_ptr(),
+                    url.len() as u32,
+                    header_buf.as_ref().map_or(0, Buf::handle),
+                    body_buf.as_ref().map_or(0, Buf::handle),
+                );
+                (handle != 0).then_some(Self { handle })
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let _ = (method, url, headers, body);
+                None
+            }
+        }
+
+        /// `ws://`・`wss://`。`protocols` は `Sec-WebSocket-Protocol` に `,` で並べる。
+        pub fn websocket(
+            url: &str,
+            protocols: &[&str],
+            headers: &[(String, String)],
+        ) -> Option<Self> {
+            let protocols = protocols.join(", ");
+            #[cfg(target_arch = "wasm32")]
+            {
+                let header_buf = header_buf(headers);
+                let handle = super::wasm::ws(
+                    url.as_ptr(),
+                    url.len() as u32,
+                    protocols.as_ptr(),
+                    protocols.len() as u32,
+                    header_buf.as_ref().map_or(0, Buf::handle),
+                );
+                (handle != 0).then_some(Self { handle })
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let _ = (url, protocols, headers);
+                None
+            }
+        }
+
+        /// 待たない。届いていなければ空。[`Arrived::End`] か [`Arrived::Fail`] の後は来ない。
+        pub fn poll(&mut self) -> Vec<Arrived> {
+            #[cfg(target_arch = "wasm32")]
+            {
+                let handle = super::wasm::poll(self.handle);
+                take_buf(handle).map_or_else(Vec::new, |bytes| crate::net::conn::decode(&bytes))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Vec::new()
+        }
+
+        fn send(&mut self, kind: u32, bytes: &[u8]) -> bool {
+            #[cfg(target_arch = "wasm32")]
+            {
+                super::wasm::send(self.handle, kind, bytes.as_ptr(), bytes.len() as u32) != 0
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let _ = (kind, bytes);
+                false
+            }
+        }
+
+        pub fn send_text(&mut self, text: &str) -> bool {
+            self.send(crate::net::conn::send::TEXT, text.as_bytes())
+        }
+
+        pub fn send_binary(&mut self, bytes: &[u8]) -> bool {
+            self.send(crate::net::conn::send::BINARY, bytes)
+        }
+
+        /// WebSocket を閉じる。相手の close が [`Arrived::End`] で来る。
+        pub fn close(&mut self, code: u16, reason: &str) -> bool {
+            let mut payload = code.to_be_bytes().to_vec();
+            payload.extend_from_slice(reason.as_bytes());
+            self.send(crate::net::conn::send::CLOSE, &payload)
+        }
+    }
+
+    impl Drop for Conn {
+        fn drop(&mut self) {
+            #[cfg(target_arch = "wasm32")]
+            {
+                super::wasm::close(self.handle)
+            }
         }
     }
 }

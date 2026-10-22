@@ -6,3 +6,15 @@ declare var console: {
   warn(...args: unknown[]): void;
 };
 
+// Javy の TextEncoder／TextDecoder（UTF-8 だけ）。
+declare class TextEncoder {
+  encode(text?: string): Uint8Array;
+}
+
+declare class TextDecoder {
+  constructor(label?: string);
+  decode(bytes?: Uint8Array): string;
+}
+
+// dom.ts が定義する。
+declare function setTimeout(fn: () => void, ms?: number): number;

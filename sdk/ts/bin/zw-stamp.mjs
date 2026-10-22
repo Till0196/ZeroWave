@@ -2,7 +2,7 @@
 // ビルドした wasm にマニフェストを埋める（カスタムセクション `zw_manifest`）。
 // これで name.wasm 一つで配置できる。内容は package.json から：
 //   name（"zerowave-" は除く）、version、zerowave.hooks（無ければ ["layer"]）、
-//   zerowave.layer（どのレイヤーか・何が必要か。無ければ字幕の上）。
+//   zerowave.layer（どのレイヤーか・何が必要か。無ければ字幕の上）、zerowave.config（設定）。
 //
 //   zw-stamp dist/name.wasm [package.json]
 
@@ -22,6 +22,8 @@ const manifest = {
   hooks: zw.hooks ?? ["layer"],
   layer: zw.layer ?? { above: "captions" },
 };
+// 設定（`[{"key":"net","kind":"bool","default":"false"}]` など）。通信するなら `net` を宣言する。
+if (Array.isArray(zw.config)) manifest.config = zw.config;
 
 function leb(n) {
   const out = [];
