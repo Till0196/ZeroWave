@@ -96,9 +96,9 @@ impl Screen {
             .map(|scanning| scanning.clone())
             .unwrap_or_default();
         self.gather_about();
-        // 番組表の一覧は開くまでビルドされないので、番組表と選べる局から直接取る。
+        // 番組表の一覧は開くまでビルドされないので、局一覧と選べる局から直接取る。
         let bands = zwcore::guide::keeper::bands_of(
-            &self.guide,
+            &self.stations,
             band,
             self.settings_page.receivable.as_deref(),
         );
@@ -113,7 +113,7 @@ impl Screen {
             decoding: self.decoding.as_ref(),
             edited: &mut self.edited,
             loaded: &self.loaded,
-            guide: &self.guide,
+            stations: &self.stations,
             settings_page: &mut self.settings_page,
             skins: self.theme,
             broadcast: one_seg.as_deref(),

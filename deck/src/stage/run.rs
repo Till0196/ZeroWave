@@ -58,6 +58,7 @@ impl Stage {
         self.take_merged();
         self.check_verifying();
         self.seed_roster();
+        self.refresh_stations();
         self.tell_recording();
         self.tell_receivable();
         self.watch_oneseg();

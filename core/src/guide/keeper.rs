@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use super::listing::{Asked, Channel, Hit, Listing, Search};
@@ -14,6 +14,7 @@ use super::{Band, Guide, Key, LogoOf, Moment, Prefs, Programme};
 
 /// EIT は数十秒の周期で送られるので、これより細かくしても意味が無い。
 const SAVE_EVERY: Duration = Duration::from_secs(5 * 60);
+const OPEN_POLL: Duration = Duration::from_millis(200);
 const FORGET_EVERY: Duration = Duration::from_secs(60 * 60);
 /// メモリに保持する過去の範囲。番組表の先頭（一時間前の正時）を含む三時間。
 const MEMORY_BEHIND: i64 = 3 * 3600;
@@ -239,6 +240,29 @@ pub struct Ask {
     pub watching: Option<Key>,
 }
 
+/// 番組表のファイルを別のスレッドで開いて読む（読む間も局と番組を受け付ける）。
+fn open_aside(
+    cache: Option<PathBuf>,
+    keep: bool,
+    after: Moment,
+) -> Option<Receiver<(Store, Guide)>> {
+    let (send, opened) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name(String::from("guide-file"))
+        .spawn(move || {
+            let mut store = Store::open(cache, keep);
+            let guide = store.load(after);
+            let _ = send.send((store, guide));
+        });
+    match spawned {
+        Ok(_) => Some(opened),
+        Err(error) => {
+            tracing::warn!("番組表のファイルを読むスレッドを起動できない: {error}");
+            None
+        }
+    }
+}
+
 pub fn keeping(
     asked: &Receiver<ToGuide>,
     merged: &Sender<Arc<Guide>>,
@@ -247,10 +271,12 @@ pub fn keeping(
     keep: bool,
 ) {
     let mut keeping_file = keep;
-    let mut store = Store::open(cache.clone(), keep);
     // 戻さない。録画の再生で時計が過去に飛んでも、ファイルにある過去の番組を消えたと見なさないように。
     let mut kept_from = Guide::new().machine_now() - MEMORY_BEHIND;
-    let mut master = store.load(kept_from);
+    // 読み終えるまでは保存も検索もしない（読む前の差分で書くと、ファイルの番組を上書きする）。
+    let mut opening = open_aside(cache.clone(), keep, kept_from);
+    let mut store: Option<Store> = opening.is_none().then(|| Store::open(None, keep));
+    let mut master = Guide::new();
     let mut was: Option<(Ask, u64)> = None;
     let mut version = 0u64;
     let mut wanted: Option<Ask> = None;
@@ -260,28 +286,53 @@ pub fn keeping(
     let mut logo_map: std::collections::BTreeMap<Key, LogoOf> = std::collections::BTreeMap::new();
     let mut recording: Option<Guide> = None;
     let blank = Store::open(None, true);
-    if master.programme_count() > 0 || master.logos().next().is_some() {
-        version += 1;
-        if merged.send(Arc::new(master.clone())).is_err() {
-            return;
-        }
-    }
     let mut saved = Instant::now();
     let mut forgot = Instant::now();
     let mut dirty = false;
     loop {
-        let first = match asked.recv_timeout(SAVE_EVERY) {
+        let wait = if opening.is_some() {
+            OPEN_POLL
+        } else {
+            SAVE_EVERY
+        };
+        let first = match asked.recv_timeout(wait) {
             Ok(first) => Some(first),
             Err(RecvTimeoutError::Timeout) => None,
             Err(RecvTimeoutError::Disconnected) => {
-                if dirty {
-                    store.save(&master, kept_from);
+                if let Some(store) = store.as_mut() {
+                    if dirty {
+                        store.save(&master, kept_from);
+                    }
+                    store.save_logos(&master);
                 }
-                store.save_logos(&master);
                 return;
             }
         };
         let mut fresh = false;
+        if let Some(back) = &opening {
+            match back.try_recv() {
+                Ok((mut opened, mut loaded)) => {
+                    opening = None;
+                    // ファイルの番組を先に置き、読む間に届いた物を後から重ねる（届いた順と同じ規則で決まる）。
+                    if let Some(now) = master.now() {
+                        loaded.tell_time(now);
+                    }
+                    loaded.merge(std::mem::take(&mut master));
+                    master = loaded;
+                    if keeping_file != keep {
+                        opened = Store::open(cache.clone(), keeping_file);
+                        opened.save(&master, kept_from);
+                    }
+                    store = Some(opened);
+                    fresh = true;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    opening = None;
+                    store = Some(Store::open(None, keeping_file));
+                }
+            }
+        }
         let mut query: Option<Option<Asked>> = None;
         for what in first.into_iter().chain(asked.try_iter()) {
             match what {
@@ -345,10 +396,12 @@ pub fn keeping(
                 }
                 ToGuide::Keep(on) if on != keeping_file => {
                     keeping_file = on;
-                    store = Store::open(cache.clone(), on);
-                    store.save(&master, kept_from);
-                    dirty = false;
-                    saved = Instant::now();
+                    if let Some(store) = store.as_mut() {
+                        *store = Store::open(cache.clone(), on);
+                        store.save(&master, kept_from);
+                        dirty = false;
+                        saved = Instant::now();
+                    }
                 }
                 ToGuide::Keep(_) => {}
             }
@@ -358,7 +411,7 @@ pub fn keeping(
             // 放送の時刻で判定する（録画の再生中にシステムの時計で捨てると番組が消える）。メモリから消す前に保存する。
             let behind = master.now_or_machine() - MEMORY_BEHIND;
             if behind > kept_from {
-                if dirty {
+                if dirty && let Some(store) = store.as_mut() {
                     saved = Instant::now();
                     dirty = false;
                     store.save(&master, kept_from);
@@ -378,12 +431,17 @@ pub fn keeping(
             let mut shown = active.clone();
             shown.apply_prefs(&prefs);
             if merged.send(Arc::new(shown)).is_err() {
-                store.save(&master, kept_from);
-                store.save_logos(&master);
+                if let Some(store) = store.as_mut() {
+                    store.save(&master, kept_from);
+                    store.save_logos(&master);
+                }
                 return;
             }
         }
-        if dirty && saved.elapsed() >= SAVE_EVERY {
+        if dirty
+            && saved.elapsed() >= SAVE_EVERY
+            && let Some(store) = store.as_mut()
+        {
             saved = Instant::now();
             dirty = false;
             store.save(&master, kept_from);
@@ -391,14 +449,14 @@ pub fn keeping(
         }
         if let Some(query) = query {
             // 検索の前に保存する（届いたばかりの番組も検索できるように）。
-            if dirty {
+            if dirty && let Some(store) = store.as_mut() {
                 saved = Instant::now();
                 dirty = false;
                 store.save(&master, kept_from);
             }
             let (searched, guide) = match &recording {
                 Some(recorded) => (&blank, recorded),
-                None => (&store, &master),
+                None => (store.as_ref().unwrap_or(&blank), &master),
             };
             found = query
                 .filter(|asked| !asked.query.trim().is_empty())
@@ -414,7 +472,7 @@ pub fn keeping(
         was = Some((ask, version));
         let (mut shown, kept) = match &recording {
             Some(recorded) => (recorded.clone(), &blank),
-            None => (master.clone(), &store),
+            None => (master.clone(), store.as_ref().unwrap_or(&blank)),
         };
         shown.apply_prefs(&prefs);
         let mut listing = listing(&mut shown, kept, kept_from, ask, receivable.as_deref());
@@ -534,7 +592,7 @@ fn listing(
         }
     }
     Listing {
-        channels: channels_of(guide, ask.band, from, ask.hours, only, ask.watching),
+        channels: channels_of(guide, guide, ask.band, from, ask.hours, only, ask.watching),
         from,
         hours: ask.hours,
         now: Some(now),
@@ -548,6 +606,7 @@ fn listing(
 
 /// この種別の局をリモコン番号順に。サブチャンネルは時間帯に自分の番組がある時だけ。
 pub fn channels_of(
+    stations: &Guide,
     guide: &Guide,
     band: Band,
     from: Moment,
@@ -556,7 +615,7 @@ pub fn channels_of(
     watching: Option<Key>,
 ) -> Vec<Channel> {
     let until = from + i64::from(hours) * 3600;
-    let mut services: Vec<&crate::guide::Service> = guide
+    let mut services: Vec<&crate::guide::Service> = stations
         .channels()
         .filter(|service| service.band() == band)
         .filter(|service| only.is_none_or(|only| only.contains(&service.key())))
@@ -572,7 +631,10 @@ pub fn channels_of(
                 name: service.name.clone(),
                 badge: service.badge(),
                 remote_key: service.remote_key,
-                logo: guide.logo_of(key).cloned(),
+                logo: stations
+                    .logo_of(key)
+                    .or_else(|| guide.logo_of(key))
+                    .cloned(),
                 programmes: guide
                     .programmes(key)
                     .filter(|programme| shown(programme, from, until))

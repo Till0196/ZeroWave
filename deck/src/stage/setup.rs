@@ -58,6 +58,7 @@ impl Stage {
             told: None,
             done: false,
             guide: Arc::new(Guide::new()),
+            stations: super::stations::Stations::default(),
             guide_to: boot.guide_to,
             guide_back: boot.guide_back,
             asked_guide: Instant::now(),

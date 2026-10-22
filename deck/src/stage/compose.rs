@@ -24,7 +24,12 @@ impl Stage {
         if self.scene_at.elapsed() >= SCENE_EVERY || self.scened != Some((told, area)) {
             self.scene_at = Instant::now();
             self.scened = Some((told, area));
-            collect(&self.player, &self.guide, &mut self.status, area);
+            let stations = if self.recording_guide {
+                &self.guide
+            } else {
+                self.stations.shown()
+            };
+            collect(&self.player, stations, &self.guide, &mut self.status, area);
             self.judge_reception();
             self.settle_errors();
             self.retitle();
@@ -79,6 +84,7 @@ impl Stage {
             let tuning = self.live.as_ref().and_then(|live| live.supply.tuning());
             self.osd_shown = osd_of(
                 &self.player,
+                self.stations(),
                 &self.guide,
                 &self.status,
                 self.said.as_deref(),
@@ -103,6 +109,9 @@ impl Stage {
         }
         // 置き換えない（全局分はここにしかない）。
         if let Some(guide) = self.player.taken_guide() {
+            if !self.recording_guide {
+                self.learn_stations(&guide);
+            }
             let _ = self.guide_to.send(ToGuide::Heard(Box::new(guide)));
         }
         let backdrop = self.backdrop(drew);
@@ -558,7 +567,7 @@ impl Stage {
         let verdict = self.reception.shown().filter(|verdict| verdict.covers)?;
         let tables = self.player.tables();
         let key = self.asked_key?;
-        let service = self.guide.service(key);
+        let service = self.service(key);
         let name = service
             .map(|service| service.name.clone())
             .or_else(|| self.status.channel.clone())
@@ -571,7 +580,7 @@ impl Stage {
                 zwcore::guide::Service::badge,
             ),
             badge_colour: ui::guide::epg::badge_colour(&name),
-            logo: self.guide.logo_of(key).cloned(),
+            logo: self.logo_of(key).cloned(),
             band: band_label(key, remote_key),
         };
         let moment = self.guide.now_or_machine();
@@ -706,7 +715,7 @@ impl Stage {
         } else {
             self.guide.at(key, moment)?.clone()
         };
-        let service = self.guide.service(key);
+        let service = self.service(key);
         let name = service
             .map(|service| service.name.clone())
             .or_else(|| self.status.channel.clone())
@@ -722,7 +731,7 @@ impl Stage {
                     zwcore::guide::Service::badge,
                 ),
                 badge_colour: ui::guide::epg::badge_colour(&name),
-                logo: self.guide.logo_of(key).cloned(),
+                logo: self.logo_of(key).cloned(),
                 shared: Vec::new(),
                 follow: None,
                 now: (!recorded).then_some(moment),
@@ -971,15 +980,21 @@ fn has_data_broadcast(program: &zwcore::filters::Program, applications: &[(u16, 
     })
 }
 
-/// フリー関数なのは `player` と `guide` を借りたまま `status` を渡すため。
-pub(super) fn collect(player: &Player, guide: &Guide, status: &mut Status, size: (u32, u32)) {
+/// フリー関数なのは `player` と局一覧・番組表を借りたまま `status` を渡すため。
+pub(super) fn collect(
+    player: &Player,
+    stations: &Guide,
+    guide: &Guide,
+    status: &mut Status,
+    size: (u32, u32),
+) {
     status.picture = player.picture_size().map(|(width, height)| {
         let zoom = (size.0 as f32 / width as f32).min(size.1 as f32 / height as f32);
         (width, height, zoom)
     });
     let tables = player.tables();
     if let Some(watching) = tables.watching
-        && let Some(service) = guide.service(watching)
+        && let Some(service) = super::stations::service_in(stations, guide, watching)
         && !service.name.is_empty()
     {
         status.channel = Some(service.name.clone());
@@ -1047,6 +1062,7 @@ pub(super) fn sound_text(stream: &Stream, dual_mono: Option<DualMono>) -> String
 
 pub(super) fn osd_of(
     player: &Player,
+    stations: &Guide,
     guide: &Guide,
     status: &Status,
     said: Option<&str>,
@@ -1056,7 +1072,7 @@ pub(super) fn osd_of(
     let tables = player.tables();
     let clock = status.clock.get(..5).unwrap_or_default().to_owned();
     if let Some(tuning) = tuning {
-        let service = guide.service(tuning.key);
+        let service = super::stations::service_in(stations, guide, tuning.key);
         // EIT を待つと数秒空になるので、ためてある番組表と PC の時計から。
         let now = guide.at(tuning.key, guide.now_or_machine());
         return ui::overlay::osd::Osd {
@@ -1070,7 +1086,7 @@ pub(super) fn osd_of(
                 zwcore::guide::Service::badge,
             ),
             badge_colour: ui::guide::epg::badge_colour(&tuning.name),
-            logo: guide.logo_of(tuning.key).cloned(),
+            logo: super::stations::logo_in(stations, guide, tuning.key).cloned(),
             band: band_label(tuning.key, service.and_then(|service| service.remote_key)),
             channel: tuning.name.clone(),
             airtime: airtime_text(now),
@@ -1080,7 +1096,7 @@ pub(super) fn osd_of(
         };
     }
     let key = tables.watching.or(asked);
-    let service = key.and_then(|key| guide.service(key));
+    let service = key.and_then(|key| super::stations::service_in(stations, guide, key));
     let name = service
         .map(|service| service.name.clone())
         .or_else(|| status.channel.clone())
@@ -1129,7 +1145,7 @@ pub(super) fn osd_of(
             zwcore::guide::Service::badge,
         ),
         badge_colour: ui::guide::epg::badge_colour(&name),
-        logo: key.and_then(|key| guide.logo_of(key).cloned()),
+        logo: key.and_then(|key| super::stations::logo_in(stations, guide, key).cloned()),
         band: key
             .map(|key| band_label(key, service.and_then(|service| service.remote_key)))
             .unwrap_or_default(),
@@ -1189,12 +1205,12 @@ impl Stage {
                 let listed = keys
                     .into_iter()
                     .filter_map(|key| {
-                        let service = self.guide.service(key)?;
+                        let service = self.service(key)?;
                         Some((
                             key,
                             service.name.clone(),
                             service.remote_key,
-                            self.guide.logo_of(key).cloned(),
+                            self.logo_of(key).cloned(),
                         ))
                     })
                     .collect();
@@ -1253,7 +1269,7 @@ impl Stage {
                         network,
                         service: program.number,
                     };
-                    Some((key, name, self.guide.logo_of(key).cloned()))
+                    Some((key, name, self.logo_of(key).cloned()))
                 })
                 .collect(),
         };

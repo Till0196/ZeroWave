@@ -863,6 +863,17 @@ impl Guide {
         self.services.values().filter(|service| service.watchable())
     }
 
+    pub fn stations(&self) -> Self {
+        Self {
+            services: self.services.clone(),
+            logos: self.logos.clone(),
+            blank_logos: self.blank_logos.clone(),
+            now: self.now,
+            offset: self.offset,
+            ..Self::default()
+        }
+    }
+
     pub fn apply_prefs(&mut self, prefs: &Prefs) {
         self.revision += 1;
         for (key, name) in &prefs.names {

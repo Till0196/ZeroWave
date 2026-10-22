@@ -252,9 +252,9 @@ impl Stage {
         );
         zwcore::guide::Band::set_networks(crate::config::apply::networks(file, &profile));
         zwcore::guide::Detailed::set(crate::config::apply::extended(file));
-        let _ = self
-            .guide_to
-            .send(ToGuide::Prefs(crate::config::apply::prefs(file)));
+        let prefs = crate::config::apply::prefs(file);
+        self.station_prefs(prefs.clone());
+        let _ = self.guide_to.send(ToGuide::Prefs(prefs));
         let _ = self.guide_to.send(ToGuide::Keep(file.guide.cache));
         self.hidden = file
             .channel

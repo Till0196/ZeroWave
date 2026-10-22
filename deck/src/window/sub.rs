@@ -265,7 +265,7 @@ impl Which {
                     showing.settings_page,
                     showing.edited,
                     showing.loaded,
-                    showing.guide,
+                    showing.stations,
                     crate::config::overridden(),
                     &showing.skins.settings,
                 )?;
@@ -392,7 +392,7 @@ impl Which {
                 stem,
                 page,
                 showing.settings_page,
-                showing.guide,
+                showing.stations,
                 &showing.skins.settings,
             )
             .map(Happened::Settings),
@@ -425,7 +425,7 @@ impl Which {
                 let mut plugins = ui::guide::panel::Plugins {
                     host: &mut host,
                     scrolls: &mut showing.settings_page.plugin_scroll,
-                    guide: showing.guide,
+                    guide: showing.stations,
                     look: &showing.skins.settings,
                 };
                 ui::guide::panel::show(root, &shown, &mut plugins).map(Happened::Panel)
@@ -463,7 +463,7 @@ pub struct Showing<'a> {
     pub info: Option<&'a ui::panes::stream::StreamInfo>,
     pub decoding: Option<&'a ui::panes::decoder::Decoding>,
     pub edited: &'a mut crate::config::File,
-    pub guide: &'a zwcore::guide::Guide,
+    pub stations: &'a zwcore::guide::Guide,
     pub loaded: &'a crate::config::File,
     pub settings_page: &'a mut ui::panes::settings::State,
     pub skins: ui::theme::Theme,

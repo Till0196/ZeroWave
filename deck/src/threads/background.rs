@@ -4,16 +4,16 @@
 //! 急がない裏の仕事（番組表の取得・統合・保存）のスレッドの優先度を下げる。遅い CPU では選局の直後に
 //! 映像のデコードや描画と取り合い、フレームが間に合わなくなる。
 
-/// 呼んだスレッドの優先度を下げる（CPU に加えて、Windows では I/O とメモリーも）。
+/// 呼んだスレッドの CPU の優先度を下げる。I/O の優先度は下げない（番組表のファイルの読み書きが止まる）。
 pub fn lower() {
     #[cfg(windows)]
     {
         use windows::Win32::System::Threading::{
-            GetCurrentThread, SetThreadPriority, THREAD_MODE_BACKGROUND_BEGIN,
+            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
         };
         // SAFETY: 自分のスレッドの疑似ハンドル。
         if let Err(error) =
-            unsafe { SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) }
+            unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) }
         {
             tracing::debug!("スレッドの優先度を下げられない: {error}");
         }

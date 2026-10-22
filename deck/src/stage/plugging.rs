@@ -88,7 +88,7 @@ impl Stage {
             program.network = key.network;
             program.service = key.service;
             program.band = crate::plugin_ui::band_name(key.network);
-            if let Some(service) = self.guide.service(key) {
+            if let Some(service) = self.service(key) {
                 program.channel = service.name.clone();
             }
         }
@@ -198,7 +198,7 @@ impl Stage {
         let tables = self.player.tables();
         let key = tables.watching;
         let station = key.map(|key| {
-            let service = self.guide.service(key);
+            let service = self.service(key);
             let sdt = tables
                 .neighbours
                 .iter()

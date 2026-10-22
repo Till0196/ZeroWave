@@ -136,7 +136,6 @@ impl Stage {
             return;
         };
         let name = self
-            .guide
             .service(key)
             .map(|service| service.name.clone())
             .or_else(|| self.status.channel.clone())
@@ -190,7 +189,7 @@ impl Stage {
     fn station(&self, key: Key, name: Option<&str>) -> Station {
         let name = name
             .map(str::to_owned)
-            .or_else(|| self.guide.service(key).map(|service| service.name.clone()))
+            .or_else(|| self.service(key).map(|service| service.name.clone()))
             .unwrap_or_else(|| format!("サービス {}", key.service));
         let programme = self
             .guide
@@ -214,7 +213,7 @@ impl Stage {
             key,
             name,
             programme,
-            logo: self.guide.logo_of(key).cloned(),
+            logo: self.logo_of(key).cloned(),
         }
     }
 

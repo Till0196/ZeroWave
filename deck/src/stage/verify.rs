@@ -395,7 +395,6 @@ impl Stage {
             } else if actual != verifying.expected || !listed_here {
                 // 局はチャンネルマップと違うストリームにあった。局一覧（`state.toml`）の局も移す。
                 let service_name = self
-                    .guide
                     .service(key)
                     .map(|service| service.name.clone())
                     .filter(|name| !name.is_empty())
@@ -608,9 +607,12 @@ impl Stage {
                         toml::Value::String(multiplex.transport.to_string()),
                     );
                 let how = verifying.how(&carrier);
-                let name = self
-                    .guide
-                    .service(key)
+                let stations = if self.recording_guide {
+                    &self.guide
+                } else {
+                    self.stations.shown()
+                };
+                let name = super::stations::service_in(stations, &self.guide, key)
                     .map(|service| service.name.clone())
                     .filter(|name| !name.is_empty())
                     .unwrap_or_else(|| format!("サービス {service}"));

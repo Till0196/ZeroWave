@@ -305,13 +305,13 @@ impl Stage {
     }
 
     pub(super) fn bands(&self) -> Vec<Band> {
-        guide::bands_of(&self.guide, self.band(), self.receivable.as_deref())
+        guide::bands_of(self.stations(), self.band(), self.receivable.as_deref())
     }
 
     pub(super) fn keys_of(&self, band: Band) -> Vec<zwcore::guide::Key> {
         let only = self.receivable.as_deref();
         let mut services: Vec<&zwcore::guide::Service> = self
-            .guide
+            .stations()
             .channels()
             .filter(|service| service.band() == band)
             .filter(|service| only.is_none_or(|only| only.contains(&service.key())))
@@ -400,6 +400,7 @@ impl Stage {
         self.listed_mark = Some(asked);
         self.listing = Arc::new(ui::guide::epg::Listing {
             channels: guide::channels_of(
+                self.stations(),
                 &self.guide,
                 band,
                 from,
@@ -429,6 +430,7 @@ impl Stage {
             return;
         };
         live.fetched = None;
+        self.learn_stations(&guide);
         // エンジンへは渡さない（追加する間止まり、音に穴が開く）。
         let _ = self.guide_to.send(ToGuide::Merge(Box::new(guide)));
     }
@@ -439,6 +441,7 @@ impl Stage {
         };
         self.guide = guide;
         self.guide_version += 1;
+        self.stations_behind();
         self.write_logo_map();
         self.panes.say(ToPanes::Guide(Arc::clone(&self.guide)));
     }
@@ -499,7 +502,6 @@ impl Stage {
                 });
         if self.live.is_none() || within_recording {
             let name = self
-                .guide
                 .service(key)
                 .map(|service| service.name.clone())
                 .unwrap_or_else(|| format!("サービス {}", super::id_text(key.service)));
@@ -517,7 +519,6 @@ impl Stage {
             self.asked_key = before;
             self.live_key = Some(key);
             let name = self
-                .guide
                 .service(key)
                 .map(|service| service.name.clone())
                 .unwrap_or_else(|| format!("サービス {}", super::id_text(key.service)));
@@ -532,7 +533,6 @@ impl Stage {
         {
             tracing::info!("{label} で開く（プロファイルの優先順）");
             let name = self
-                .guide
                 .service(key)
                 .map(|service| service.name.clone())
                 .unwrap_or_else(|| format!("サービス {}", super::id_text(key.service)));
@@ -542,6 +542,7 @@ impl Stage {
             return;
         }
         let watching = self.player.tables().watching;
+        let known = self.service(key).map(|service| service.name.clone());
         let Some(live) = self.live.as_mut() else {
             return;
         };
@@ -571,10 +572,8 @@ impl Stage {
                 .cloned()
                 .map(|mut channel| {
                     channel.key = Some(key);
-                    channel.name = self
-                        .guide
-                        .service(key)
-                        .map(|service| service.name.clone())
+                    channel.name = known
+                        .clone()
                         .unwrap_or_else(|| format!("サービス {}", super::id_text(key.service)));
                     channel
                 })
@@ -603,7 +602,6 @@ impl Stage {
         // 再生スレッドで待つと映像も音声も止まるので、開くのは別のスレッド。
         let name = channel.name.clone();
         let named = self
-            .guide
             .service(key)
             .map(|service| service.name.clone())
             .unwrap_or_else(|| name.clone());
@@ -678,6 +676,7 @@ impl Stage {
             for service in services {
                 seeded.tell_service(service);
             }
+            self.learn_stations(&seeded);
             let _ = self.guide_to.send(ToGuide::Merge(Box::new(seeded)));
         }
         self.remap_coaxd();
@@ -713,7 +712,7 @@ impl Stage {
             let Some(key) = channel.key else {
                 continue;
             };
-            if self.guide.service(key).is_some() || channel.name.is_empty() || !told.insert(key) {
+            if self.service(key).is_some() || channel.name.is_empty() || !told.insert(key) {
                 continue;
             }
             seeded.tell_service(zwcore::guide::Service {
@@ -728,6 +727,7 @@ impl Stage {
         }
         if count > 0 {
             tracing::info!("番組表に無い {count} 局をソースの一覧から追加した");
+            self.learn_stations(&seeded);
             let _ = self.guide_to.send(ToGuide::Merge(Box::new(seeded)));
         }
     }
@@ -802,7 +802,6 @@ impl Stage {
         self.retuned();
         self.band = Some(Band::of(key.network));
         self.status.channel = self
-            .guide
             .service(key)
             .map(|service| service.name.clone())
             .or(Some(name));
@@ -935,7 +934,6 @@ impl Stage {
                 // ためていた番組表は渡さない（追加する間読めず音に穴が開く）。
                 self.band = Some(Band::of(key.network));
                 self.status.channel = self
-                    .guide
                     .service(key)
                     .map(|service| service.name.clone())
                     .or(Some(name));

@@ -62,6 +62,7 @@ mod run;
 mod serve;
 mod setup;
 mod sources;
+mod stations;
 mod stepping;
 mod surface;
 #[cfg(test)]
@@ -328,6 +329,7 @@ pub struct Stage {
     /// ソースが終わった。閉じない（最後のフレームで止まり、シークバーを動かせば動き出す）。
     ended: bool,
     guide: Arc<Guide>,
+    stations: stations::Stations,
     guide_to: Sender<ToGuide>,
     guide_back: Receiver<Arc<Guide>>,
     asked_guide: Instant,

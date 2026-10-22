@@ -277,6 +277,7 @@ impl Stage {
         for built in took {
             match built {
                 Built::Guide(guide) => {
+                    self.learn_stations(&guide);
                     let _ = self.guide_to.send(ToGuide::Merge(Box::new(guide)));
                 }
                 Built::Offers(offers) => {

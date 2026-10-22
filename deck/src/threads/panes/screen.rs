@@ -164,6 +164,12 @@ impl Screen {
                 self.asked = None;
                 self.follow_watching();
             }
+            ToPanes::Stations(stations) => {
+                self.stations = stations;
+                for sub in self.subs.values_mut() {
+                    sub.dirty = true;
+                }
+            }
             ToPanes::Watching(watching) => {
                 self.watching = watching;
                 self.follow_watching();
@@ -342,7 +348,7 @@ impl Screen {
                 .plugin_ui
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .page(stem, page, &self.guide)
+                .page(stem, page, &self.stations)
         {
             if !page.title.is_empty() {
                 title = page.title;

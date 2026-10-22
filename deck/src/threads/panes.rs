@@ -54,6 +54,7 @@ pub enum ToPanes {
     OpenSettings(ui::panes::settings::Page),
     CaptureLayers(Vec<(String, String)>),
     Guide(Arc<Guide>),
+    Stations(Arc<Guide>),
     Watching(Option<Key>),
     /// いまのソースで選べる局。`None` は絞らない。
     Receivable(Option<Arc<std::collections::BTreeSet<Key>>>),
@@ -89,6 +90,7 @@ impl std::fmt::Debug for ToPanes {
             Self::OpenSettings(_) => "OpenSettings",
             Self::CaptureLayers(_) => "CaptureLayers",
             Self::Guide(_) => "Guide",
+            Self::Stations(_) => "Stations",
             Self::Watching(_) => "Watching",
             Self::Receivable(_) => "Receivable",
             Self::Info(_) => "Info",
@@ -190,6 +192,7 @@ impl Panes {
             subs: BTreeMap::new(),
             pending: VecDeque::new(),
             guide: Arc::new(Guide::new()),
+            stations: Arc::new(Guide::new()),
             version: 0,
             band: None,
             watching: None,
@@ -276,6 +279,7 @@ struct Screen {
     /// 開くよう要求して、まだウィンドウが返ってきていないもの。要求した順に返る。
     pending: VecDeque<Which>,
     guide: Arc<Guide>,
+    stations: Arc<Guide>,
     version: u64,
     /// 番組表のウィンドウで選んだ種別。パネルの番組表とは別（連動すると見ていた列が消える）。
     band: Option<Band>,
