@@ -53,7 +53,7 @@ ZeroWave には CAS（限定受信方式）の処理は含まれていません�
 
 ZeroWave は Apache License 2.0 です（[LICENSE](LICENSE)）。
 
-ほかのソフトウェアのヘッダーから書き写した宣言と、同梱している `sdk/javy/zwjavy.wasm` のライセンスは [NOTICE](NOTICE) にあります。
+ほかのソフトウェアのヘッダーから書き写した宣言と、`sdk/javy` からビルドする `zwjavy.wasm` に入る物のライセンスは [NOTICE](NOTICE) にあります。
 
 | 書き写した物 | ライセンス |
 | --- | --- |

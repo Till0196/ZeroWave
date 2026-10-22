@@ -85,7 +85,7 @@ AMD Advanced Media Framework (AMF) headers
   Advanced Micro Devices, Inc. given in those headers.
 
 sdk/javy/zwjavy.wasm
-  A build of sdk/javy (the source is next to it). The binary contains:
+  Built from sdk/javy by sdk/javy/build.sh. The binary contains:
 
   - Javy and javy-plugin-api (https://github.com/bytecodealliance/javy),
     Apache-2.0 WITH LLVM-exception. Copyright the Bytecode Alliance and

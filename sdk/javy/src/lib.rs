@@ -16,8 +16,8 @@
 //! 残らない）ので、`_start` で一度だけ評価し、あとは残った runtime を
 //! ここから直接呼ぶ。
 //!
-//! ビルドする: `cargo build --release --target wasm32-wasip1` のあと
-//! `javy init-plugin` を通す（`npm run build:plugin`）。
+//! ビルドは `sdk/javy/build.sh`（`cargo build --release --target wasm32-wasip1` のあと
+//! `javy init-plugin` を通す）。
 
 use std::cell::RefCell;
 

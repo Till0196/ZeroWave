@@ -4,5 +4,6 @@ node_modules/
 dist/
 sdk/bin/
 sdk/javy/target/
+sdk/javy/zwjavy.wasm
 testdata/*.ts
 testdata/*.y4m
