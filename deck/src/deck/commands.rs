@@ -165,13 +165,7 @@ impl Deck {
     }
 
     fn plugin_layers(&self) -> Vec<(String, String)> {
-        self.shown_layers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .map(|layer| (crate::capture::plugin_key(&layer.name), layer.name.clone()))
-            .chain(crate::capture::video_filter_row(&self.scene.video_filters))
-            .collect()
+        crate::capture::plugin_rows(&self.scene.video_filters)
     }
 
     /// メニューで変えた設定を `zerowave.toml` に書き戻す。

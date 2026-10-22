@@ -575,6 +575,33 @@ pub fn video_filter_row(names: &[String]) -> Option<(String, String)> {
     })
 }
 
+/// キャプチャに含めるかを選べるプラグイン：読み込まれているレイヤー（重なりの順）と映像フィルター。画面に
+/// 出ていなくても、フィルターを掛けていなくても並べる。`filters` は掛けている映像フィルターの名前。
+pub fn plugin_rows(filters: &[String]) -> Vec<(String, String)> {
+    use zwsdk::layer::{Place, Slot};
+    let Some(loaded) = crate::plugins::loaded_now() else {
+        return video_filter_row(filters).into_iter().collect();
+    };
+    let mut layers: Vec<_> = loaded
+        .all()
+        .iter()
+        .filter(|plugin| plugin.has("layer"))
+        .filter(|plugin| plugin.layer_manifest().place() != Place::At(Slot::Databroadcast))
+        .collect();
+    layers.sort_by_key(|plugin| plugin.layer_manifest().place().order());
+    let mut rows: Vec<(String, String)> = layers
+        .iter()
+        .map(|plugin| (plugin_key(plugin.name()), plugin.name().to_owned()))
+        .collect();
+    let any_filter = loaded.all().iter().any(|plugin| plugin.has("video"));
+    if filters.is_empty() && any_filter {
+        rows.extend(video_filter_row(&[String::from("映像フィルター")]));
+    } else {
+        rows.extend(video_filter_row(filters));
+    }
+    rows
+}
+
 pub fn plugin_key(layer: &str) -> String {
     format!("plugin:{layer}")
 }

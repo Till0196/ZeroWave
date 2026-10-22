@@ -175,11 +175,7 @@ impl Deck {
         // レイヤーの重なりは映像 → データ放送 → 字幕 → OSD（`zwsdk::layer::Place`）。
         use zwsdk::layer::Slot;
         let layers = self.take_layers();
-        let names: Vec<(String, String)> = layers
-            .iter()
-            .map(|layer| (crate::capture::plugin_key(&layer.name), layer.name.clone()))
-            .chain(crate::capture::video_filter_row(&self.scene.video_filters))
-            .collect();
+        let names = crate::capture::plugin_rows(&self.scene.video_filters);
         if self.told_layers.as_ref() != Some(&names) {
             let _ = self.to_panes.send(ToPanes::CaptureLayers(names.clone()));
             self.told_layers = Some(names);

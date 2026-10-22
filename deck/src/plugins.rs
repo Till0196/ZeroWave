@@ -10,6 +10,11 @@ use zwcore::plugins::Loaded;
 
 static LOADED: RwLock<Option<Arc<Loaded>>> = RwLock::new(None);
 
+/// 読み込み済みなら待たずに返す（まだなら `None`。読み込みは wasm のコンパイルで時間がかかる）。
+pub fn loaded_now() -> Option<Arc<Loaded>> {
+    LOADED.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 pub fn loaded() -> Arc<Loaded> {
     if let Some(loaded) = LOADED.read().unwrap_or_else(|e| e.into_inner()).clone() {
         return loaded;
