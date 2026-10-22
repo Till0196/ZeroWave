@@ -29,7 +29,7 @@ pub use io::{
     Control as IoControl, Controls, Io, Live as IoLive, Notify as IoNotify, Store as IoStore,
     truthy,
 };
-pub use layer::{LayerInstance, Painted};
+pub use layer::{LayerInstance, Painted, Picture, Placed, SpriteImage};
 pub use ui::UiInstance;
 pub use video::VideoInstance;
 

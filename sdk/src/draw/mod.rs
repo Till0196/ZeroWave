@@ -68,6 +68,51 @@ struct Glyphs {
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
     ops: Arc<Vec<Op>>,
+    /// canvas を写した物なら、その canvas と版（中身が同じなら同じ）。
+    from: Option<Source>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Source {
+    canvas: u64,
+    version: u64,
+    width: f64,
+    height: f64,
+}
+
+/// 画面の canvas に貼った canvas の一枚（[`Scene::sprites`]）。
+#[derive(Debug, Clone)]
+pub struct Sprite {
+    /// 貼った canvas と版、描く大きさ。同じなら同じ絵になる。
+    pub key: (u64, u64, u32, u32),
+    scene: Scene,
+    scale: (f64, f64),
+    /// 置く矩形（画面の画素、端数あり）。
+    pub at: [f32; 4],
+    /// 切り抜く矩形（画面の画素）。
+    pub clip: [f32; 4],
+    pub alpha: f32,
+}
+
+impl Sprite {
+    pub fn size(&self) -> (u32, u32) {
+        (self.key.2, self.key.3)
+    }
+
+    /// 絵を描く（アルファを掛けた RGBA）。
+    pub fn render(&self, renderer: &mut Renderer) -> Vec<u8> {
+        let (width, height) = self.size();
+        let scene = Scene {
+            ops: Arc::new(vec![Op::Scene {
+                transform: Affine::scale_non_uniform(self.scale.0, self.scale.1),
+                scene: self.scene.clone(),
+            }]),
+            from: None,
+        };
+        let mut out = Vec::new();
+        renderer.render_raw(&scene, width, height, &mut out);
+        out
+    }
 }
 
 pub struct Fonts {
@@ -188,6 +233,9 @@ impl Default for State {
 #[derive(Debug)]
 pub struct Canvas {
     ops: Vec<Op>,
+    id: u64,
+    /// 命令が変わるたびに増える。
+    version: u64,
     width: f64,
     height: f64,
     pub state: State,
@@ -207,8 +255,11 @@ const STACK_MOST: usize = 4096;
 
 impl Canvas {
     pub fn new(width: f64, height: f64) -> Self {
+        static IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self {
             ops: Vec::new(),
+            id: IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            version: 0,
             width: width.max(0.0),
             height: height.max(0.0),
             state: State::default(),
@@ -224,6 +275,7 @@ impl Canvas {
         match self.weight.checked_add(n) {
             Some(weight) if weight <= WEIGHT_MOST => {
                 self.weight = weight;
+                self.version += 1;
                 true
             }
             _ => false,
@@ -251,6 +303,7 @@ impl Canvas {
     }
 
     pub fn reset(&mut self) {
+        self.version += 1;
         self.ops.clear();
         self.weight = 0;
         self.open_layers = 0;
@@ -269,11 +322,20 @@ impl Canvas {
             transform,
             scene: Scene {
                 ops: Arc::new(self.ops.clone()),
+                from: None,
             },
         }];
         // コピー先で対になるように開いたままのレイヤーは閉じる。
         ops.extend(std::iter::repeat_n(Op::Pop, self.open_layers));
-        Scene { ops: Arc::new(ops) }
+        Scene {
+            ops: Arc::new(ops),
+            from: Some(Source {
+                canvas: self.id,
+                version: self.version,
+                width: self.width,
+                height: self.height,
+            }),
+        }
     }
 
     fn paint_of(&self, colour: Color) -> Color {
@@ -597,6 +659,7 @@ impl Canvas {
             return false;
         };
         for _ in 0..self.clips {
+            self.version += 1;
             self.ops.push(Op::Pop);
             self.open_layers = self.open_layers.saturating_sub(1);
         }
@@ -694,7 +757,25 @@ impl std::fmt::Debug for Renderer {
 }
 
 impl Renderer {
+    /// アルファで割った RGBA にする。
     pub fn render_into(&mut self, scene: &Scene, width: u32, height: u32, out: &mut Vec<u8>) {
+        self.render_raw(scene, width, height, out);
+        for px in out.as_chunks_mut::<4>().0 {
+            let alpha = px[3];
+            if alpha == 0 {
+                *px = [0, 0, 0, 0];
+            } else if alpha != 255 {
+                for channel in px.iter_mut().take(3) {
+                    *channel = ((u16::from(*channel) * 255 + u16::from(alpha) / 2)
+                        / u16::from(alpha))
+                    .min(255) as u8;
+                }
+            }
+        }
+    }
+
+    /// アルファを掛けた RGBA にする。
+    pub fn render_raw(&mut self, scene: &Scene, width: u32, height: u32, out: &mut Vec<u8>) {
         out.clear();
         let (Ok(width), Ok(height)) = (u16::try_from(width), u16::try_from(height)) else {
             return;
@@ -723,17 +804,77 @@ impl Renderer {
             return;
         };
         ctx.render(pixmap, resources);
-        for px in out.as_chunks_mut::<4>().0 {
-            let alpha = px[3];
-            if alpha == 0 {
-                *px = [0, 0, 0, 0];
-            } else if alpha != 255 {
-                for channel in px.iter_mut().take(3) {
-                    *channel = ((u16::from(*channel) * 255 + u16::from(alpha) / 2)
-                        / u16::from(alpha))
-                    .min(255) as u8;
-                }
+    }
+}
+
+impl Scene {
+    /// 画面の canvas が、canvas を貼るだけ（`drawImage` で拡大・縮小と平行移動だけ）なら、貼った canvas の並び。
+    /// 絵は中身が変わったときだけ描けば済み、動かすのは置く位置だけになる。ほかの描き方が混じれば `None`。
+    pub fn sprites(&self) -> Option<Vec<Sprite>> {
+        let [
+            Op::Scene {
+                transform: outer,
+                scene: root,
+            },
+        ] = self.ops.as_slice()
+        else {
+            return None;
+        };
+        let upright = |m: &Affine| {
+            let [a, b, c, d, _, _] = m.as_coeffs();
+            b == 0.0 && c == 0.0 && a > 0.0 && d > 0.0
+        };
+        let mut sprites = Vec::new();
+        let mut ops = root.ops.iter();
+        loop {
+            let (layer, placed, pop) = match (ops.next(), ops.next(), ops.next()) {
+                (None, _, _) => return Some(sprites),
+                (Some(layer), Some(placed), Some(pop)) => (layer, placed, pop),
+                _ => return None,
+            };
+            let (
+                Op::Layer {
+                    transform,
+                    clip,
+                    blend,
+                    alpha,
+                },
+                Op::Scene {
+                    transform: placed,
+                    scene,
+                },
+                Op::Pop,
+            ) = (layer, placed, pop)
+            else {
+                return None;
+            };
+            let from = scene.from?;
+            let normal = BlendMode::new(Mix::Normal, Compose::SrcOver);
+            let at = *outer * *placed;
+            let clipped = *outer * *transform;
+            if *blend != normal || !upright(&at) || !upright(&clipped) {
+                return None;
             }
+            let [sx, _, _, sy, x, y] = at.as_coeffs();
+            let (width, height) = (from.width * sx, from.height * sy);
+            let pixels = (width.ceil() as u32, height.ceil() as u32);
+            if pixels.0 == 0 || pixels.1 == 0 || pixels.0 > 1 << 14 || pixels.1 > 1 << 14 {
+                continue;
+            }
+            let bound = clipped.transform_rect_bbox(clip.bounding_box());
+            sprites.push(Sprite {
+                key: (from.canvas, from.version, pixels.0, pixels.1),
+                scene: scene.clone(),
+                scale: (sx, sy),
+                at: [x as f32, y as f32, width as f32, height as f32],
+                clip: [
+                    bound.x0 as f32,
+                    bound.y0 as f32,
+                    bound.width() as f32,
+                    bound.height() as f32,
+                ],
+                alpha: *alpha,
+            });
         }
     }
 }
@@ -892,6 +1033,43 @@ mod tests {
         let mut path = Canvas::new(10.0, 10.0);
         path.arc(0.0, 0.0, 1e300, 0.0, 6.0, false);
         assert!(path.path.elements().len() <= PATH_MOST);
+    }
+
+    #[test]
+    fn a_screen_of_pasted_canvases_splits_into_sprites() {
+        let mut comment = Canvas::new(100.0, 50.0);
+        comment.state.fill = colour("#ff0000");
+        comment.fill_rect(0.0, 0.0, 100.0, 50.0);
+        let mut screen = Canvas::new(1920.0, 1080.0);
+        screen.draw_canvas_at(&comment, 10.5, 20.0, None);
+        let sprites = screen.scene_for(960.0, 540.0).sprites().unwrap();
+        assert_eq!(sprites.len(), 1);
+        assert_eq!(sprites[0].size(), (50, 25));
+        assert_eq!(sprites[0].at, [5.25, 10.0, 50.0, 25.0]);
+        let first = sprites[0].key;
+        let mut renderer = Renderer::default();
+        let rgba = sprites[0].render(&mut renderer);
+        assert_eq!(rgba.len(), 50 * 25 * 4);
+        assert_eq!(&rgba[..4], &[255, 0, 0, 255]);
+
+        // 同じ絵を別の場所に貼り直しても、絵は描き直さなくてよい。
+        screen.reset();
+        screen.draw_canvas_at(&comment, 300.0, 20.0, None);
+        assert_eq!(
+            screen.scene_for(960.0, 540.0).sprites().unwrap()[0].key,
+            first
+        );
+        comment.fill_rect(0.0, 0.0, 1.0, 1.0);
+        screen.reset();
+        screen.draw_canvas_at(&comment, 300.0, 20.0, None);
+        assert_ne!(
+            screen.scene_for(960.0, 540.0).sprites().unwrap()[0].key,
+            first
+        );
+
+        // 画面に直に描いた物が混じれば分けない。
+        screen.fill_rect(0.0, 0.0, 1.0, 1.0);
+        assert!(screen.scene_for(960.0, 540.0).sprites().is_none());
     }
 
     #[test]

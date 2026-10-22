@@ -4,6 +4,7 @@
 //! `layer` hook：レイヤーのプラグイン一つを読み込む。番号 1 の canvas はレイヤー自体。
 //! Javy のモジュール向けに WASI p1 の最小限を提供する。
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use wasmtime::{Caller, Linker, TypedFunc};
@@ -20,6 +21,8 @@ pub(crate) struct Draw {
     canvases: Slots<Canvas>,
     fonts: crate::draw::Fonts,
     began: Instant,
+    /// プラグインに見せる今の時刻（[`LayerInstance::set_clock`]）。無ければ実時間。
+    clock: Option<Instant>,
 }
 
 const ROOT: u32 = 1;
@@ -32,6 +35,7 @@ impl Draw {
             canvases,
             fonts: crate::draw::Fonts::new(fonts),
             began: Instant::now(),
+            clock: None,
         }
     }
 
@@ -291,7 +295,10 @@ pub(crate) fn link(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
         abi::import::LAYER,
         "now_ms",
         |mut caller: Caller<'_, HostState>| -> f64 {
-            draw(&mut caller).map_or(0.0, |d| d.began.elapsed().as_secs_f64() * 1000.0)
+            draw(&mut caller).map_or(0.0, |d| {
+                let now = d.clock.unwrap_or_else(Instant::now);
+                now.saturating_duration_since(d.began).as_secs_f64() * 1000.0
+            })
         },
     )?;
     linker.func_wrap(abi::import::LAYER, "unix_ms", || -> f64 {
@@ -526,7 +533,32 @@ impl std::fmt::Display for Exit {
 
 impl std::error::Error for Exit {}
 
-pub type Painted = Option<(crate::layer::Frame, Vec<u8>)>;
+pub type Painted = Option<(crate::layer::Frame, Picture)>;
+
+#[derive(Debug)]
+pub enum Picture {
+    /// アルファで割った RGBA。
+    Rgba(Vec<u8>),
+    /// 貼った canvas の並び（[`crate::draw::Scene::sprites`]）。下から順に重ねる。
+    Sprites(Vec<Placed>),
+}
+
+/// 置いた絵。座標は `Frame` の幅×高さの画素。
+#[derive(Debug, Clone)]
+pub struct Placed {
+    pub image: Arc<SpriteImage>,
+    pub at: [f32; 4],
+    pub clip: [f32; 4],
+    pub alpha: f32,
+}
+
+#[derive(Debug)]
+pub struct SpriteImage {
+    pub width: u32,
+    pub height: u32,
+    /// アルファを掛けた RGBA。
+    pub rgba: Vec<u8>,
+}
 
 pub struct LayerInstance {
     name: String,
@@ -540,6 +572,8 @@ pub struct LayerInstance {
     events: TypedFunc<u32, u32>,
     drop: TypedFunc<u32, ()>,
     renderer: crate::draw::Renderer,
+    /// 描いた絵。中身が変わらない間は描き直さない。
+    sprites: std::collections::HashMap<(u64, u64, u32, u32), Arc<SpriteImage>>,
 }
 
 impl std::fmt::Debug for LayerInstance {
@@ -589,6 +623,7 @@ impl LayerInstance {
             events,
             drop,
             renderer: crate::draw::Renderer::default(),
+            sprites: std::collections::HashMap::new(),
         })
     }
 
@@ -651,6 +686,14 @@ impl LayerInstance {
         self.check(abi::export::LAYER_MESSAGE, called)
     }
 
+    /// プラグインの `now_ms` が返す時刻を固定する（`None` で実時間に戻す）。画面を提示した時刻を渡せば、
+    /// 時刻で動かすアニメーションが提示の間隔にきっちり揃う（スレッドが起きる遅れで揺れない）。
+    pub fn set_clock(&mut self, at: Option<Instant>) {
+        if let Some(draw) = self.made.store.data_mut().draw.as_mut() {
+            draw.clock = at;
+        }
+    }
+
     pub fn tick(&mut self) -> Result<crate::layer::Ticked, String> {
         self.alive()?;
         let called = self.tick.call(self.made.armed(), self.handle);
@@ -662,8 +705,9 @@ impl LayerInstance {
         Ok(crate::layer::from_json(&bytes).unwrap_or_default())
     }
 
-    /// `Some(None)` は消えた。canvas のレイヤーは `area` の RGBA にする。
-    pub fn frame(&mut self, area: (u32, u32)) -> Result<Option<Painted>, String> {
+    /// `Some(None)` は消えた。canvas のレイヤーは `area` の大きさにする。`sprites` なら、canvas を貼るだけの
+    /// 画面は貼った絵の並びにし（絵は変わったときだけ描く）、そうでなければ RGBA にする。
+    pub fn frame(&mut self, area: (u32, u32), sprites: bool) -> Result<Option<Painted>, String> {
         self.alive()?;
         let called = self.frame.call(self.made.armed(), self.handle);
         let out = self.check(abi::export::LAYER_FRAME, called)?;
@@ -696,7 +740,7 @@ impl LayerInstance {
                     );
                     return Ok(Some(None));
                 }
-                Ok(Some(Some((frame, rgba.to_vec()))))
+                Ok(Some(Some((frame, Picture::Rgba(rgba.to_vec())))))
             }
             crate::layer::Source::Canvas => {
                 let Some(draw) = self.made.store.data().draw.as_ref() else {
@@ -704,16 +748,51 @@ impl LayerInstance {
                 };
                 let (width, height) = (area.0.max(1), area.1.max(1));
                 let scene = draw.root().scene_for(f64::from(width), f64::from(height));
-                let mut rgba = Vec::new();
-                self.renderer.render_into(&scene, width, height, &mut rgba);
                 frame.width = width;
                 frame.height = height;
                 if frame.size == (0.0, 0.0) {
                     frame.size = (draw.root().width() as f32, draw.root().height() as f32);
                 }
-                Ok(Some(Some((frame, rgba))))
+                if sprites && let Some(sprites) = scene.sprites() {
+                    let placed = self.place(&sprites);
+                    return Ok(Some(Some((frame, Picture::Sprites(placed)))));
+                }
+                self.sprites.clear();
+                let mut rgba = Vec::new();
+                self.renderer.render_into(&scene, width, height, &mut rgba);
+                Ok(Some(Some((frame, Picture::Rgba(rgba)))))
             }
         }
+    }
+
+    fn place(&mut self, sprites: &[crate::draw::Sprite]) -> Vec<Placed> {
+        let mut kept = std::collections::HashMap::with_capacity(sprites.len());
+        let placed = sprites
+            .iter()
+            .map(|sprite| {
+                let image = kept
+                    .get(&sprite.key)
+                    .or_else(|| self.sprites.get(&sprite.key))
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let (width, height) = sprite.size();
+                        Arc::new(SpriteImage {
+                            width,
+                            height,
+                            rgba: sprite.render(&mut self.renderer),
+                        })
+                    });
+                kept.insert(sprite.key, Arc::clone(&image));
+                Placed {
+                    image,
+                    at: sprite.at,
+                    clip: sprite.clip,
+                    alpha: sprite.alpha,
+                }
+            })
+            .collect();
+        self.sprites = kept;
+        placed
     }
 
     pub fn events(&mut self) -> Result<(Vec<crate::layer::Event>, Vec<Vec<u8>>), String> {
