@@ -65,6 +65,37 @@ fn write_u64(caller: &mut Caller<'_, HostState>, ptr: u32, v: u64) {
     write_guest(caller, ptr, &v.to_le_bytes());
 }
 
+/// guest のメモリーの `src` の RGBA を縮めて `dst` へ書く。範囲が外れるか重なれば偽。
+fn shrink(
+    caller: &mut Caller<'_, HostState>,
+    (src, src_w, src_h): (u32, u32, u32),
+    (dst, dst_w, dst_h): (u32, u32, u32),
+) -> bool {
+    let Some(memory) = guest_memory(caller) else {
+        return false;
+    };
+    let span = |at: u32, w: u32, h: u32| {
+        let len = (w as usize).checked_mul(h as usize)?.checked_mul(4)?;
+        Some((at as usize, (at as usize).checked_add(len)?))
+    };
+    let (Some(from), Some(to)) = (span(src, src_w, src_h), span(dst, dst_w, dst_h)) else {
+        return false;
+    };
+    let data = memory.data_mut(caller);
+    if from.1 > data.len() || to.1 > data.len() || (from.0 < to.1 && to.0 < from.1) {
+        return false;
+    }
+    let (rgba, out) = if from.0 < to.0 {
+        let (head, tail) = data.split_at_mut(to.0);
+        (&head[from.0..from.1], &mut tail[..to.1 - to.0])
+    } else {
+        let (head, tail) = data.split_at_mut(from.0);
+        (&tail[..from.1 - from.0], &mut head[to.0..to.1])
+    };
+    crate::image::shrink_into(rgba, (src_w, src_h), (dst_w, dst_h), out);
+    true
+}
+
 macro_rules! op {
     ($linker:ident, $name:literal, |$c:ident $(, $a:ident)*| $body:expr) => {
         $linker.func_wrap(
@@ -95,6 +126,24 @@ macro_rules! style {
 }
 
 pub(crate) fn link(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
+    linker.func_wrap(
+        abi::import::DRAW,
+        "shrink",
+        |mut caller: Caller<'_, HostState>,
+         src: u32,
+         src_w: u32,
+         src_h: u32,
+         dst: u32,
+         dst_w: u32,
+         dst_h: u32|
+         -> u32 {
+            u32::from(shrink(
+                &mut caller,
+                (src, src_w, src_h),
+                (dst, dst_w, dst_h),
+            ))
+        },
+    )?;
     linker.func_wrap(
         abi::import::DRAW,
         "canvas_new",

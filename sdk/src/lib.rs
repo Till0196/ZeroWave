@@ -9,6 +9,7 @@ pub mod control;
 #[cfg(feature = "host")]
 pub mod draw;
 pub mod fonts;
+pub mod image;
 pub mod layer;
 pub mod net;
 pub mod plug;

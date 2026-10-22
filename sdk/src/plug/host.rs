@@ -90,6 +90,20 @@ mod wasm {
         pub safe fn monotonic_ms() -> f64;
     }
 
+    // guest のメモリーの `dst` へ書くので safe にしない。
+    #[link(wasm_import_module = "zw_draw_v1")]
+    unsafe extern "C" {
+        #[link_name = "shrink"]
+        pub fn draw_shrink(
+            src: *const u8,
+            src_w: u32,
+            src_h: u32,
+            dst: *mut u8,
+            dst_w: u32,
+            dst_h: u32,
+        ) -> u32;
+    }
+
     #[link(wasm_import_module = "zw_cfg_v1")]
     unsafe extern "C" {
         #[link_name = "get"]
@@ -458,6 +472,26 @@ pub fn cfgs() -> Vec<(String, String)> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     local::all()
+}
+
+/// [`crate::image::shrink`] を本体で行う。
+pub fn shrink(rgba: &[u8], from: (u32, u32), to: (u32, u32)) -> Vec<u8> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mut out = vec![0u8; to.0 as usize * to.1 as usize * 4];
+        if rgba.len() >= from.0 as usize * from.1 as usize * 4 {
+            // SAFETY: `rgba` は `from` の大きさ以上あり、`out` はちょうど `to` の大きさで、重ならない。
+            let done = unsafe {
+                wasm::draw_shrink(rgba.as_ptr(), from.0, from.1, out.as_mut_ptr(), to.0, to.1)
+            };
+            if done == 1 {
+                return out;
+            }
+        }
+        crate::image::shrink(rgba, from, to)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::image::shrink(rgba, from, to)
 }
 
 /// `name` は `sans`・`mono`、`kind = "font"` のキー、OS のフォントフォルダー以下のパス、フォント名のどれか。
