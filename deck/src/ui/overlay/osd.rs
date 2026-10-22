@@ -156,16 +156,17 @@ impl State {
         self.event.start(prefs.fade);
     }
 
-    /// 選局や番組の切り替わりで出す。設定で出さない物は出さない。
+    /// 選局や番組の切り替わりで出す。設定で出さない物は出さない。番組の切り替わりで出すときも、局（ロゴ・名前）は
+    /// 選局と同じく出す。
     pub fn show_on(&mut self, prefs: Prefs, why: Why) {
-        if why == Why::Channel && prefs.look != Look::Off {
-            self.look = prefs.look;
-            self.channel.start(prefs.fade);
-        }
         let wanted = match why {
             Why::Channel => prefs.on_channel,
             Why::Event => prefs.on_event,
         };
+        if prefs.look != Look::Off && (why == Why::Channel || wanted) {
+            self.look = prefs.look;
+            self.channel.start(prefs.fade);
+        }
         if wanted {
             self.event.start(prefs.fade);
         }
@@ -677,6 +678,13 @@ mod tests {
         let mut state = State::default();
         state.show_on(channel_only, Why::Event);
         assert!(!state.is_shown(), "番組変更時に表示しない");
+        let mut state = State::default();
+        state.show_on(prefs(), Why::Event);
+        assert_eq!(
+            state.shown().map(|shown| (shown.channel, shown.event)),
+            Some((1.0, 1.0)),
+            "番組変更時も局を出す"
+        );
         state.show_on(channel_only, Why::Channel);
         assert_eq!(state.shown().map(|shown| shown.event), Some(1.0));
 
