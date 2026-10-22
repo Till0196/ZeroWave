@@ -53,6 +53,8 @@ pub struct Deck {
     shown_broadcast: zwcore::data::Latest,
     shown_captions: zwcore::data::LatestCaptions,
     shown_layers: zwcore::layers::Latest,
+    /// 絵の並びのレイヤーを再生スレッドが GPU で重ねられるか。
+    present: zwcore::layers::Present,
     layer_textures: std::collections::BTreeMap<String, (usize, egui::TextureHandle)>,
     /// 字幕の言語の希望：0 切、1 第 1 言語、2 第 2 言語。
     captions_wanted: u8,
@@ -125,6 +127,7 @@ impl Deck {
         shown_broadcast: zwcore::data::Latest,
         shown_captions: zwcore::data::LatestCaptions,
         shown_layers: zwcore::layers::Latest,
+        present: zwcore::layers::Present,
         fit_window: bool,
         knobs: Knobs,
     ) -> Self {
@@ -164,6 +167,7 @@ impl Deck {
             shown_broadcast,
             shown_captions,
             shown_layers,
+            present,
             layer_textures: std::collections::BTreeMap::new(),
             captions_wanted,
             broadcast_textures: ui::panes::databroadcast::Textures::default(),

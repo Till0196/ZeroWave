@@ -165,14 +165,15 @@ impl Composer {
                     .filter(|layer| (from..to).contains(&layer.place.order()))
                     .filter(|layer| include(&plugin_key(&layer.name)))
                 {
-                    let key = Arc::as_ptr(&layer.image) as usize;
+                    let image = layer.image();
+                    let key = Arc::as_ptr(image) as usize;
                     used.insert(layer.name.clone());
                     let handle = match textures.get_mut(&layer.name) {
                         Some((had, handle)) if *had == key => handle.clone(),
                         _ => {
                             let handle = ctx.load_texture(
                                 format!("キャプチャのレイヤー {}", layer.name),
-                                crate::ui::rgba_image(&layer.image),
+                                crate::ui::rgba_image(image),
                                 egui::TextureOptions::LINEAR,
                             );
                             textures.insert(layer.name.clone(), (key, handle.clone()));

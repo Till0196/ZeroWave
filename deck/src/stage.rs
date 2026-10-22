@@ -267,6 +267,8 @@ pub struct Boot {
     pub out: Sender<FromStage>,
     pub presented: Arc<Presented>,
     pub broadcast: SyncSender<ToBroadcast>,
+    /// プラグインのレイヤーと共有する物。絵の並びは提示の直前に重ねる。
+    pub present: zwcore::layers::Present,
 }
 
 impl std::fmt::Debug for Boot {
@@ -309,6 +311,7 @@ pub struct Stage {
     out: Sender<FromStage>,
     presented: Arc<Presented>,
     broadcast: SyncSender<ToBroadcast>,
+    present: zwcore::layers::Present,
     told_broadcast: Option<zwsdk::layer::Broadcast>,
     told_clock: Option<zwcore::guide::Moment>,
     told_scene: Option<SceneMark>,

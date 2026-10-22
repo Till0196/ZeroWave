@@ -5,8 +5,9 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use zwsdk::host::{Io, LayerInstance, Plugin};
@@ -20,12 +21,135 @@ use crate::wake::Waker;
 const REOPEN_FIRST: Duration = Duration::from_secs(1);
 const REOPEN_MOST: Duration = Duration::from_secs(30);
 
+/// 提示の合図がこれだけ来なければ、レイヤーは自分の時計で回る。
+const BEAT_LOST: Duration = Duration::from_millis(100);
+
 #[derive(Debug)]
 pub struct Layer {
     pub name: String,
+    /// レイヤーのスレッドごとに一つ。
+    pub id: u64,
     pub place: Place,
     pub frame: Frame,
-    pub image: Arc<Rgba>,
+    pub picture: Picture,
+}
+
+#[derive(Debug)]
+pub enum Picture {
+    Image(Arc<Rgba>),
+    /// 貼った絵の並び（`frame` の幅×高さの画素）。提示する側が GPU で重ねる。重ねられない所は [`Layer::image`]。
+    Sprites {
+        sprites: Vec<zwsdk::host::Placed>,
+        image: OnceLock<Arc<Rgba>>,
+    },
+}
+
+impl Layer {
+    /// 画像。絵の並びなら、初めて求められたときに CPU で重ねる。
+    pub fn image(&self) -> &Arc<Rgba> {
+        match &self.picture {
+            Picture::Image(image) => image,
+            Picture::Sprites { sprites, image } => image
+                .get_or_init(|| Arc::new(compose(sprites, self.frame.width, self.frame.height))),
+        }
+    }
+
+    pub fn sprites(&self) -> Option<&[zwsdk::host::Placed]> {
+        match &self.picture {
+            Picture::Image(_) => None,
+            Picture::Sprites { sprites, .. } => Some(sprites),
+        }
+    }
+}
+
+/// 絵の並びを CPU で重ねて、アルファで割った RGBA にする（置く位置は画素に丸める）。
+fn compose(sprites: &[zwsdk::host::Placed], width: u32, height: u32) -> Rgba {
+    let (w, h) = (width as usize, height as usize);
+    let mut out = vec![0f32; w * h * 4];
+    for sprite in sprites {
+        let image = &sprite.image;
+        let [x, y, sw, sh] = sprite.at;
+        let [cx, cy, cw, ch] = sprite.clip;
+        let left = (x.max(cx).max(0.0).round() as usize).min(w);
+        let top = (y.max(cy).max(0.0).round() as usize).min(h);
+        let right = ((x + sw).min(cx + cw).round().max(0.0) as usize).min(w);
+        let bottom = ((y + sh).min(cy + ch).round().max(0.0) as usize).min(h);
+        for row in top..bottom {
+            let v = (((row as f32 + 0.5 - y) / sh) * image.height as f32) as usize;
+            for column in left..right {
+                let u = (((column as f32 + 0.5 - x) / sw) * image.width as f32) as usize;
+                if u >= image.width as usize || v >= image.height as usize {
+                    continue;
+                }
+                let from = (v * image.width as usize + u) * 4;
+                let into = (row * w + column) * 4;
+                let src = &image.rgba[from..from + 4];
+                let a = f32::from(src[3]) / 255.0 * sprite.alpha;
+                for channel in 0..3 {
+                    out[into + channel] = f32::from(src[channel]) / 255.0 * sprite.alpha
+                        + out[into + channel] * (1.0 - a);
+                }
+                out[into + 3] = a + out[into + 3] * (1.0 - a);
+            }
+        }
+    }
+    let rgba = out
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|px| {
+            let a = px[3];
+            let un = |c: f32| {
+                if a > 0.0 {
+                    ((c / a).min(1.0) * 255.0).round() as u8
+                } else {
+                    0
+                }
+            };
+            [un(px[0]), un(px[1]), un(px[2]), (a * 255.0).round() as u8]
+        })
+        .collect();
+    Rgba::new(width, height, rgba)
+}
+
+/// 画面を提示するスレッドとレイヤーのスレッドが共有する物。
+#[derive(Debug, Clone, Default)]
+pub struct Present {
+    beats: Arc<Mutex<Vec<Sender<ToLayer>>>>,
+    sprites: Arc<AtomicBool>,
+    published: Arc<AtomicU64>,
+}
+
+impl Present {
+    /// 画面を提示した。`at` はその垂直同期の時刻（サーフェスを取得できた時）。レイヤーはこれを合図に次の一枚を
+    /// 作り、プラグインにはこの時刻を今の時刻として見せる（時刻で動かす絵が提示の間隔に揃う）。
+    pub fn beat(&self, at: Instant) {
+        self.beats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|to| to.send(ToLayer::Beat(at)).is_ok());
+    }
+
+    /// 提示する側が絵の並び（[`Picture::Sprites`]）を重ねられるか。
+    pub fn set_sprites(&self, can: bool) {
+        self.sprites.store(can, Ordering::Relaxed);
+    }
+
+    pub fn sprites(&self) -> bool {
+        self.sprites.load(Ordering::Relaxed)
+    }
+
+    /// 表示中のレイヤーを出し直した回数（変わったかを見る。`Latest` のアドレスは使い回されることがある）。
+    pub fn published(&self) -> u64 {
+        self.published.load(Ordering::Acquire)
+    }
+
+    fn join(&self, to: Sender<ToLayer>) {
+        self.beats
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(to);
+    }
 }
 
 /// 画面と共有する、表示中のレイヤー。[`Place::order`] の順。データ放送のレイヤーは入らない。
@@ -34,6 +158,7 @@ pub type Latest = Arc<Mutex<Arc<Vec<Arc<Layer>>>>>;
 #[derive(Debug)]
 pub enum ToLayer {
     Message(Message, Vec<u8>),
+    Beat(Instant),
     Quit,
 }
 
@@ -109,6 +234,7 @@ pub struct Setup {
     pub cfg: BTreeMap<String, String>,
     /// レイヤーの座標系のサイズ。レイアウトは 1920×1080 で書く。
     pub size: (u32, u32),
+    pub present: Present,
 }
 
 impl std::fmt::Debug for Setup {
@@ -118,6 +244,7 @@ impl std::fmt::Debug for Setup {
             .field("nvram", &self.nvram)
             .field("cfg", &self.cfg)
             .field("size", &self.size)
+            .field("present", &self.present)
             .finish()
     }
 }
@@ -146,11 +273,14 @@ impl Spawner {
         }
         let manifest = plugin.layer_manifest().clone();
         let place = manifest.place();
+        static IDS: AtomicU64 = AtomicU64::new(1);
         let (to, rx) = channel();
         let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let name = plugin.name().to_owned();
         let thread = Worker {
             name: name.clone(),
+            id: IDS.fetch_add(1, Ordering::Relaxed),
+            shown: std::cell::Cell::new(None),
             queued: Arc::clone(&queued),
             place,
             own: plugins.io_for(plugin),
@@ -173,6 +303,7 @@ impl Spawner {
             tracing::warn!("レイヤー {name} のスレッドを起動できない: {error}");
             return None;
         }
+        self.setup.present.join(to.clone());
         Some(Run {
             name,
             place,
@@ -230,12 +361,27 @@ pub fn spawn_all(
     (runs, latest, broadcast, spawner)
 }
 
+/// 画面の作り方に関わる絵の形（幅・高さ・座標系の大きさ・縦横比）。
+type Shape = (u32, u32, (u32, u32), Option<u32>);
+
+fn shape(frame: &Frame) -> Shape {
+    (
+        frame.width,
+        frame.height,
+        (frame.size.0.to_bits(), frame.size.1.to_bits()),
+        frame.aspect.map(f32::to_bits),
+    )
+}
+
 fn is_key(message: &ToLayer) -> bool {
     matches!(message, ToLayer::Message(Message::Key(_), _))
 }
 
 struct Worker {
     name: String,
+    id: u64,
+    /// 最後に出した絵の並びの形（同じ形の間は画面を作り直さなくてよい）。
+    shown: std::cell::Cell<Option<Shape>>,
     place: Place,
     queued: Arc<std::sync::atomic::AtomicUsize>,
     plugin: Arc<Plugin>,
@@ -324,29 +470,52 @@ impl Worker {
         // 再起動は重いので、間隔を延ばしていく。
         let mut reopen_after: Option<Instant> = None;
         let mut reopen_wait = REOPEN_FIRST;
+        // 提示の合図が来ている間は合図で一枚作り、来なくなったら自分の時計で作る。
+        let mut beaten: Option<Instant> = None;
+        // 合図で最後に作った時の、合図の時刻。
+        let mut beat_made: Option<Instant> = None;
         loop {
-            let wait = self.interval.saturating_sub(ticked.elapsed());
+            let wait = if beaten.is_some_and(|at| at.elapsed() < BEAT_LOST) {
+                BEAT_LOST
+            } else {
+                self.interval.saturating_sub(ticked.elapsed())
+            };
             let mut hurry = false;
-            match from.recv_timeout(wait) {
+            let mut beat = false;
+            let mut next = match from.recv_timeout(wait) {
                 Err(RecvTimeoutError::Disconnected) => return,
-                Ok(message) => {
-                    hurry |= is_key(&message);
-                    if !self.take(&mut layer, &mut area, message) {
-                        return;
-                    }
+                Ok(message) => Some(message),
+                Err(RecvTimeoutError::Timeout) => None,
+            };
+            while let Some(message) = next.take().or_else(|| from.try_recv().ok()) {
+                if let ToLayer::Beat(at) = message {
+                    beaten = Some(at);
+                    beat = true;
+                    continue;
                 }
-                Err(RecvTimeoutError::Timeout) => {}
-            }
-            while let Ok(message) = from.try_recv() {
                 hurry |= is_key(&message);
                 if !self.take(&mut layer, &mut area, message) {
                     return;
                 }
             }
-            if !hurry && ticked.elapsed() < self.interval {
+            let clock = beaten.filter(|at| at.elapsed() < BEAT_LOST);
+            let due = match clock {
+                // 提示の間隔の揺れで一回飛ばさないよう、少し早くても作る。
+                Some(at) => {
+                    beat && beat_made.is_none_or(|made| {
+                        at.saturating_duration_since(made) + self.interval / 4 >= self.interval
+                    })
+                }
+                None => ticked.elapsed() >= self.interval,
+            };
+            if !hurry && !due {
                 continue;
             }
             ticked = Instant::now();
+            if due && clock.is_some() {
+                beat_made = clock;
+            }
+            layer.set_clock(clock);
             if reopen_after.is_some_and(|at| ticked < at) {
                 continue;
             }
@@ -404,12 +573,21 @@ impl Worker {
         {
             nvram::save(self.setup.nvram.as_deref(), &nvram.into_iter().collect());
         }
-        match layer.frame(area) {
+        let sprites = self.place != Place::At(Slot::Databroadcast) && self.setup.present.sprites();
+        match layer.frame(area, sprites) {
             Ok(None) => {}
             Ok(Some(None)) => self.publish(None),
-            Ok(Some(Some((frame, rgba)))) => {
-                let image = Arc::new(Rgba::new(frame.width, frame.height, rgba));
-                self.publish(Some((frame, image)));
+            Ok(Some(Some((frame, picture)))) => {
+                let picture = match picture {
+                    zwsdk::host::Picture::Rgba(rgba) => {
+                        Picture::Image(Arc::new(Rgba::new(frame.width, frame.height, rgba)))
+                    }
+                    zwsdk::host::Picture::Sprites(sprites) => Picture::Sprites {
+                        sprites,
+                        image: OnceLock::new(),
+                    },
+                };
+                self.publish(Some((frame, picture)));
             }
             Err(error) => return self.fell(error),
         }
@@ -447,9 +625,18 @@ impl Worker {
         true
     }
 
-    fn publish(&self, painted: Option<(Frame, Arc<Rgba>)>) {
+    fn publish(&self, painted: Option<(Frame, Picture)>) {
         if self.place == Place::At(Slot::Databroadcast) {
-            let shown = painted.map(|(frame, page)| {
+            let shown = painted.map(|(frame, picture)| {
+                let layer = Layer {
+                    name: String::new(),
+                    id: self.id,
+                    place: self.place,
+                    frame,
+                    picture,
+                };
+                let page = Arc::clone(layer.image());
+                let frame = layer.frame;
                 Arc::new(crate::data::Shown {
                     size: frame.size,
                     aspect: frame.aspect,
@@ -469,16 +656,28 @@ impl Worker {
                 .filter(|layer| layer.name != self.name)
                 .cloned()
                 .collect();
-            if let Some((frame, image)) = painted {
+            // 絵の並びは提示する側が提示のたびに読んで重ねるので、形が変わらなければ画面は作り直さなくてよい。
+            let now = painted
+                .as_ref()
+                .filter(|(_, picture)| matches!(picture, Picture::Sprites { .. }))
+                .map(|(frame, _)| shape(frame));
+            let quiet = now.is_some() && self.shown.get() == now;
+            self.shown.set(now);
+            if let Some((frame, picture)) = painted {
                 layers.push(Arc::new(Layer {
                     name: self.name.clone(),
+                    id: self.id,
                     place: self.place,
                     frame,
-                    image,
+                    picture,
                 }));
                 layers.sort_by_key(|layer| layer.place.order());
             }
             *latest = Arc::new(layers);
+            self.setup.present.published.fetch_add(1, Ordering::Release);
+            if quiet {
+                return;
+            }
         }
         (self.setup.wake)();
     }

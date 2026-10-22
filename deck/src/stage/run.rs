@@ -241,10 +241,14 @@ impl Stage {
         if self.backdrop(tick.did) == scene::Backdrop::Black {
             blackout(&gpu.device, &gpu.queue, &view);
         }
+        // 画面を別のスレッドが合成するときは、プラグインのレイヤーの絵の並びは CPU で重ねてもらう。
+        self.present
+            .set_sprites(!self.split() && self.mixer.is_some());
         // 待たない（画面が 1 フレーム遅れても、映像は待たない）。
         if !self.split()
             && let (Some(mixer), Some(drawn)) = (self.mixer.as_mut(), self.drawn.as_mut())
         {
+            mixer.notice(&self.present);
             mixer.draw(&gpu.device, &gpu.queue, &frame.texture, size, drawn);
         }
         if !self.split() {
@@ -254,6 +258,7 @@ impl Stage {
         let whole = self.split() || self.drawn.as_ref().is_none_or(|drawn| drawn.size == size);
         // 取ったサーフェスは必ず出す。
         gpu.queue.present(frame);
+        self.present.beat(got);
         self.presented.say(size, whole);
         let presented = Instant::now();
         self.spent.present += presented - painted;

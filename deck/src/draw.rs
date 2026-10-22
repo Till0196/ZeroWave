@@ -12,6 +12,7 @@ pub mod gles;
 pub mod layer;
 pub mod monitor;
 pub mod overlay;
+pub mod sprites;
 
 /// wgpu のインスタンス。別ウィンドウと共有する（別のインスタンスで作ったサーフェスは使えない）。
 pub fn instance_of(backends: Option<wgpu::Backends>) -> wgpu::Instance {

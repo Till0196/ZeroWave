@@ -79,6 +79,8 @@ pub struct Mixer {
     sheet: Sheet,
     area: Option<[u32; 4]>,
     blank: bool,
+    /// 最後に重ねたプラグインのレイヤー（[`zwcore::layers::Present::published`]）。変われば画面を貼り直す。
+    layers: u64,
 }
 
 impl std::fmt::Debug for Mixer {
@@ -94,15 +96,26 @@ impl Mixer {
         space: Space,
         white: f32,
     ) -> Self {
+        let mut renderer =
+            egui_wgpu::Renderer::new(device, Sheet::FORMAT, egui_wgpu::RendererOptions::default());
+        renderer
+            .callback_resources
+            .insert(super::sprites::Target(Sheet::FORMAT));
         Self {
-            renderer: egui_wgpu::Renderer::new(
-                device,
-                Sheet::FORMAT,
-                egui_wgpu::RendererOptions::default(),
-            ),
+            renderer,
             sheet: Sheet::new(device, target, space, white, (1, 1)),
             area: None,
             blank: true,
+            layers: 0,
+        }
+    }
+
+    /// プラグインのレイヤーが変わったら、次の [`Self::draw`] で画面ごと貼り直す（絵の並びは描くときに読む）。
+    pub fn notice(&mut self, present: &zwcore::layers::Present) {
+        let now = present.published();
+        if now != self.layers {
+            self.layers = now;
+            self.blank = true;
         }
     }
 

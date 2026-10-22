@@ -135,6 +135,7 @@ pub struct Handles {
     pub broadcast: Latest,
     pub captions: LatestCaptions,
     pub layers: layers::Latest,
+    pub present: layers::Present,
 }
 
 const LAYER_SIZE: (u32, u32) = (1920, 1080);
@@ -143,12 +144,14 @@ pub fn spawn(config: Config) -> Handles {
     let (to, from) = sync_channel(256);
     let captions: LatestCaptions = Arc::new(Mutex::new(None));
     let (from_layers, replies) = channel();
+    let present = layers::Present::default();
     let setup = layers::Setup {
         wake: Arc::clone(&config.wake),
         sound: config.sound.clone(),
         nvram: config.nvram.clone(),
         cfg: config.cfg.clone(),
         size: LAYER_SIZE,
+        present: present.clone(),
     };
     // 後から追加されたレイヤーを起動するため、プラグインが無くても起動の仕組みは作る。
     let (runs, latest_layers, broadcast, spawner) = layers::spawn_all(
@@ -179,6 +182,7 @@ pub fn spawn(config: Config) -> Handles {
         broadcast,
         captions,
         layers: latest_layers,
+        present,
     }
 }
 

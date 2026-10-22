@@ -279,21 +279,29 @@ impl Deck {
             .iter()
             .filter(|layer| (from..to).contains(&layer.place.order()))
         {
-            let key = Arc::as_ptr(&layer.image) as usize;
+            if layer.sprites().is_some() && self.present.sprites() {
+                painter.add(egui_wgpu::Callback::new_paint_callback(
+                    video,
+                    crate::draw::sprites::Callback {
+                        layer: layer.id,
+                        latest: Arc::clone(&self.shown_layers),
+                    },
+                ));
+                continue;
+            }
+            let image = layer.image();
+            let key = Arc::as_ptr(image) as usize;
             let handle = match self.layer_textures.get_mut(&layer.name) {
                 Some((had, handle)) if *had == key => handle.clone(),
                 Some((had, handle)) => {
-                    handle.set(
-                        crate::ui::rgba_image(&layer.image),
-                        egui::TextureOptions::LINEAR,
-                    );
+                    handle.set(crate::ui::rgba_image(image), egui::TextureOptions::LINEAR);
                     *had = key;
                     handle.clone()
                 }
                 None => {
                     let handle = ctx.load_texture(
                         format!("レイヤー {}", layer.name),
-                        crate::ui::rgba_image(&layer.image),
+                        crate::ui::rgba_image(image),
                         egui::TextureOptions::LINEAR,
                     );
                     self.layer_textures

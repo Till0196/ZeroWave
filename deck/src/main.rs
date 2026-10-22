@@ -903,6 +903,7 @@ fn run(mut player: Player, choices: Choices, live: Option<Live>, keep: sound::Ke
         broadcast: shown_broadcast,
         captions: shown_captions,
         layers: shown_layers,
+        present,
     } = zwcore::data::spawn(zwcore::data::Config {
         wake: waker.clone(),
         sound: player.sound_sender(),
@@ -924,6 +925,7 @@ fn run(mut player: Player, choices: Choices, live: Option<Live>, keep: sound::Ke
         shown_broadcast,
         shown_captions,
         shown_layers,
+        present.clone(),
         choices.fit_window,
         choices.knobs,
     );
@@ -949,6 +951,7 @@ fn run(mut player: Player, choices: Choices, live: Option<Live>, keep: sound::Ke
             out: from_stage_to,
             presented: std::sync::Arc::default(),
             broadcast: to_broadcast,
+            present,
         },
         instance,
     };

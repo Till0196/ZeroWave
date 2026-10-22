@@ -387,6 +387,11 @@ pub fn direct() -> &'static str {
     &TEXT
 }
 
+/// プラグインのレイヤーの絵を画面の描画の中で重ねるパス（`vs`・`fs`）。
+pub fn sprites() -> &'static str {
+    include_str!("shader/sprites.wgsl")
+}
+
 /// PQ・HLG のサーフェスへリニア光で重ねるパス（`fs_over`）を足した物。
 pub fn over() -> &'static str {
     static TEXT: LazyLock<String> =
@@ -624,6 +629,7 @@ fn main(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
         validates("blit", blit());
         validates("direct", direct());
         validates("over", over());
+        validates("sprites", sprites());
     }
 
     #[test]

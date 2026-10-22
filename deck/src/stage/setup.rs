@@ -43,6 +43,7 @@ impl Stage {
             out: boot.out,
             presented: boot.presented,
             broadcast: boot.broadcast,
+            present: boot.present,
             told_broadcast: None,
             told_clock: None,
             told_scene: None,
