@@ -287,6 +287,61 @@ impl Pool {
             (format.width.div_ceil(2), format.height.div_ceil(2)),
             (format.width.div_ceil(2), format.height.div_ceil(2)),
         ];
+        // ウィーブするフレーム（[`super::weave`]）は自前のテクスチャに書く。16 ビットの正規化形式はレンダーターゲットに
+        // できないことがあるので、10 ビットは 32 ビットの浮動小数点で持つ。
+        if shape == Shape::Biplanar && format.woven {
+            let (luma, chroma) = if format.depth > 8 {
+                (
+                    wgpu::TextureFormat::R32Float,
+                    wgpu::TextureFormat::Rg32Float,
+                )
+            } else {
+                (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm)
+            };
+            let slots = (0..slots)
+                .map(|_| {
+                    let planes: Vec<wgpu::Texture> = [(sizes[0], luma), (sizes[1], chroma)]
+                        .into_iter()
+                        .map(|((width, height), format)| {
+                            device.create_texture(&wgpu::TextureDescriptor {
+                                label: Some("woven plane"),
+                                size: wgpu::Extent3d {
+                                    width,
+                                    height,
+                                    depth_or_array_layers: 1,
+                                },
+                                mip_level_count: 1,
+                                sample_count: 1,
+                                dimension: wgpu::TextureDimension::D2,
+                                format,
+                                usage: wgpu::TextureUsages::TEXTURE_BINDING
+                                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                view_formats: &[],
+                            })
+                        })
+                        .collect();
+                    let views = planes
+                        .iter()
+                        .map(|plane| plane.create_view(&wgpu::TextureViewDescriptor::default()))
+                        .collect();
+                    Slot {
+                        store: Store::Owned {
+                            planes,
+                            staging: Vec::new(),
+                        },
+                        views,
+                        keep: None,
+                    }
+                })
+                .collect();
+            return Ok(Self {
+                slots,
+                sizes,
+                bytes,
+                format,
+                shape,
+            });
+        }
         if shape == Shape::Biplanar {
             return Ok(Self {
                 slots: (0..slots)
@@ -354,12 +409,6 @@ impl Pool {
         self.shape
     }
 
-    #[cfg(any(
-        feature = "vaapi",
-        all(feature = "videotoolbox", target_vendor = "apple"),
-        all(feature = "d3d12", windows),
-        all(feature = "android", target_os = "android")
-    ))]
     pub(super) fn adopt(
         &mut self,
         slot: usize,
@@ -369,6 +418,13 @@ impl Pool {
         if let Some(slot) = self.slots.get_mut(slot) {
             slot.views = views;
             slot.keep = keep;
+        }
+    }
+
+    pub(super) fn owned(&self, slot: usize) -> Option<&[wgpu::Texture]> {
+        match &self.slots.get(slot)?.store {
+            Store::Owned { planes, .. } => Some(planes),
+            Store::Imported => None,
         }
     }
 

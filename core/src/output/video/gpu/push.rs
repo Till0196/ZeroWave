@@ -5,6 +5,11 @@
 
 use super::*;
 
+type Imported = (
+    Vec<wgpu::TextureView>,
+    Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
+);
+
 impl Video {
     /// Takes one decoded frame and says how many outputs it became; callers must not recompute it.
     /// Fails with [`Error::Full`] when every slot is spoken for.
@@ -14,7 +19,7 @@ impl Video {
 
     /// [`Video::push`] に、そのフレームがストリームの何フレーム目かを添えて（3:2 の位相は番号で判定する）。
     pub fn push_at(&mut self, picture: &Decoded, number: Option<u64>) -> Result<usize, Error> {
-        let about = picture.about();
+        let mut about = picture.about();
         let shape = match picture {
             Decoded::Planes(_) => Shape::Planar,
             Decoded::Surface(_) => Shape::Biplanar,
@@ -22,35 +27,85 @@ impl Video {
         if shape != self.shape {
             self.rebuild(self.format, self.settings, shape)?;
         }
+        let woven = about.format.field_pictures && self.format.woven;
+        let mut pair = None;
+        if woven {
+            let Decoded::Surface(surface) = picture else {
+                return Err(Error::Unsupported("a lone field in main memory"));
+            };
+            let began = Instant::now();
+            let (views, keep) = self.imported(surface, (self.format.width, about.format.height))?;
+            self.spent.upload += began.elapsed();
+            let top = match about.structure {
+                mediadecoder::es::Structure::Top => true,
+                mediadecoder::es::Structure::Bottom => false,
+                mediadecoder::es::Structure::Frame => {
+                    self.waiting.as_ref().is_none_or(|first| !first.top)
+                }
+            };
+            let field = weave::Field { views, keep, top };
+            // 同じパリティーが続いたら先のフィールドは捨てる（[`crate::decode::weave::Weaver`] と同じ）。
+            match self.waiting.take() {
+                Some(first) if first.top != top && self.schedule.free().is_some() => {
+                    pair = Some((first, field));
+                }
+                Some(first) if first.top != top => {
+                    self.waiting = Some(first);
+                    return Err(Error::Full);
+                }
+                _ => {
+                    self.waiting = Some(field);
+                    self.last_phases.clear();
+                    return Ok(0);
+                }
+            }
+        }
         let slot = self.schedule.free().ok_or(Error::Full)?;
         let began = Instant::now();
-        let index = number.unwrap_or(self.pushed);
+        let index = match number {
+            Some(number) if woven => number / 2,
+            Some(number) => number,
+            None => self.pushed,
+        };
         self.pushed += 1;
         let before = self.last_slot.replace(slot);
         self.slot_index[slot] = index;
-        self.lone[slot] = (about.format.field_pictures && about.structure.field())
-            .then(|| field::first_field(&about));
-        match picture {
-            Decoded::Planes(frame) => {
-                if frame.planes[0].width != self.format.width as usize
-                    || frame.planes[0].height != self.format.height as usize
-                {
-                    return Err(Error::Unsupported("the picture changed size"));
+        if let Some((first, second)) = pair {
+            about = crate::decode::About {
+                format: self.format,
+                structure: mediadecoder::es::Structure::Frame,
+                top_field_first: first.top,
+                repeat_first_field: false,
+                progressive: false,
+                ..about
+            };
+            self.device.poll(wgpu::PollType::Poll).ok();
+            self.weave_into(slot, first, second);
+        } else {
+            match picture {
+                Decoded::Planes(frame) => {
+                    if frame.planes[0].width != self.format.width as usize
+                        || frame.planes[0].height != self.format.height as usize
+                    {
+                        return Err(Error::Unsupported("the picture changed size"));
+                    }
+                    self.pool.write(
+                        &self.device,
+                        &self.queue,
+                        slot,
+                        frame,
+                        self.upload,
+                        &mut self.scratch,
+                    );
+                    self.device.poll(wgpu::PollType::Poll).ok();
                 }
-                self.pool.write(
-                    &self.device,
-                    &self.queue,
-                    slot,
-                    frame,
-                    self.upload,
-                    &mut self.scratch,
-                );
-                self.device.poll(wgpu::PollType::Poll).ok();
-            }
-            Decoded::Surface(surface) => {
-                // レンダリング完了の通知（`on_submitted_work_done`）は poll しないと届かない。
-                self.device.poll(wgpu::PollType::Poll).ok();
-                self.adopt(slot, surface)?;
+                Decoded::Surface(surface) => {
+                    // レンダリング完了の通知（`on_submitted_work_done`）は poll しないと届かない。
+                    self.device.poll(wgpu::PollType::Poll).ok();
+                    let (views, keep) =
+                        self.imported(surface, (self.format.width, self.format.height))?;
+                    self.pool.adopt(slot, views, keep);
+                }
             }
         }
         self.spent.upload += began.elapsed();
@@ -83,8 +138,43 @@ impl Video {
             field::plan(&about, self.settings.deinterlace)
         };
         let outputs = self.plan_outputs(plan.len());
+        // ウィーブしたフレームの出力の位置は、後のフィールドの時刻からフィールドの長さで数える（先のフィールドは -1）。
+        if woven {
+            for phase in &mut self.last_phases {
+                *phase = *phase * 2.0 - 1.0;
+            }
+        }
         self.schedule.hold(slot, plan);
         Ok(outputs)
+    }
+
+    fn weave_into(&mut self, slot: usize, first: weave::Field, second: weave::Field) {
+        let (top, bottom) = if first.top {
+            (&first, &second)
+        } else {
+            (&second, &first)
+        };
+        let Some(into) = self.pool.owned(slot) else {
+            return;
+        };
+        let weave = self
+            .weave
+            .get_or_insert_with(|| weave::Weave::new(&self.device));
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("weave"),
+            });
+        weave.run(&self.device, &mut encoder, &top.views, &bottom.views, into);
+        self.queue.submit([encoder.finish()]);
+        // 読み終えるまでデコーダーにフィールドのテクスチャを使わせない。
+        let kept: Vec<std::sync::Arc<dyn std::any::Any + Send + Sync>> =
+            [first.keep, second.keep].into_iter().flatten().collect();
+        if !kept.is_empty() {
+            self.queue.on_submitted_work_done(move || {
+                drop(kept);
+            });
+        }
     }
 
     /// 一フレームの出力を何回・どの位相でレンダリングするか決めてスケジュールに入れ、出力回数の合計を返す。
@@ -139,9 +229,13 @@ impl Video {
     }
 
     #[cfg(feature = "vaapi")]
-    fn adopt(&mut self, slot: usize, surface: &crate::decode::Surface) -> Result<(), Error> {
+    fn imported(
+        &mut self,
+        surface: &crate::decode::Surface,
+        size: (u32, u32),
+    ) -> Result<Imported, Error> {
         let crate::decode::Held::DmaBuf(buffer) = &surface.held;
-        if buffer.width != self.format.width || buffer.height != self.format.height {
+        if (buffer.width, buffer.height) != size {
             return Err(Error::Unsupported("the picture changed size"));
         }
         let import = self
@@ -153,8 +247,7 @@ impl Video {
             return Err(Error::Unsupported("a frame of the wrong number of planes"));
         }
         // スロットがこのフレームを持つ間、デコーダーにそのバッファを使わせない（V4L2 のみ。VA-API には無い）。
-        self.pool.adopt(slot, views, buffer.lease.clone());
-        Ok(())
+        Ok((views, buffer.lease.clone()))
     }
 
     #[cfg(all(
@@ -163,9 +256,13 @@ impl Video {
         not(feature = "vaapi"),
         not(all(feature = "android", target_os = "android"))
     ))]
-    fn adopt(&mut self, slot: usize, surface: &crate::decode::Surface) -> Result<(), Error> {
+    fn imported(
+        &mut self,
+        surface: &crate::decode::Surface,
+        size: (u32, u32),
+    ) -> Result<Imported, Error> {
         let crate::decode::Held::D3d12(frame) = &surface.held;
-        if frame.width != self.format.width || frame.height != self.format.height {
+        if (frame.width, frame.height) != size {
             return Err(Error::Unsupported("the picture changed size"));
         }
         let import = self
@@ -191,16 +288,19 @@ impl Video {
             }
         }
         // スロットがこのフレームを持つ間、デコーダーにそのテクスチャを使わせない（`decode::d3d12::Frame::lease`）。
-        self.pool.adopt(slot, views, frame.lease.clone());
-        Ok(())
+        Ok((views, frame.lease.clone()))
     }
 
     #[cfg(all(feature = "android", target_os = "android"))]
-    fn adopt(&mut self, slot: usize, surface: &crate::decode::Surface) -> Result<(), Error> {
+    fn imported(
+        &mut self,
+        surface: &crate::decode::Surface,
+        size: (u32, u32),
+    ) -> Result<Imported, Error> {
         let crate::decode::Held::HardwareBuffer(frame) = &surface.held else {
             return Err(Error::Unsupported("a picture of another platform"));
         };
-        if frame.width != self.format.width || frame.height != self.format.height {
+        if (frame.width, frame.height) != size {
             return Err(Error::Unsupported("the picture changed size"));
         }
         let import = self
@@ -211,8 +311,7 @@ impl Video {
         if views.len() != self.shape.textures() as usize {
             return Err(Error::Unsupported("a frame of the wrong number of planes"));
         }
-        self.pool.adopt(slot, views, None);
-        Ok(())
+        Ok((views, None))
     }
 
     #[cfg(all(
@@ -222,11 +321,15 @@ impl Video {
         not(all(feature = "d3d12", windows)),
         not(all(feature = "android", target_os = "android"))
     ))]
-    fn adopt(&mut self, slot: usize, surface: &crate::decode::Surface) -> Result<(), Error> {
+    fn imported(
+        &mut self,
+        surface: &crate::decode::Surface,
+        size: (u32, u32),
+    ) -> Result<Imported, Error> {
         let crate::decode::Held::VideoToolbox(frame) = &surface.held else {
             return Err(Error::Unsupported("a picture of another platform"));
         };
-        if frame.width != self.format.width || frame.height != self.format.height {
+        if (frame.width, frame.height) != size {
             return Err(Error::Unsupported("the picture changed size"));
         }
         let import = self
@@ -238,8 +341,7 @@ impl Video {
             return Err(Error::Unsupported("a frame of the wrong number of planes"));
         }
         // スロットが読む間はピクセルバッファを保持する（VideoToolbox が使い回してちらつかないよう）。
-        self.pool.adopt(slot, views, Some(keep));
-        Ok(())
+        Ok((views, Some(keep)))
     }
 
     #[cfg(not(any(
@@ -248,8 +350,12 @@ impl Video {
         all(feature = "d3d12", windows),
         all(feature = "android", target_os = "android")
     )))]
-    fn adopt(&mut self, slot: usize, surface: &crate::decode::Surface) -> Result<(), Error> {
-        let _ = (slot, surface);
+    fn imported(
+        &mut self,
+        surface: &crate::decode::Surface,
+        size: (u32, u32),
+    ) -> Result<Imported, Error> {
+        let _ = (surface, size);
         Err(Error::Unsupported("a picture the hardware still owns"))
     }
 
@@ -266,6 +372,7 @@ impl Video {
         }
         self.content = (0.0, 0.0);
         self.schedule.clear();
+        self.waiting = None;
         self.last_slot = None;
         self.sub = 0;
         self.pers.clear();

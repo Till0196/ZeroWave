@@ -52,6 +52,7 @@ mod reduce;
 mod setup;
 mod sheet;
 mod split;
+mod weave;
 
 pub use device::{lose_for_test, lost, mark_removed, matrices, removed};
 use pool::padded;
@@ -156,10 +157,9 @@ pub struct Video {
     import: Option<super::import::videotoolbox::Import>,
     pushed: u64,
     slot_index: Vec<u64>,
-    /// スロットのフレームが一枚で一フィールドなら、そのパリティー（HEVC の `field_seq_flag`）。
-    lone: Vec<Option<Parity>>,
-    /// 今見せているフレームの [`Video::lone`]。縦に伸ばすとき半行ずらす。
-    lone_shown: Option<Parity>,
+    /// ウィーブする相手を待っているフィールド。
+    waiting: Option<weave::Field>,
+    weave: Option<weave::Weave>,
     /// 変換のパスを飛ばし、表示のパスで直に読むフレーム（[`direct`]）。
     direct: Option<direct::Direct>,
     direct_layout: Option<wgpu::BindGroupLayout>,

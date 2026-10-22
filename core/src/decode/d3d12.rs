@@ -378,18 +378,19 @@ impl D3d12 {
         }
     }
 
-    /// デコードと同じスレッドでビデオプロセスに通してデインターレースする。
+    /// デコードと同じスレッドでビデオプロセスに通してデインターレースする。一枚が一フィールドのピクチャーは
+    /// レンダラーがウィーブしてからデインターレースするので通さない。
     fn processes(&self) -> bool {
         self.wants != crate::decode::VideoProcess::Off
             && !self.transfer
+            && !self.format.field_pictures
             && !self
                 .deinterlacer
                 .as_ref()
                 .is_some_and(process::Deinterlacer::refused)
     }
 
-    /// 一枚が一フィールドのピクチャーに、どちらのフィールドかを付ける（組まずに渡し、レンダラーが半行ずらして
-    /// 縦に伸ばす）。
+    /// 一枚が一フィールドのピクチャーに、どちらのフィールドかを付ける（レンダラーがウィーブする）。
     fn mark_field(&mut self, decoded: &mut Decoded) {
         let Decoded::Surface(surface) = decoded else {
             return;
@@ -424,7 +425,7 @@ impl D3d12 {
         } else {
             Some([frame.width, frame.height])
         };
-        let output = output.filter(|_| self.processes() && !about.format.field_pictures);
+        let output = output.filter(|_| self.processes());
         let Some(output) = output else {
             return Some(Decoded::Surface(Surface {
                 about,

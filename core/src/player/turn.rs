@@ -67,13 +67,14 @@ impl Player {
             Out::Picture { at, picture } => {
                 self.first_picture.get_or_insert_with(Instant::now);
                 let about = picture.about();
+                let format = painter.shown(about.format);
                 // 測り終えたら、測った設定で作り直す（測る間は軽い既定で表示している）。
-                let settled = self.provisional && painter.settled(about.format);
-                if self.video.is_none() || self.format != Some(about.format) || settled {
-                    self.format = Some(about.format);
-                    self.provisional = !painter.settled(about.format);
+                let settled = self.provisional && painter.settled(format);
+                if self.video.is_none() || self.format != Some(format) || settled {
+                    self.format = Some(format);
+                    self.provisional = !painter.settled(format);
                     self.tell_speed();
-                    self.settings = painter.settings(about.format);
+                    self.settings = painter.settings(format);
                     let deinterlaced = self
                         .spent_decoding
                         .about
@@ -106,7 +107,7 @@ impl Player {
                     }
                     let how = if deinterlaced {
                         String::from("デコーダーでデインターレース済み")
-                    } else if about.format.field_pictures && about.structure.field() {
+                    } else if format.field_pictures && about.structure.field() {
                         // 1枚が1フィールドのまま届いた（GLES 2.0 が外部テクスチャで描く。[`crate::decode::takes::takes_lone_fields`]）。
                         String::from(
                             "フィールド構造ピクチャーを1フィールドずつ半行ずらして表示（bob 相当）",
@@ -114,9 +115,9 @@ impl Player {
                     } else if self.settings.deinterlace == Deinterlace::Weave {
                         if self.options.deinterlace == Some(Deinterlace::Weave) {
                             String::from("指定によりデインターレースなし")
-                        } else if about.format.field_pictures {
+                        } else if format.field_pictures {
                             // 1枚が1フィールドのストリーム（HEVC の `field_seq_flag`）。
-                            let (num, den) = about.format.aspect;
+                            let (num, den) = format.aspect;
                             format!("フィールド構造ピクチャー、{num}:{den} に伸ばして表示")
                         } else {
                             String::from("プログレッシブ")
@@ -127,8 +128,8 @@ impl Player {
                         } else {
                             ""
                         };
-                        let woven = if about.format.woven {
-                            "フィールド構造ピクチャーを組んで"
+                        let woven = if format.woven {
+                            "フィールド構造ピクチャーをウィーブして"
                         } else {
                             ""
                         };
@@ -139,14 +140,14 @@ impl Player {
                     };
                     tracing::info!(
                         "映像 {}x{} {}bit  {how}",
-                        about.format.width,
-                        about.format.height,
-                        about.format.depth
+                        format.width,
+                        format.height,
+                        format.depth
                     );
                     let tune = self.options.deinterlace.is_none() && !deinterlaced;
                     // 古い映像出力を先に破棄する（GLES では古い映像出力の後片付けが新しいコンテキストの物を消す）。
                     self.video = None;
-                    match painter.build(about.format, self.settings, tune) {
+                    match painter.build(format, self.settings, tune) {
                         Ok(video) => {
                             // 要求した処理が組み込まれたとは限らない（GLES 2.0 では外れる）。
                             let built = video.settings();

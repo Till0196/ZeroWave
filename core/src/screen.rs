@@ -168,6 +168,16 @@ impl Painter {
         }
     }
 
+    /// この形式のピクチャーを見せるときのフレームの形式。wgpu は一枚が一フィールドのピクチャーをウィーブしてから
+    /// デインターレースする（GLES 2.0 は一フィールドずつ描く）。
+    pub fn shown(&self, format: Format) -> Format {
+        match self {
+            #[cfg(feature = "wgpu")]
+            Self::Wgpu { .. } if format.field_pictures => crate::decode::weave::woven(format),
+            _ => format,
+        }
+    }
+
     pub fn settings(&self, format: Format) -> Settings {
         match self {
             #[cfg(feature = "wgpu")]

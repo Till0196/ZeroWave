@@ -8,7 +8,6 @@ use super::*;
 impl Video {
     pub(super) fn encode_output(&mut self, encoder: &mut wgpu::CommandEncoder) -> Option<Encoded> {
         let ready = self.schedule.front()?;
-        self.lone_shown = self.lone[ready.cur];
         let sub = self.sub;
         let per = self.front_per();
         let conversion = Conversion::new(
@@ -249,17 +248,7 @@ impl Video {
                 picture_format(self.format.depth),
             )
         });
-        let mut rect = self.letterbox((onto.width, onto.height));
-        // 一枚で一フィールドのフレームは、フレームの半行だけずらす（トップは上、ボトムは下。bob と同じ位置）。
-        if let Some(parity) = self.lone_shown {
-            let half = (rect[3] - rect[1]) / (4.0 * self.format.height.max(1) as f32);
-            let shift = match parity {
-                Parity::Top => half,
-                Parity::Bottom => -half,
-            };
-            rect[1] += shift;
-            rect[3] += shift;
-        }
+        let rect = self.letterbox((onto.width, onto.height));
         let shown = [
             (rect[2] - rect[0]) / 2.0 * onto.width as f32,
             (rect[3] - rect[1]) / 2.0 * onto.height as f32,

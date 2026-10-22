@@ -1,10 +1,10 @@
 // Copyright 2026 Till0196
 // SPDX-License-Identifier: Apache-2.0
 
-//! 一枚が一フィールドの HEVC（`field_seq_flag`）を、デコード後に二フィールドずつ一枚のフレームに組む。
-//! 組まずに縦に伸ばすと半ライン分ずれて揺れる。同じパリティーが続いたら先のフィールドは捨てる。
+//! 一枚が一フィールドの HEVC（`field_seq_flag`）を、デコード後に二フィールドずつ一枚のフレームにウィーブする。
+//! ウィーブせずに縦に伸ばすと半ライン分ずれて揺れる。同じパリティーが続いたら先のフィールドは捨てる。
 
-use mediadecoder::es::Structure;
+use mediadecoder::es::{Format, Structure};
 use mediadecoder::video::{Frame, Plane};
 
 use super::Readback;
@@ -15,7 +15,7 @@ pub struct Weaver {
 }
 
 impl Weaver {
-    /// 対がそろえば組んだフレームと、先のフィールドの時刻を返す。
+    /// 対がそろえばウィーブしたフレームと、先のフィールドの時刻を返す。
     pub fn push(
         &mut self,
         frame: Frame,
@@ -31,7 +31,7 @@ impl Weaver {
                 };
                 match woven {
                     Some(woven) => Some((woven, first_at)),
-                    // 途中でサイズが変わった対。後のフィールドから組み直す。
+                    // 途中でサイズが変わった対。後のフィールドからやり直す。
                     None => {
                         self.pending = Some((frame, top, at));
                         None
@@ -64,22 +64,28 @@ pub fn weave(top: &Frame, bottom: &Frame, top_first: bool) -> Option<Frame> {
         return None;
     };
     let first = if top_first { top } else { bottom };
-    let (num, den) = first.format.rate;
-    let mut format = first.format;
-    format.height = format.height.saturating_mul(2);
-    format.field_pictures = false;
-    format.progressive = false;
-    format.woven = true;
-    format.rate = (num, den.saturating_mul(2));
     Some(Frame {
         tag: first.tag,
-        format,
+        format: woven(first.format),
         planes: [luma, blue, red],
         structure: Structure::Frame,
         top_field_first: top_first,
         repeat_first_field: false,
         progressive: false,
     })
+}
+
+/// 一フィールドの形式から、二つをウィーブしたフレームの形式にする。
+pub fn woven(field: Format) -> Format {
+    let (num, den) = field.rate;
+    Format {
+        height: field.height.saturating_mul(2),
+        field_pictures: false,
+        progressive: false,
+        woven: true,
+        rate: (num, den.saturating_mul(2)),
+        ..field
+    }
 }
 
 fn interleave(top: &Plane, bottom: &Plane, size: usize) -> Option<Plane> {
@@ -105,7 +111,7 @@ fn interleave(top: &Plane, bottom: &Plane, size: usize) -> Option<Plane> {
 }
 
 /// 読み戻したフレームをメインメモリのフレームにする。10 ビット（`P010`）は下位ビットに詰める。
-/// 組めなければ理由を返す（輝度しか無い、プレーンがフレームの大きさに足りない）。
+/// 作れなければ理由を返す（輝度しか無い、プレーンがフレームの大きさに足りない）。
 pub fn frame_of_readback(read: &Readback) -> Result<Frame, &'static str> {
     match read.planes.len() {
         2 | 3 => copied(read).ok_or("プレーンがフレームの大きさに足りない"),
