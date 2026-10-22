@@ -39,7 +39,7 @@ parlance = { version = "0.1", optional = true }
 wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation"], optional = true }
 coax = { workspace = true, optional = true }
 # parley（fontique）と同じバージョンに揃える。
-skrifa = { version = "0.48", optional = true }
+skrifa = { version = "0.49", optional = true }
 memmap2 = { version = "0.9", optional = true }
 
 # aws-lc は C と nasm が要り、Windows へのクロスビルドで失敗するので ring にする。
