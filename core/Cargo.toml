@@ -32,7 +32,7 @@ hevc-decoder = ["mediadecoder/hevc-decoder"]
 
 [dependencies]
 tracing.workspace = true
-rusqlite = { version = "0.40", features = ["bundled", "functions"], optional = true }
+rusqlite = { version = "0.41", features = ["bundled", "functions"], optional = true }
 mediadecoder = { path = "../mediadecoder" }
 mpegts.workspace = true
 mmttlv.workspace = true
