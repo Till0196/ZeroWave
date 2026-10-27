@@ -6,6 +6,8 @@
 pub mod ask;
 pub mod cursor;
 pub mod ending;
+#[cfg(target_os = "macos")]
+pub mod mac_open;
 pub mod menu;
 pub mod opening;
 pub mod place;

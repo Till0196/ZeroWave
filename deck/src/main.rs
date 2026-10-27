@@ -955,6 +955,8 @@ fn run(mut player: Player, choices: Choices, live: Option<Live>, keep: sound::Ke
         },
         instance,
     };
+    #[cfg(target_os = "macos")]
+    window::mac_open::accept(to_stage.clone());
     let mut shell =
         window::shell::Shell::new(boot, deck, to_stage, to_panes, from_panes, keep, guide);
     if let Err(error) = event_loop.run_app(&mut shell) {
