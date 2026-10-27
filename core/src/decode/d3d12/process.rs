@@ -480,11 +480,8 @@ impl Deinterlacer {
         progressive: bool,
     ) -> Result<Made, Error> {
         // 入力と出力を同じ形式・色空間にして、色の変換をさせない（色はレンダラーが変換する）。
-        let space = if format == DXGI_FORMAT_P010 {
-            DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P2020
-        } else {
-            DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709
-        };
+        // 10 ビットも BT.709 と示す。BT.2020 と示すと、NVIDIA は縮小した出力に何も書かない（エラーも返さない）。
+        let space = DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709;
         let field_type = if progressive {
             D3D12_VIDEO_FIELD_TYPE_NONE
         } else if top_first {
