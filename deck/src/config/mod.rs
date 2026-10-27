@@ -382,6 +382,12 @@ pub fn claim_single() -> bool {
 /// 二重起動防止のロック。終わるまで持つ。
 static SINGLE: std::sync::Mutex<Option<coax::lock::Held>> = std::sync::Mutex::new(None);
 
+/// 二重起動防止のロックをこの deck が持っているか。
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+pub fn holds_single() -> bool {
+    SINGLE.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
 /// 二重起動防止のロックを放す（再起動するとき・終えるとき）。
 pub fn release_single() {
     SINGLE.lock().unwrap_or_else(|e| e.into_inner()).take();

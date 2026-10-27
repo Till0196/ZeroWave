@@ -274,6 +274,9 @@ pub enum Request {
     Title(String),
     #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
     SystemTheme(winit::window::Theme),
+    /// ほかの起動から渡されたファイルを開くので、メインウィンドウを前に出してほしい。
+    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+    Raise,
     /// 別ウィンドウに OS のテキストコントロールを出してほしい（コントロールはウィンドウのスレッドでしか触れない）。
     Text {
         window: winit::window::WindowId,

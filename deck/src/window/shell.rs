@@ -577,6 +577,12 @@ impl Shell {
                     self.wear();
                 }
                 Request::SystemTheme(theme) => self.os_theme_changed(theme),
+                Request::Raise => {
+                    if let Some(window) = &self.window {
+                        window.set_minimized(false);
+                        window.focus_window();
+                    }
+                }
                 Request::Captions(shown) => self.deck.captions_from_settings(&shown),
                 Request::Replugged(streams) => self.deck.replugged(streams),
                 Request::YieldTuner(yielding) => self.deck.say(ToStage::YieldTuner(yielding)),

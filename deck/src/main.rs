@@ -261,6 +261,21 @@ fn main() {
     });
     // ロックはどの deck も取りに行く（設定が偽の deck が先に動いていても分かるように）。
     let sole = config::claim_single();
+    // 録画のファイルだけを渡され、ほかの deck が動いていれば、そちらで開いて終わる（macOS と同じ）。
+    #[cfg(any(windows, target_os = "linux"))]
+    if !sole
+        && mirakurun.is_none()
+        && coaxd.is_none()
+        && scanning.is_none()
+        && checking.is_empty()
+        && dumping.is_none()
+        && against.is_none()
+        && sound_checking.is_none()
+        && let Some(file) = path.as_deref()
+        && window::handoff::hand(file)
+    {
+        leave(0);
+    }
     if file.general.single_instance && !sole {
         tracing::warn!("別の deck が起動しているため終了する（複数起動しない設定）");
         return;
@@ -887,6 +902,10 @@ fn run(mut player: Player, choices: Choices, live: Option<Live>, keep: sound::Ke
     let proxy = event_loop.create_proxy();
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     window::shell::watch_system_theme(requests.clone(), proxy.clone());
+    #[cfg(any(windows, target_os = "linux"))]
+    if config::holds_single() {
+        window::handoff::listen(to_stage.clone(), requests.clone(), proxy.clone());
+    }
     let waker: zwcore::wake::Waker = {
         let proxy = proxy.clone();
         Arc::new(move || {

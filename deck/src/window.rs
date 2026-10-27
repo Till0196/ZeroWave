@@ -6,6 +6,8 @@
 pub mod ask;
 pub mod cursor;
 pub mod ending;
+#[cfg(any(windows, target_os = "linux"))]
+pub mod handoff;
 #[cfg(target_os = "macos")]
 pub mod mac_open;
 pub mod menu;
