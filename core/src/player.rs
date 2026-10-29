@@ -753,6 +753,8 @@ pub struct Tables {
     /// 現在のストリームの SDT が示したサービス。番組表由来ではない。
     pub neighbours: Vec<ServiceInfo>,
     pub frame_header: Option<isdb::tsmf::Info>,
+    /// 複数の TS が混ざっている（[`crate::engine::Engine::mixed_streams`]）。
+    pub mixed_streams: bool,
     pub video: Option<Kind>,
     pub now: Option<Programme>,
     pub next: Option<Programme>,

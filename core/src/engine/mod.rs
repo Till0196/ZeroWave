@@ -13,6 +13,7 @@ use crate::engine::clock::{Clock, Drift};
 use crate::filters::analyzer::Analyzer;
 use crate::filters::counter::Counter;
 use crate::filters::logos::Logos;
+use crate::filters::packet::ts::Mixing;
 use crate::filters::packet::{PacketSink, Parser, Section};
 use crate::filters::selector::{Changed, Selector};
 use crate::filters::tables::Tables;
@@ -36,6 +37,7 @@ const UNREADABLE_ENOUGH_VIDEO: u64 = 2000;
 const UNREADABLE_ENOUGH_SOUND: u64 = 300;
 
 pub const NOT_READABLE: &str = "映像・音声を読めない";
+pub const MIXED_STREAMS: &str = "複数TS多重化方式の放送です";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DualMono {
@@ -170,6 +172,8 @@ pub struct Engine {
     si: si::Info,
     logos: Logos,
     said_unreadable: Option<(Option<u16>, Option<u16>)>,
+    /// 一つの TS でなければ（混ざっているか、まだ分からなければ）映像・音声を開かず、番組表も読まない。
+    mixing: Mixing,
 }
 
 impl std::fmt::Debug for Engine {
@@ -182,6 +186,7 @@ impl std::fmt::Debug for Engine {
 }
 
 struct Work<'a> {
+    mixing: &'a mut Mixing,
     analyzer: &'a mut Analyzer,
     selector: &'a mut Selector,
     units: &'a mut Units,
@@ -205,6 +210,9 @@ impl Work<'_> {
     }
 
     fn program_changed(&mut self, program: &Program, had: Option<&Program>) {
+        if *self.mixing != Mixing::One {
+            return;
+        }
         for id in had.iter().flat_map(|had| &had.streams).map(|s| s.id) {
             if program.streams.iter().any(|s| s.id == id) || self.analyzer.shared(id) {
                 continue;
@@ -226,6 +234,29 @@ impl PacketSink for Work<'_> {
         self.si.set_frame_header(header.clone());
     }
 
+    fn on_mixing(&mut self, mixing: Mixing) {
+        let was = std::mem::replace(self.mixing, mixing);
+        if was == Mixing::One {
+            *self.units = Units::new();
+            self.out.clear();
+            self.out.push_back(Out::Switched);
+        }
+        if mixing == Mixing::Mixed {
+            self.out.push_back(Out::Trouble {
+                stream: mpegts::demux::PAT_PID,
+                what: MIXED_STREAMS.to_owned(),
+            });
+        } else if mixing == Mixing::One
+            && let Some(program) = self
+                .selector
+                .wanted()
+                .and_then(|number| self.analyzer.known().get(&number).cloned())
+        {
+            // 一つの TS と分かるまで開かなかった映像・音声を開く。
+            self.program_changed(&program, None);
+        }
+    }
+
     fn on_programs(&mut self, numbers: &[u16]) {
         for program in self.analyzer.programs(numbers) {
             for stream in &program.streams {
@@ -234,7 +265,7 @@ impl PacketSink for Work<'_> {
                     self.counter.forget(stream.id);
                 }
             }
-            if self.selector.wanted() == Some(program.number) {
+            if *self.mixing == Mixing::One && self.selector.wanted() == Some(program.number) {
                 let changed = self.selector.lost(self.analyzer.known());
                 restart(self.units, self.out, self.clock, self.drift, changed);
                 self.out.push_back(Out::Trouble {
@@ -246,6 +277,12 @@ impl PacketSink for Work<'_> {
     }
 
     fn on_section(&mut self, section: &Section<'_>) {
+        if *self.mixing != Mixing::One
+            && section.origin == crate::filters::packet::Origin::Ts
+            && crate::filters::tables::is_event_table(section.pid)
+        {
+            return;
+        }
         let had = self
             .analyzer
             .known()
@@ -257,6 +294,9 @@ impl PacketSink for Work<'_> {
             self.logos.on_program(&program);
         }
         self.tables().feed(section);
+        if *self.mixing != Mixing::One {
+            return;
+        }
         if section.origin == crate::filters::packet::Origin::Ts
             && self.logos.wants(section.pid)
             && let Some(module) = self.logos.section(section.pid, section.data)
@@ -282,6 +322,9 @@ impl PacketSink for Work<'_> {
     }
 
     fn on_unit(&mut self, unit: &Unit<'_>) {
+        if *self.mixing != Mixing::One {
+            return;
+        }
         let Some(kind) = self.analyzer.kind(unit.stream) else {
             return;
         };
@@ -342,11 +385,21 @@ impl Engine {
             si: si::Info::new(),
             logos: Logos::new(),
             said_unreadable: None,
+            mixing: Mixing::One,
         }
     }
 
     pub fn container(&self) -> Container {
         self.parser.container()
+    }
+
+    /// 複数の TS が混ざっている（TSMF の多重フレームを一つの TS に分けずに受けている）。
+    pub fn mixed_streams(&self) -> bool {
+        self.mixing == Mixing::Mixed
+    }
+
+    pub fn mixing(&self) -> Mixing {
+        self.mixing
     }
 
     pub fn push(&mut self, bytes: &[u8]) {
@@ -355,6 +408,7 @@ impl Engine {
         kept.extend(self.selector.sound());
         self.parser.keep(&kept);
         let mut work = Work {
+            mixing: &mut self.mixing,
             analyzer: &mut self.analyzer,
             selector: &mut self.selector,
             units: &mut self.units,
@@ -373,6 +427,9 @@ impl Engine {
     }
 
     fn notice_unreadable(&mut self) {
+        if self.mixing != Mixing::One {
+            return;
+        }
         let playing = self.selector.chosen();
         if self.said_unreadable == Some(playing) {
             return;
@@ -427,6 +484,9 @@ impl Engine {
     }
 
     pub fn counts(&self) -> Counts {
+        if self.mixing != Mixing::One {
+            return self.parser.counts();
+        }
         self.counter.counts(&self.parser, self.playing())
     }
 
@@ -483,7 +543,9 @@ impl Engine {
             self.counter.rebase(&self.parser, playing);
         }
         // テーブルは変わらないが、データ放送と字幕のコンポーネントは変わる。
-        if let Some(found) = self.analyzer.known().get(&program) {
+        if self.mixing == Mixing::One
+            && let Some(found) = self.analyzer.known().get(&program)
+        {
             data::announce(found, &mut self.out);
         }
     }

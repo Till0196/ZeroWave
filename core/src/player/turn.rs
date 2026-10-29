@@ -63,7 +63,9 @@ impl Player {
     fn take(&mut self, out: Out, painter: &Painter) {
         self.took += 1;
         match out {
-            Out::Picture { .. } if self.shared.viewer_off.load(Ordering::Relaxed) => {}
+            Out::Picture { .. }
+                if self.shared.viewer_off.load(Ordering::Relaxed)
+                    || self.last_tables.mixed_streams => {}
             Out::Picture { at, picture } => {
                 self.first_picture.get_or_insert_with(Instant::now);
                 let about = picture.about();
@@ -243,6 +245,13 @@ impl Player {
         if let Some(tables) = self.tables.as_ref()
             && let Some(last) = tables.try_iter().last()
         {
+            if last.mixed_streams && !self.last_tables.mixed_streams {
+                self.tell_sound(Say::Pause(true));
+                self.video = None;
+                self.format = None;
+                self.ready.clear();
+                self.due.clear();
+            }
             self.last_tables = last;
             self.told += 1;
             if self.audio_only() && (self.video.is_some() || self.format.is_some()) {

@@ -20,6 +20,7 @@ pub struct Parser {
     demuxer: Demuxer,
     held: Vec<u8>,
     frame_header: Option<isdb::tsmf::Info>,
+    mixing: Detector,
     /// `None` はまだ PAT が来ていない（空の PAT も一度は通知する。放送休止の判定に要る）。
     numbers: Option<Vec<u16>>,
     kept: Vec<u16>,
@@ -79,11 +80,15 @@ impl Parser {
             && self.frame_header.as_ref() != Some(&header)
         {
             sink.on_frame_header(&header);
+            if let Some(mixing) = self.mixing.header(&header) {
+                sink.on_mixing(mixing);
+            }
             self.frame_header = Some(header);
         }
         let mut out = Output {
             sink,
             numbers: &mut self.numbers,
+            mixing: &mut self.mixing,
             kept: &self.kept,
             named: Vec::new(),
         };
@@ -115,6 +120,76 @@ impl Parser {
     }
 }
 
+/// 一つのストリームに TS がいくつ載っているか。TSMF の多重フレームを分けずに受けると、複数の TS が混ざる。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mixing {
+    #[default]
+    One,
+    /// 多重フレームのヘッダが複数の TS を示していて、PAT でまだ確かめていない。
+    Undecided,
+    Mixed,
+}
+
+/// PAT の `transport_stream_id` の移り変わりから [`Mixing`] を決める。
+/// ヘッダがあれば別の TS の PAT が一度来れば混ざっている。無ければ A・B・A と戻ってきたら混ざっている。
+#[derive(Debug, Default)]
+struct Detector {
+    state: Mixing,
+    framed: bool,
+    last: Option<u16>,
+    before: Option<u16>,
+    /// 同じ TS の PAT が続いた数。
+    same: u32,
+}
+
+/// ヘッダが複数の TS を示すのに一つの TS の PAT だけが続いたとき、一つと決めるまでの数（PAT は 0.1 秒ごと）。
+const ALONE_AFTER: u32 = 5;
+/// 混ざっていたのが一つに戻ったと決めるまでの数。スロットの少ない TS の PAT はまばらに届く。
+const SETTLED_AFTER: u32 = 100;
+
+impl Detector {
+    /// 多重フレームのヘッダが届いた。状態が変わったら新しい状態を返す。
+    fn header(&mut self, header: &isdb::tsmf::Info) -> Option<Mixing> {
+        if self.framed || header.streams.len() < 2 {
+            return None;
+        }
+        self.framed = true;
+        self.same = 0;
+        self.set(if self.state == Mixing::One {
+            Mixing::Undecided
+        } else {
+            self.state
+        })
+    }
+
+    /// PAT が届いた。状態が変わったら新しい状態を返す。
+    fn pat(&mut self, stream_id: u16) -> Option<Mixing> {
+        if self.last == Some(stream_id) {
+            self.same += 1;
+            return match self.state {
+                Mixing::Undecided if self.same >= ALONE_AFTER => self.set(Mixing::One),
+                Mixing::Mixed if self.same >= SETTLED_AFTER => self.set(Mixing::One),
+                _ => None,
+            };
+        }
+        let returned = self.before == Some(stream_id);
+        let switched = self.last.is_some();
+        self.before = self.last.replace(stream_id);
+        self.same = 0;
+        if switched && (self.framed || returned) {
+            return self.set(Mixing::Mixed);
+        }
+        None
+    }
+
+    fn set(&mut self, state: Mixing) -> Option<Mixing> {
+        (self.state != state).then(|| {
+            self.state = state;
+            state
+        })
+    }
+}
+
 pub fn pid_of(packet: &[u8; PACKET]) -> u16 {
     (u16::from(packet[1] & 0x1f) << 8) | u16::from(packet[2])
 }
@@ -122,6 +197,7 @@ pub fn pid_of(packet: &[u8; PACKET]) -> u16 {
 struct Output<'a, S: PacketSink + ?Sized> {
     sink: &'a mut S,
     numbers: &'a mut Option<Vec<u16>>,
+    mixing: &'a mut Detector,
     kept: &'a [u16],
     /// デマルチプレクサーを借りている間は通知できないので、パケットのあとで通知する。
     named: Vec<(u16, Carries)>,
@@ -129,6 +205,9 @@ struct Output<'a, S: PacketSink + ?Sized> {
 
 impl<S: PacketSink + ?Sized> Handler for Output<'_, S> {
     fn on_pat(&mut self, pat: &Pat) {
+        if let Some(mixing) = self.mixing.pat(pat.stream_id) {
+            self.sink.on_mixing(mixing);
+        }
         let numbers: Vec<u16> = pat.programs.iter().map(|program| program.number).collect();
         if self.numbers.as_ref() == Some(&numbers) {
             return;

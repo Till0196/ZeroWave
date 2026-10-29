@@ -27,8 +27,12 @@ const H264: u8 = 0x1b;
 const AAC: u8 = 0x0f;
 
 fn pat(version: u8, programs: &[(u16, u16)]) -> Vec<u8> {
+    pat_of(1, version, programs)
+}
+
+fn pat_of(stream: u16, version: u8, programs: &[(u16, u16)]) -> Vec<u8> {
     let mut body = Vec::new();
-    body.extend_from_slice(&1u16.to_be_bytes());
+    body.extend_from_slice(&stream.to_be_bytes());
     body.extend_from_slice(&[0xC1 | (version << 1), 0x00, 0x00]);
     for (number, pid) in programs {
         body.extend_from_slice(&number.to_be_bytes());
@@ -237,6 +241,24 @@ struct Tape {
 }
 
 impl Tape {
+    fn frame_header(&mut self) -> &mut Self {
+        let mut packet = [0u8; PACKET];
+        packet[0] = SYNC;
+        packet[2] = 0x2f;
+        packet[3] = 0x10;
+        let payload = &mut packet[4..];
+        payload[..3].copy_from_slice(&[0x1a, 0x86, 0x01]);
+        // TS 1 と TS 2 がスロットを半分ずつ持つ。
+        payload[5..13].copy_from_slice(&[0, 1, 0, 2, 0, 2, 0, 2]);
+        payload[69..95].fill(0x12);
+        payload[121..123].copy_from_slice(&[0xff, 0xfe]);
+        let crc = crc32(&payload[..180]);
+        payload[180..].copy_from_slice(&crc.to_be_bytes());
+        assert!(isdb::tsmf::info(&packet).is_some());
+        self.bytes.extend_from_slice(&packet);
+        self
+    }
+
     fn send(&mut self, pid: u16, section: &[u8]) -> &mut Self {
         let counter = self.counters.entry(pid).or_default();
         let mut packet = [0xFFu8; PACKET];
@@ -309,6 +331,130 @@ fn what_arrived_on_each_identifier_is_counted() {
         None,
         "何も来ていない識別子は無い"
     );
+}
+
+/// 二つの TS（1 と 2）の PAT が交互に届く、多重フレームをそのまま受けたストリーム。
+fn mixed(tape: &mut Tape) -> &mut Tape {
+    tape.send(PAT_PID, &pat_of(1, 0, &[(ONE, ONE_MAP)]))
+        .send(PAT_PID, &pat_of(2, 0, &[(TWO, TWO_MAP)]))
+        .send(PAT_PID, &pat_of(1, 0, &[(ONE, ONE_MAP)]))
+}
+
+#[test]
+fn mixed_streams_keep_information_and_counts_without_opening_decoders() {
+    let mut tape = Tape::default();
+    mixed(tape.frame_header())
+        .send(ONE_MAP, &bare_sounds(0))
+        .send(
+            EIT_PID,
+            &eit(ONE, 0, &[Described::new(0x10, STEREO, "jpn", true)]),
+        );
+    let mut engine = engine();
+    engine.want(ONE);
+    for bytes in tape.bytes.chunks(113) {
+        engine.push(bytes);
+    }
+    assert!(engine.mixed_streams());
+    assert!(engine.programs().contains_key(&ONE));
+    assert!(open(&engine).is_empty());
+    assert_eq!(engine.counts().packets, 6);
+    assert_eq!(engine.counted(EIT_PID).expect("EIT PID").arrived, 1);
+    assert_eq!(engine.guide().programme_count(), 0);
+    assert_eq!(trouble(&mut engine), [zwcore::engine::MIXED_STREAMS]);
+}
+
+#[test]
+fn streams_mixing_later_stop_tracks_that_were_already_opened() {
+    let mut tape = Tape::default();
+    tape.both();
+    let mut engine = engine();
+    engine.want(ONE);
+    engine.push(&tape.bytes);
+    assert!(!open(&engine).is_empty());
+
+    let mut later = Tape::default();
+    mixed(&mut later);
+    engine.push(&later.bytes);
+    assert!(engine.mixed_streams());
+    assert!(open(&engine).is_empty());
+    assert!(matches!(engine.next(), Some(Out::Switched)));
+    assert!(
+        matches!(engine.next(), Some(Out::Trouble { what, .. }) if what == zwcore::engine::MIXED_STREAMS)
+    );
+}
+
+#[test]
+fn one_stream_again_opens_its_tracks() {
+    let mut tape = Tape::default();
+    mixed(&mut tape);
+    let mut engine = engine();
+    engine.want(ONE);
+    engine.push(&tape.bytes);
+    assert!(engine.mixed_streams());
+
+    let mut later = Tape::default();
+    later.send(
+        ONE_MAP,
+        &pmt(ONE, 0, &[(MPEG2, ONE_VIDEO), (AAC, ONE_SOUND)]),
+    );
+    for _ in 0..110 {
+        later.send(PAT_PID, &pat_of(1, 0, &[(ONE, ONE_MAP)]));
+    }
+    engine.push(&later.bytes);
+    assert!(!engine.mixed_streams());
+    assert_eq!(open(&engine), [ONE_VIDEO, ONE_SOUND]);
+}
+
+#[test]
+fn a_frame_header_holds_tracks_and_events_until_the_tables_tell() {
+    let mut tape = Tape::default();
+    tape.frame_header().both().send(
+        EIT_PID,
+        &eit(ONE, 0, &[Described::new(0x10, STEREO, "jpn", true)]),
+    );
+    let mut engine = engine();
+    engine.want(ONE);
+    engine.push(&tape.bytes);
+    assert!(!engine.mixed_streams());
+    assert!(open(&engine).is_empty());
+    assert_eq!(engine.guide().programme_count(), 0);
+    assert!(trouble(&mut engine).is_empty());
+}
+
+#[test]
+fn a_frame_header_beside_one_stream_does_not_block_it() {
+    let mut tape = Tape::default();
+    tape.frame_header().both();
+    for _ in 0..6 {
+        tape.send(PAT_PID, &pat(0, &[(ONE, ONE_MAP), (TWO, TWO_MAP)]));
+    }
+    let mut engine = engine();
+    engine.want(ONE);
+    engine.push(&tape.bytes);
+    assert!(!engine.mixed_streams());
+    assert!(!open(&engine).is_empty());
+}
+
+#[test]
+fn mixed_streams_with_sparse_tables_stay_mixed() {
+    let mut tape = Tape::default();
+    tape.frame_header();
+    for _ in 0..5 {
+        for _ in 0..30 {
+            tape.send(PAT_PID, &pat_of(1, 0, &[(ONE, ONE_MAP)]));
+        }
+        tape.send(PAT_PID, &pat_of(2, 0, &[(TWO, TWO_MAP)]));
+    }
+    let mut engine = engine();
+    engine.want(ONE);
+    let mut seen = Vec::new();
+    for bytes in tape.bytes.chunks(PACKET) {
+        engine.push(bytes);
+        seen.push(engine.mixed_streams());
+    }
+    let first = seen.iter().position(|mixed| *mixed).expect("mixed");
+    assert!(seen[first..].iter().all(|mixed| *mixed));
+    assert_eq!(trouble(&mut engine), [zwcore::engine::MIXED_STREAMS]);
 }
 
 #[test]

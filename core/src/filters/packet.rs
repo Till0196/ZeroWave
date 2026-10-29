@@ -41,6 +41,9 @@ pub enum Clock {
 pub trait PacketSink {
     fn on_frame_header(&mut self, _header: &isdb::tsmf::Info) {}
 
+    /// 一つのストリームに載っている TS の数の見立てが変わった。
+    fn on_mixing(&mut self, _mixing: ts::Mixing) {}
+
     fn on_programs(&mut self, _numbers: &[u16]) {}
 
     fn on_clock(&mut self, _clock: Clock) {}

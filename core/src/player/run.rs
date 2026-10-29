@@ -103,6 +103,7 @@ pub(super) fn read(
                 Ask::Tables => {
                     let _ = told.try_send(gather(engine));
                 }
+                Ask::Guide if engine.mixing() != crate::filters::packet::ts::Mixing::One => {}
                 Ask::Guide => {
                     let guide = engine.guide_mut();
                     if let Some(now) = guide.now() {
@@ -198,7 +199,11 @@ pub(super) fn read(
             );
             return;
         }
+        let mixed = engine.mixed_streams();
         engine.push(taken);
+        if engine.mixed_streams() != mixed {
+            let _ = told.try_send(gather(engine));
+        }
         // チャネルへ流す前に行う（でないと最初の run は音声のスレッドが捨てる）。
         tell_chosen(engine, shared, &mut told_sound);
         let apart = Instant::now();
@@ -602,6 +607,7 @@ pub(super) fn gather(engine: &Engine) -> Tables {
         programs,
         neighbours,
         frame_header: si.frame_header().cloned(),
+        mixed_streams: engine.mixed_streams(),
         video,
         now,
         next,

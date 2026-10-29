@@ -9,6 +9,7 @@ use super::{Container, Counted, Counts, Program, Unit};
 
 pub trait Sink {
     fn on_frame_header(&mut self, _header: &isdb::tsmf::Info) {}
+    fn on_mixing(&mut self, _mixing: packet::ts::Mixing) {}
     fn on_programs(&mut self, _numbers: &[u16]) {}
     fn on_streams(&mut self, _program: &Program) {}
     fn on_section(&mut self, _section: &Section<'_>) {}
@@ -80,6 +81,10 @@ struct Through<'a, S: Sink + ?Sized> {
 impl<S: Sink + ?Sized> PacketSink for Through<'_, S> {
     fn on_frame_header(&mut self, header: &isdb::tsmf::Info) {
         self.sink.on_frame_header(header);
+    }
+
+    fn on_mixing(&mut self, mixing: packet::ts::Mixing) {
+        self.sink.on_mixing(mixing);
     }
 
     fn on_programs(&mut self, numbers: &[u16]) {

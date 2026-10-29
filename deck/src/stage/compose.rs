@@ -495,6 +495,11 @@ impl Stage {
     }
 
     fn judge_reception(&mut self) {
+        if self.player.tables().mixed_streams {
+            self.reception.pause();
+            self.status.signal_alarm = false;
+            return;
+        }
         let judging = !self.player_mode && !self.player.is_recording() && self.switching.is_none();
         // Mirakurun は TS が届くまで応答しない。coaxd は電波が無ければすぐエラーを返すので、待ちはチューナーの順番。
         let waiting = self.live.as_ref().and_then(|live| {
@@ -564,6 +569,36 @@ impl Stage {
 
     fn trouble(&self) -> Option<scene::Trouble> {
         use super::reception::Trouble as Why;
+        if self.player.tables().mixed_streams {
+            return Some(scene::Trouble {
+                code: "E210",
+                title: zwcore::engine::MIXED_STREAMS,
+                guide: "この放送の受信に必要なプラグインを追加してください。",
+                station: None,
+                rows: vec![
+                    (
+                        String::from("チューナー"),
+                        self.status
+                            .tuner
+                            .clone()
+                            .unwrap_or_else(|| String::from("—")),
+                    ),
+                    (
+                        String::from("信号"),
+                        format!(
+                            "{}　{:.2} Mbps",
+                            self.status.cnr.map_or_else(
+                                || String::from("CNR -- dB"),
+                                |cnr| format!("CNR {cnr:.1} dB")
+                            ),
+                            self.status.bitrate
+                        ),
+                    ),
+                ],
+                below: None,
+                dim: false,
+            });
+        }
         let verdict = self.reception.shown().filter(|verdict| verdict.covers)?;
         let tables = self.player.tables();
         let key = self.asked_key?;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
+use crate::filters::packet::ts::Mixing;
 
 /// テーブルだけ欲しいのでエンジンを通さない。
 pub struct Reading {
@@ -9,6 +10,7 @@ pub struct Reading {
     guide: Guide,
     pub(super) si: Info,
     survey: isdb::tsmf::Survey,
+    mixing: Mixing,
 }
 
 impl std::fmt::Debug for Reading {
@@ -53,6 +55,7 @@ impl Reading {
             guide: Guide::new(),
             si: Info::new(),
             survey: isdb::tsmf::Survey::new(),
+            mixing: Mixing::One,
         }
     }
 
@@ -61,6 +64,7 @@ impl Reading {
         let mut sink = Tables {
             guide: &mut self.guide,
             si: &mut self.si,
+            mixing: &mut self.mixing,
         };
         self.feed.push(bytes, &mut sink);
     }
@@ -146,10 +150,23 @@ impl Reading {
 struct Tables<'a> {
     guide: &'a mut Guide,
     si: &'a mut Info,
+    mixing: &'a mut Mixing,
 }
 
 impl Sink for Tables<'_> {
+    fn on_frame_header(&mut self, header: &isdb::tsmf::Info) {
+        self.si.set_frame_header(header.clone());
+    }
+
+    fn on_mixing(&mut self, mixing: Mixing) {
+        *self.mixing = mixing;
+    }
+
     fn on_section(&mut self, section: &Section) {
+        // 混ざった TS の番組表は、どの TS の物か分からない。
+        if *self.mixing != Mixing::One && crate::filters::tables::is_event_table(section.pid) {
+            return;
+        }
         crate::filters::tables::Tables {
             guide: self.guide,
             si: self.si,
