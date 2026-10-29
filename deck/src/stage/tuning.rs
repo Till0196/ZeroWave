@@ -673,6 +673,7 @@ impl Stage {
     }
 
     pub(super) fn scanned(&mut self, services: Vec<zwcore::guide::Service>) {
+        self.catalog_due = true;
         if !services.is_empty() {
             let mut seeded = zwcore::guide::Guide::new();
             for service in services {
