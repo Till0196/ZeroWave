@@ -407,6 +407,7 @@ pub struct Stage {
     /// ウィンドウが全画面表示か（`frame.fullscreen` の合わせ方を使う）。
     full_screen: bool,
     inset_on: bool,
+    broadcast_visible: bool,
     history: channels::History,
     favourites: channels::Loaded,
     recent_serial: u64,

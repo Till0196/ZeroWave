@@ -111,6 +111,8 @@ pub enum ToStage {
     },
     /// 映像をサーフェスの中のどこに縮めるか（データ放送の文書が置いた場所）。`None` は全部。
     Inset(Option<[f32; 5]>),
+    /// メイン画面にデータ放送の文書を表示している。
+    BroadcastVisible(bool),
     Capture(Box<crate::capture::Job>),
     Hidden(bool),
     /// ウィンドウが全画面表示になった・戻った。
@@ -150,6 +152,7 @@ impl std::fmt::Debug for ToStage {
                 height,
             } => write!(out, "Area({left},{top} {width}x{height})"),
             Self::Inset(inset) => write!(out, "Inset({inset:?})"),
+            Self::BroadcastVisible(visible) => write!(out, "BroadcastVisible({visible})"),
             Self::Capture(_) => out.write_str("Capture"),
             Self::Hidden(hidden) => write!(out, "Hidden({hidden})"),
             Self::FullScreen(full) => write!(out, "FullScreen({full})"),

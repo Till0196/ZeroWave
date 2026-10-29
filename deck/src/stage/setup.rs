@@ -126,6 +126,7 @@ impl Stage {
             stepping: super::stepping::Stepping::default(),
             reset_audio_delay: crate::config::load_plain().audio.reset_delay_on_change,
             inset_on: false,
+            broadcast_visible: false,
             history: channels::History::default(),
             favourites: channels::Loaded::default(),
             recent_serial: 0,

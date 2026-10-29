@@ -495,7 +495,7 @@ impl Stage {
     }
 
     fn judge_reception(&mut self) {
-        if self.player.tables().mixed_streams {
+        if self.player.tables().mixed_streams || self.broadcast_visible {
             self.reception.pause();
             self.status.signal_alarm = false;
             return;
@@ -598,6 +598,9 @@ impl Stage {
                 below: None,
                 dim: false,
             });
+        }
+        if self.broadcast_visible {
+            return None;
         }
         let verdict = self.reception.shown().filter(|verdict| verdict.covers)?;
         let tables = self.player.tables();

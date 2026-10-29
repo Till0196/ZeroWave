@@ -97,6 +97,9 @@ impl Stage {
                     });
                     self.player.set_inset(inset);
                 }
+                Ok(ToStage::BroadcastVisible(visible)) => {
+                    self.broadcast_visible = visible;
+                }
                 Ok(ToStage::Hidden(hidden)) => self.hide(hidden),
                 Ok(ToStage::FullScreen(full)) => self.full_screen = full,
                 Ok(ToStage::Grabbed(grabbed)) => self.grab(grabbed),

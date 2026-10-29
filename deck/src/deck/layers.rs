@@ -24,6 +24,12 @@ impl Deck {
             });
         }
         let shown = shown.filter(|shown| !shown.c_profile);
+        // 映像の配置とは別に、文書そのものの表示状態を伝える。
+        let visible = self.broadcast_on && shown.as_ref().is_some_and(|shown| !shown.invisible);
+        if self.told_broadcast_visible != visible {
+            self.told_broadcast_visible = visible;
+            self.say(ToStage::BroadcastVisible(visible));
+        }
         let ppp = root.ctx().pixels_per_point();
         let page_ratio = shown
             .as_ref()
