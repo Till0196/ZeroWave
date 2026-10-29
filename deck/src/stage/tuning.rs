@@ -500,7 +500,7 @@ impl Stage {
                 && self.player.tables().services.iter().any(|service| {
                     service.network == key.network && service.service == key.service
                 });
-        if self.live.is_none() || within_recording {
+        if (self.live.is_none() && self.player.is_recording()) || within_recording {
             let name = self
                 .service(key)
                 .map(|service| service.name.clone())
@@ -527,8 +527,7 @@ impl Stage {
         }
         // プロファイルで一番上のソースで開く（下へ移っても上に戻る）。
         let now = self.live.as_ref().and_then(|live| live.url.clone());
-        if now.is_some()
-            && let Some((label, opening)) = self.best_for(key)
+        if let Some((label, opening)) = self.best_for(key)
             && Some(opening.came()) != now
         {
             tracing::info!("{label} で開く（プロファイルの優先順）");
@@ -544,6 +543,9 @@ impl Stage {
         let watching = self.player.tables().watching;
         let known = self.service(key).map(|service| service.name.clone());
         let Some(live) = self.live.as_mut() else {
+            self.complain_not_tuned(
+                "選局できるソースがありません。ソースの設定を確認してください。",
+            );
             return;
         };
         // 一覧に無い局は、現在のストリームと同じ要求の仕方でキーだけ替えて要求する。拒否された経路は飛ばす。
