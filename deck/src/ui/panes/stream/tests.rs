@@ -97,7 +97,7 @@ fn what_is_written_out_is_what_the_tab_shows() {
     assert_eq!(lines[5], "  パケット: 1843217");
     assert_eq!(lines[6], "  ドロップ（連続性の飛び）: 0");
     assert_eq!(lines[7], "  エラー（transport_error_indicator）: 2");
-    assert_eq!(lines[8], "  読めないパケット: 0");
+    assert_eq!(lines[8], "  再生できないパケット: 0");
     assert_eq!(lines[9], "限定受信 (CAT)");
     assert_eq!(
         lines[10],

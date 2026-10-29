@@ -67,7 +67,7 @@ fn reception(info: &StreamInfo) -> Node {
             "エラー（transport_error_indicator）: {}",
             counts.errors
         )),
-        Node::leaf(format!("読めないパケット: {}", counts.scrambled)),
+        Node::leaf(format!("再生できないパケット: {}", counts.scrambled)),
     ];
     Node::branch("受信", true, children)
 }

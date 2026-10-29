@@ -873,7 +873,7 @@ fn tuners_under(
                     let row = form.line(34.0);
                     let galley = form.ui.painter().layout(
                         String::from(
-                            "このチューナーは対応受信方式を識別できません。\n上記ボタンから選択してください。",
+                            "このチューナーの対応受信方式を確認できません。\n上記ボタンから選択してください。",
                         ),
                         FontId::proportional(skin::TEXT_SIZE - 1.0),
                         form.look.label,

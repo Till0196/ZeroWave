@@ -745,7 +745,7 @@ impl Stage {
         if self.player.unreadable() && self.said_unreadable != Some(watching) {
             self.said_unreadable = Some(watching);
             if way == crate::choice::OneSeg::Never {
-                self.toast("映像・音声を読めないため、視聴できません。");
+                self.toast("映像・音声を再生できません。");
             }
         }
         if way == crate::choice::OneSeg::Never {
@@ -761,7 +761,7 @@ impl Stage {
         let Some(seg) = in_stream else {
             if self.player.unreadable() && self.oneseg.is_none_or(|(from, _)| from != watching) {
                 self.oneseg = Some((watching, watching));
-                self.toast("映像・音声を読めないため、視聴できません。");
+                self.toast("映像・音声を再生できません。");
             }
             return;
         };

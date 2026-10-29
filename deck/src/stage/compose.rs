@@ -206,7 +206,7 @@ impl Stage {
             }
         } else if asked.elapsed() > Duration::from_secs(1) {
             self.sound_asked = None;
-            self.toast("現在音声切換はできません。");
+            self.toast("現在、音声を切り替えられません。");
         }
     }
 

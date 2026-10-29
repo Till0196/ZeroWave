@@ -163,14 +163,14 @@ impl Stage {
     pub(super) fn go_back(&mut self) {
         match self.history.back() {
             Some(key) => self.tune(key),
-            None => self.toast("該当チャンネルが選局できません。"),
+            None => self.toast("該当するチャンネルを選局できません。"),
         }
     }
 
     pub(super) fn go_forward(&mut self) {
         match self.history.forward() {
             Some(key) => self.tune(key),
-            None => self.toast("該当チャンネルが選局できません。"),
+            None => self.toast("該当するチャンネルを選局できません。"),
         }
     }
 
@@ -182,7 +182,7 @@ impl Stage {
             .and_then(|recent| recent.get(1))
         {
             Some(key) => self.tune(*key),
-            None => self.toast("直前のチャンネルが選局できません。"),
+            None => self.toast("直前のチャンネルを選局できません。"),
         }
     }
 
