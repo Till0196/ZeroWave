@@ -14,6 +14,7 @@ pub(crate) mod pool;
 mod process;
 #[cfg(any(feature = "qsv", feature = "amf"))]
 pub(crate) mod share;
+pub(crate) mod weave;
 
 use mediadecoder::es::{Codec, Format, Framing, Picture, Structure};
 use windows::Win32::Graphics::Direct3D12::{ID3D12Device, ID3D12Resource};
@@ -237,6 +238,10 @@ pub struct D3d12 {
     wants: crate::decode::VideoProcess,
     deinterlacer: Option<process::Deinterlacer>,
     processed: std::collections::VecDeque<Decoded>,
+    /// 一枚が一フィールドのピクチャーを、ビデオプロセスに渡す前に二つずつ一枚のフレームに合成する。
+    weaver: Option<weave::Weaver>,
+    /// 合成できなかったら偽（フィールドはレンダラーが合成する）。
+    weaves: bool,
     /// 一枚が一フィールドのピクチャーのパリティー（tag ごと、トップなら真）。
     parities: std::collections::BTreeMap<u64, bool>,
 }
@@ -361,6 +366,8 @@ impl D3d12 {
             wants: crate::decode::video_process(),
             deinterlacer: None,
             processed: std::collections::VecDeque::new(),
+            weaver: None,
+            weaves: true,
             parities: std::collections::BTreeMap::new(),
         })
     }
@@ -379,18 +386,18 @@ impl D3d12 {
     }
 
     /// デコードと同じスレッドでビデオプロセスに通してデインターレースする。一枚が一フィールドのピクチャーは
-    /// レンダラーがウィーブしてからデインターレースするので通さない。
+    /// 合成してから通す。合成できなければ通さない（レンダラーが合成してからデインターレースする）。
     fn processes(&self) -> bool {
         self.wants != crate::decode::VideoProcess::Off
             && !self.transfer
-            && !self.format.field_pictures
+            && (self.weaves || !self.format.field_pictures)
             && !self
                 .deinterlacer
                 .as_ref()
                 .is_some_and(process::Deinterlacer::refused)
     }
 
-    /// 一枚が一フィールドのピクチャーに、どちらのフィールドかを付ける（レンダラーがウィーブする）。
+    /// 一枚が一フィールドのピクチャーに、どちらのフィールドかを付ける（レンダラーが一枚のフレームに合成する）。
     fn mark_field(&mut self, decoded: &mut Decoded) {
         let Decoded::Surface(surface) = decoded else {
             return;
@@ -404,6 +411,24 @@ impl D3d12 {
             } else {
                 Structure::Bottom
             };
+        }
+    }
+
+    /// フィールドを対にして一枚のフレームに合成する。対がそろうまでは `None`。
+    fn weave(
+        &mut self,
+        frame: &Frame,
+        about: &crate::decode::About,
+    ) -> Result<Option<(Frame, crate::decode::About)>, Error> {
+        if self.weaver.is_none() {
+            self.weaver = Some(weave::Weaver::new(&frame.device)?);
+            tracing::info!(
+                "D3D12: フィールド構造ピクチャーを一枚のフレームに合成してビデオプロセスに渡す"
+            );
+        }
+        match self.weaver.as_mut() {
+            Some(weaver) => weaver.push(frame, about),
+            None => Ok(None),
         }
     }
 
@@ -426,6 +451,24 @@ impl D3d12 {
             Some([frame.width, frame.height])
         };
         let output = output.filter(|_| self.processes());
+        if output.is_some() && about.format.field_pictures {
+            return match self.weave(&frame, &about) {
+                Ok(Some((woven, about))) => self.process(Decoded::Surface(Surface {
+                    about,
+                    held: Where::D3d12(woven),
+                })),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::info!("D3D12: フィールドを合成できない: {error:?}");
+                    self.weaves = false;
+                    self.weaver = None;
+                    Some(Decoded::Surface(Surface {
+                        about,
+                        held: Where::D3d12(frame),
+                    }))
+                }
+            };
+        }
         let Some(output) = output else {
             return Some(Decoded::Surface(Surface {
                 about,
@@ -637,6 +680,9 @@ impl D3d12 {
         if let Some(deinterlacer) = self.deinterlacer.as_mut() {
             deinterlacer.reset();
         }
+        if let Some(weaver) = self.weaver.as_mut() {
+            weaver.reset();
+        }
         let Some(mut session) = self.session.take() else {
             return;
         };
@@ -794,6 +840,9 @@ impl Decode for D3d12 {
         self.processed.clear();
         if let Some(deinterlacer) = self.deinterlacer.as_mut() {
             deinterlacer.reset();
+        }
+        if let Some(weaver) = self.weaver.as_mut() {
+            weaver.reset();
         }
     }
 

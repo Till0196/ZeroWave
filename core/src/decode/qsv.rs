@@ -515,6 +515,12 @@ pub struct Qsv {
     /// サーフェスを GPU のメモリに置いて D3D12 のレンダラーへ渡す（`None` ならメインメモリ）。session より後に drop する。
     #[cfg(all(windows, feature = "d3d12"))]
     gpu: Option<d3d11::Gpu>,
+    /// 一枚が一フィールドのピクチャーは VPP が受け付けないので、D3D12 で一枚のフレームに合成してビデオプロセスに通す。
+    #[cfg(all(windows, feature = "d3d12"))]
+    fields: Option<crate::decode::d3d12::weave::Fields>,
+    /// 通せなかったら真（フィールドはレンダラーが合成する）。
+    #[cfg(all(windows, feature = "d3d12"))]
+    fields_refused: bool,
 }
 
 impl std::fmt::Debug for Qsv {
@@ -599,7 +605,19 @@ impl Qsv {
             vpp_pending: VecDeque::new(),
             #[cfg(all(windows, feature = "d3d12"))]
             gpu,
+            #[cfg(all(windows, feature = "d3d12"))]
+            fields: None,
+            #[cfg(all(windows, feature = "d3d12"))]
+            fields_refused: false,
         })
+    }
+
+    /// 一枚が一フィールドのピクチャーを D3D12 のビデオプロセスでデインターレースするか。
+    fn processes_fields(&self) -> bool {
+        #[cfg(all(windows, feature = "d3d12"))]
+        return self.format.field_pictures && self.gpu.is_some() && !self.fields_refused;
+        #[cfg(not(all(windows, feature = "d3d12")))]
+        false
     }
 
     fn time(&mut self, tag: u64, picture: &Picture, data: &[u8]) -> i64 {
@@ -659,7 +677,8 @@ impl Qsv {
             return Err(Error::Unsupported("a picture larger than any level allows"));
         }
         let mut count = usize::from(request.num_frame_suggested.max(request.num_frame_min)).max(4);
-        let vpp = match self.deinterlace {
+        // 一枚が一フィールドのピクチャーは VPP がデインターレースできない（初期化で断られる）。
+        let vpp = match self.deinterlace.filter(|_| !self.format.field_pictures) {
             Some(mode) => {
                 let (vpp, inputs) = self.configure_vpp(info, mode)?;
                 count += inputs;
@@ -1036,7 +1055,7 @@ impl Qsv {
                 repeat_first_field: false,
                 ..about
             };
-        } else if about.structure.field() {
+        } else if about.structure.field() && !about.format.field_pictures {
             about = About {
                 structure: Structure::Frame,
                 top_field_first: about.structure == Structure::Top,
@@ -1054,10 +1073,28 @@ impl Qsv {
             .map(|gpu| gpu.hand(data.mem_id, wide, about.format.width, about.format.height))
         {
             match handed {
-                Ok(Some(frame)) => self.ready.push_back(Decoded::Surface(super::Surface {
-                    about,
-                    held: super::Held::D3d12(frame),
-                })),
+                Ok(Some(frame)) => {
+                    if about.format.field_pictures && self.processes_fields() {
+                        match self.process_field(&frame, &about) {
+                            Ok(made) => {
+                                self.ready.extend(made);
+                                return;
+                            }
+                            Err(error) => {
+                                tracing::info!(
+                                    "QSV {:?}: フィールドをビデオプロセスに通せない: {error:?}",
+                                    self.codec
+                                );
+                                self.fields_refused = true;
+                                self.fields = None;
+                            }
+                        }
+                    }
+                    self.ready.push_back(Decoded::Surface(super::Surface {
+                        about,
+                        held: super::Held::D3d12(frame),
+                    }));
+                }
                 Ok(None) => self.say("サーフェスにデータがない"),
                 Err(error) => self.say(&format!("フレームを渡せない: {error:?}")),
             }
@@ -1093,6 +1130,29 @@ impl Qsv {
         }));
     }
 
+    #[cfg(all(windows, feature = "d3d12"))]
+    fn process_field(
+        &mut self,
+        frame: &crate::decode::d3d12::Frame,
+        about: &About,
+    ) -> Result<Vec<Decoded>, Error> {
+        if self.fields.is_none() {
+            let bob = self.deinterlace == Some(HwDeinterlace::Bob);
+            self.fields = Some(crate::decode::d3d12::weave::Fields::new(
+                &frame.device,
+                bob,
+            )?);
+            tracing::info!(
+                "QSV {:?}: フィールド構造ピクチャーを D3D12 で一枚のフレームに合成してビデオプロセスに渡す",
+                self.codec
+            );
+        }
+        match self.fields.as_mut() {
+            Some(fields) => fields.push(frame, about),
+            None => Ok(Vec::new()),
+        }
+    }
+
     fn say(&mut self, what: &str) {
         if !self.said {
             self.said = true;
@@ -1113,6 +1173,10 @@ impl Qsv {
                 (entries.decode_close)(self.session.raw);
             }
             drop(stream);
+            #[cfg(all(windows, feature = "d3d12"))]
+            if let Some(fields) = self.fields.as_mut() {
+                fields.reset();
+            }
             #[cfg(all(windows, feature = "d3d12"))]
             if let Some(gpu) = self.gpu.as_mut() {
                 gpu.forget();
@@ -1165,7 +1229,11 @@ impl Decode for Qsv {
         let about = About {
             tag,
             format,
-            structure: picture.structure,
+            // 一枚が一フィールドのピクチャーはどちらのフィールドかを持たせる（合成に要る）。
+            structure: picture
+                .lone_field
+                .filter(|_| format.field_pictures)
+                .unwrap_or(picture.structure),
             top_field_first: picture.top_field_first,
             repeat_first_field: picture.repeat_first_field,
             progressive: picture.progressive,
@@ -1206,6 +1274,10 @@ impl Decode for Qsv {
         if let Err(error) = self.run(None, true) {
             tracing::warn!("QSV {:?}: {error}", self.codec);
         }
+        #[cfg(all(windows, feature = "d3d12"))]
+        if let Some(fields) = self.fields.as_mut() {
+            self.ready.extend(fields.flush());
+        }
     }
 
     fn name(&self) -> String {
@@ -1230,11 +1302,22 @@ impl Decode for Qsv {
     }
 
     fn deinterlaces(&self) -> bool {
-        self.deinterlace.is_some()
+        if self.format.field_pictures {
+            self.processes_fields()
+        } else {
+            self.deinterlace.is_some()
+        }
+    }
+
+    fn marks_fields(&self) -> bool {
+        #[cfg(all(windows, feature = "d3d12"))]
+        return self.gpu.is_some();
+        #[cfg(not(all(windows, feature = "d3d12")))]
+        false
     }
 
     fn pictures_per_frame(&self) -> u32 {
-        if self.deinterlace.is_some() { 2 } else { 1 }
+        if self.deinterlaces() { 2 } else { 1 }
     }
 
     fn reset(&mut self) {

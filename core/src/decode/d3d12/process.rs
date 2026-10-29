@@ -288,7 +288,13 @@ impl Deinterlacer {
                 1 - field
             };
             let at = self.out_for(output, format)?;
-            self.process(&frame, &past, &future, at, output_index)?;
+            // フィールドを合成したフレームは、書き終わりをこのキューで待つ。
+            let ready: Vec<(ID3D12Fence, u64)> = std::iter::once(&frame)
+                .chain(self.past.iter())
+                .chain(self.waiting.iter().map(|(frame, _)| frame))
+                .filter_map(|frame| frame.ready.clone())
+                .collect();
+            self.process(&frame, &past, &future, &ready, at, output_index)?;
             // 読んだ入力は、書き終えるまで持っておく（デコーダーが次のピクチャーを書かないように）。
             let mut holding = vec![frame.clone()];
             holding.extend(self.past.iter().cloned());
@@ -333,6 +339,7 @@ impl Deinterlacer {
         frame: &Frame,
         past: &[Option<ID3D12Resource>],
         future: &[Option<ID3D12Resource>],
+        ready: &[(ID3D12Fence, u64)],
         at: usize,
         output_index: u32,
     ) -> Result<(), Error> {
@@ -436,6 +443,11 @@ impl Deinterlacer {
                 .list
                 .cast()
                 .map_err(|error| failed("ID3D12CommandList", error))?;
+            for (fence, value) in ready {
+                self.queue
+                    .Wait(fence, *value)
+                    .map_err(|error| failed("Wait", error))?;
+            }
             self.queue.ExecuteCommandLists(&[Some(list)]);
             self.value += 1;
             self.queue
