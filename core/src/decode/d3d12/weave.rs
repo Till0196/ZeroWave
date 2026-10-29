@@ -20,8 +20,11 @@ use windows::core::{Interface, PCSTR, s};
 
 use super::Frame;
 use super::dx::{self, Owned, failed};
+#[cfg(feature = "qsv")]
 use super::process::Deinterlacer;
-use crate::decode::{About, Decoded, Error};
+#[cfg(feature = "qsv")]
+use crate::decode::Decoded;
+use crate::decode::{About, Error};
 use mediadecoder::es::Structure;
 
 /// 出力の上限。ビデオプロセスが参照に持つ分と、書いている途中の分があれば足りる。
@@ -431,12 +434,14 @@ impl Weaver {
 }
 
 /// フィールドを合成してからビデオプロセスでデインターレースする（QSV のデコーダーのフィールド）。
+#[cfg(feature = "qsv")]
 #[derive(Debug)]
 pub(crate) struct Fields {
     weaver: Weaver,
     deinterlacer: Deinterlacer,
 }
 
+#[cfg(feature = "qsv")]
 impl Fields {
     pub fn new(raw: &ID3D12Device, bob: bool) -> Result<Self, Error> {
         Ok(Self {
