@@ -25,14 +25,15 @@ mod decode;
 mod kit;
 mod open;
 
+pub(crate) use adapter::same_luid;
 pub use adapter::{
     Adapter, adapters, draws_on, enable_child_probe, enable_dred, name, probe_child, probe_video,
     report_removed,
 };
 pub use copy::profile_name;
 pub(crate) use kit::{
-    Mapping, Owned, adapter_by_luid, completed, create_device, describe, describe_adapter,
-    device_by_luid, factory, footprints, hardware_adapters, luid,
+    Mapping, Owned, adapter_by_luid, buffer, completed, create_device, describe, describe_adapter,
+    device_by_luid, factory, footprints, hardware_adapters, heap, luid, shared_buffer, whole_rows,
 };
 pub(crate) use open::texture;
 
@@ -190,7 +191,7 @@ pub struct Device {
     fence: ID3D12Fence,
     event: Owned,
     value: u64,
-    copy: Option<Copy>,
+    copy: Option<CopyQueue>,
     pending_copy: u64,
     waited_copy: u64,
     stats: Option<Stats>,
@@ -223,7 +224,8 @@ struct Cycle {
     value: u64,
 }
 
-struct Copy {
+/// コピーキューと、その一本のコマンドリスト。前のコピーを待ってから次を積む。
+pub(crate) struct CopyQueue {
     queue: ID3D12CommandQueue,
     allocator: ID3D12CommandAllocator,
     list: ID3D12GraphicsCommandList,
@@ -234,15 +236,56 @@ struct Copy {
     holding: Vec<(u64, ID3D12Resource)>,
 }
 
-impl Copy {
+impl CopyQueue {
+    pub(crate) fn new(raw: &ID3D12Device) -> Result<Self, Error> {
+        // SAFETY: the description is a live local; the device outlives the objects.
+        unsafe {
+            let queue: ID3D12CommandQueue = raw
+                .CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
+                    Type: D3D12_COMMAND_LIST_TYPE_COPY,
+                    ..Default::default()
+                })
+                .map_err(|error| failed("CreateCommandQueue", error))?;
+            name(&queue, "zerowave コピーキュー");
+            let allocator: ID3D12CommandAllocator = raw
+                .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY)
+                .map_err(|error| failed("CreateCommandAllocator", error))?;
+            let list: ID3D12GraphicsCommandList = raw
+                .CreateCommandList(
+                    0,
+                    D3D12_COMMAND_LIST_TYPE_COPY,
+                    &allocator,
+                    None::<&ID3D12PipelineState>,
+                )
+                .map_err(|error| failed("CreateCommandList", error))?;
+            list.Close().map_err(|error| failed("Close", error))?;
+            let fence: ID3D12Fence = raw
+                .CreateFence(0, D3D12_FENCE_FLAG_NONE)
+                .map_err(|error| failed("CreateFence", error))?;
+            Ok(Self {
+                queue,
+                allocator,
+                list,
+                fence,
+                value: 0,
+                event: Owned::event()?,
+                holding: Vec::new(),
+            })
+        }
+    }
+
     fn settle(&mut self) -> Result<(), Error> {
-        self.event.wait_fence(&self.fence, self.value)?;
+        self.wait(self.value)?;
         self.holding.clear();
         Ok(())
     }
 
+    pub(crate) fn wait(&self, value: u64) -> Result<(), Error> {
+        self.event.wait_fence(&self.fence, value)
+    }
+
     /// 前のコピーを待ってからコマンドリストを開く。`after` があれば、キューにそのフェンスを先に待たせる。
-    fn begin(&mut self, after: Option<(&ID3D12Fence, u64)>) -> Result<(), Error> {
+    pub(crate) fn begin(&mut self, after: Option<(&ID3D12Fence, u64)>) -> Result<(), Error> {
         self.settle()?;
         if let Some((fence, value)) = after {
             // SAFETY: フェンスもキューもこのデバイスのもの。待機はキューに積まれる。
@@ -260,7 +303,7 @@ impl Copy {
     }
 
     /// 開いたリストにコピーを一つ積む。コピーキューは `COMMON` を自動で昇格・減衰させるのでバリアは要らない。
-    fn region(
+    pub(crate) fn region(
         &self,
         destination: &D3D12_TEXTURE_COPY_LOCATION,
         source: &D3D12_TEXTURE_COPY_LOCATION,
@@ -272,8 +315,23 @@ impl Copy {
         };
     }
 
+    /// テクスチャのプレーンを、`layouts` の配置でバッファへ。
+    pub(crate) fn planes_into(
+        &self,
+        texture: &ID3D12Resource,
+        buffer: &ID3D12Resource,
+        layouts: &[D3D12_PLACED_SUBRESOURCE_FOOTPRINT],
+    ) {
+        for (plane, layout) in layouts.iter().enumerate() {
+            self.region(
+                &placed(buffer, *layout),
+                &subresource(texture, plane as u32),
+            );
+        }
+    }
+
     /// リストを閉じて実行し、終わると到達するフェンスの値を返す。
-    fn submit(&mut self) -> Result<u64, Error> {
+    pub(crate) fn submit(&mut self) -> Result<u64, Error> {
         // SAFETY: リストは開いていて、`begin` 以降に積んだコピーだけを持つ。
         unsafe { self.list.Close() }.map_err(|error| failed("Close", error))?;
         let list: ID3D12CommandList = self
@@ -290,6 +348,31 @@ impl Copy {
                 .map_err(|error| failed("Signal", error))?;
         }
         Ok(value)
+    }
+}
+
+/// テクスチャのサブリソース（プレーン・配列のスライス）を指すコピーの位置。
+pub(crate) fn subresource(resource: &ID3D12Resource, index: u32) -> D3D12_TEXTURE_COPY_LOCATION {
+    D3D12_TEXTURE_COPY_LOCATION {
+        pResource: borrow(resource),
+        Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+            SubresourceIndex: index,
+        },
+    }
+}
+
+/// バッファの中の、一プレーン分の配置を指すコピーの位置。
+pub(crate) fn placed(
+    buffer: &ID3D12Resource,
+    layout: D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
+) -> D3D12_TEXTURE_COPY_LOCATION {
+    D3D12_TEXTURE_COPY_LOCATION {
+        pResource: borrow(buffer),
+        Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+        Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
+            PlacedFootprint: layout,
+        },
     }
 }
 

@@ -123,7 +123,7 @@ pub fn draws_on(name: &str) -> bool {
         .any(|adapter| adapter.name == name && same_luid(adapter.luid, drawing))
 }
 
-pub(super) fn same_luid(
+pub(crate) fn same_luid(
     a: windows::Win32::Foundation::LUID,
     b: windows::Win32::Foundation::LUID,
 ) -> bool {
