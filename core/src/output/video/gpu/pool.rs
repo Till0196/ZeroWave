@@ -77,7 +77,9 @@ impl Capability {
         const GIVE_UP_AFTER: usize = 3;
         const GIVE_UP_OVER: f64 = 3.0;
         let (upload, staged_ms, mapped_ms) = Upload::measure(device, queue);
-        // Weave は候補に無いが基準として計測する（他との差がフィルターそのものの負荷）。
+        // 品質の順に測り、間に合う物が見つかったらやめる（[`Self::affordable`] が選ぶのはその物）。最後の Bob は
+        // 何も間に合わないときに測らずに選ぶ。方式ごとにシェーダーをコンパイルし、ドライバーはそのメモリーを
+        // 手放さないので、使わない方式は測らない。
         let mut costs = Vec::new();
         let mut video = match Video::for_measure(
             device,
@@ -97,12 +99,12 @@ impl Capability {
             }
         };
         let frame = measured(format);
-        for quality in [
-            Deinterlace::Weave,
-            Deinterlace::Bwdif,
-            Deinterlace::Yadif,
-            Deinterlace::Bob,
-        ] {
+        let budget = FIELD_BUDGET_MS * AFFORDABLE;
+        let tried = &Deinterlace::LADDER[..Deinterlace::LADDER.len() - 1];
+        for &quality in tried {
+            if costs.iter().any(|(_, cost)| *cost <= budget) {
+                break;
+            }
             video.set_settings(Settings {
                 deinterlace: quality,
                 ..video.settings()
