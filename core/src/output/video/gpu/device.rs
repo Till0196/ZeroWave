@@ -201,6 +201,16 @@ impl Gpu {
         })
     }
 
+    /// 同じデバイスとキューを指す組（作り直さない）。
+    pub fn shared(&self) -> Self {
+        Self {
+            instance: self.instance.clone(),
+            adapter: self.adapter.clone(),
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+        }
+    }
+
     #[cfg(not(any(
         any(feature = "vaapi", all(feature = "nvdec", target_os = "linux")),
         all(feature = "videotoolbox", target_vendor = "apple"),

@@ -180,7 +180,8 @@ impl Panes {
             drawn_shown: None,
             popup_area: None,
             textures: ui::panes::databroadcast::Textures::default(),
-            gpu,
+            base: gpu,
+            gpu: None,
             reopen: Vec::new(),
             guide_to,
             listed,
@@ -257,6 +258,9 @@ impl Panes {
 }
 
 struct Screen {
+    /// 映像のデバイス。別ウィンドウ用のデバイスはここから作る。
+    base: Option<Gpu>,
+    /// 別ウィンドウ用のデバイス。初めて別ウィンドウを開くときに作る（使わない視聴では要らない）。
     gpu: Option<Gpu>,
     /// デバイスを失ったときに閉じたウィンドウ。次のデバイスで開き直す。
     reopen: Vec<Which>,
