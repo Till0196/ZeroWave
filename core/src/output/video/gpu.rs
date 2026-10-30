@@ -256,8 +256,11 @@ fn slots(format: Format, shape: Shape) -> usize {
         * if format.depth > 8 { 2 } else { 1 }
         * 3
         / 2;
-    (BUDGET / bytes.max(1)).clamp(6, 16) as usize
+    (BUDGET / bytes.max(1)).clamp(FEWEST_SLOTS as u64, 16) as usize
 }
+
+/// プールのスロットの下限。
+const FEWEST_SLOTS: usize = 6;
 
 /// フレームレート変換：長さ `step` の間に来る目標の時刻の位相。一つも来なければ 0 を一つ。
 fn retime_phases(at: &mut f64, step: f64) -> Vec<f32> {
