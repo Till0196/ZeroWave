@@ -47,6 +47,22 @@ impl Screen {
         self.gpu.as_ref().map(|gpu| gpu.device.clone())
     }
 
+    /// 別ウィンドウ用のデバイス。まだ無ければ映像と同じアダプターに作る。キューを分ければ別ウィンドウの処理が
+    /// 放送の映像の提示の前に入らない。作れない環境では映像のデバイスを共有する。
+    fn window_gpu(&mut self) -> Option<&Gpu> {
+        if self.gpu.is_none() {
+            let base = self.base.as_ref()?;
+            self.gpu = Some(match base.beside() {
+                Ok(beside) => beside,
+                Err(error) => {
+                    tracing::warn!("別ウィンドウ用のデバイスを開けない（映像と共有する）: {error}");
+                    base.shared()
+                }
+            });
+        }
+        self.gpu.as_ref()
+    }
+
     /// `zerowave.toml` が外で直されたら読み直す（一秒に一度、更新時刻だけ見る）。
     fn watch(&mut self) {
         let now = Instant::now();
@@ -259,7 +275,8 @@ impl Screen {
                 let mut open = std::mem::take(&mut self.reopen);
                 open.extend(self.close_all());
                 let _ = self.proxy.send_event(Wake);
-                self.gpu = Some(gpu);
+                self.base = Some(gpu);
+                self.gpu = None;
                 self.about = None;
                 for what in open {
                     self.open(what);
@@ -268,6 +285,7 @@ impl Screen {
             ToPanes::DropGpu => {
                 let closed = self.close_all();
                 self.reopen.extend(closed);
+                self.base = None;
                 self.gpu = None;
                 self.about = None;
             }
@@ -413,7 +431,7 @@ impl Screen {
         let paper = what.paper();
         let face = match &paint {
             crate::window::sub::Paint::Wgpu { .. } => {
-                let Some(gpu) = self.gpu.as_ref() else {
+                let Some(gpu) = self.window_gpu() else {
                     tracing::info!("wgpu のデバイスが無いため、別ウィンドウを開けない");
                     return;
                 };

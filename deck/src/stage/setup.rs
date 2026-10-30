@@ -253,7 +253,7 @@ impl Stage {
         self.player.start();
     }
 
-    /// wgpu で開く。返るのは別ウィンドウ用のデバイス。開けなければ終わることにして `None`。
+    /// wgpu で開く。返るのは映像のデバイス（別ウィンドウ用のデバイスはそこから作る）。開けなければ終わることにして `None`。
     fn open_painter(&mut self) -> Option<Option<Gpu>> {
         if self.painter.is_none() {
             let opened = match self.recovery.injected_failure() {
@@ -311,20 +311,8 @@ impl Stage {
                 gpu.queue.clone(),
             );
         }
-        // キューを分ければ別ウィンドウの処理が放送の映像の提示の前に入らない。分けられない環境では共有する。
-        let beside = match gpu.beside() {
-            Ok(beside) => beside,
-            Err(error) => {
-                tracing::warn!("別ウィンドウ用のデバイスを開けない（映像と共有する）: {error}");
-                Gpu {
-                    instance: gpu.instance.clone(),
-                    adapter: gpu.adapter.clone(),
-                    device: gpu.device.clone(),
-                    queue: gpu.queue.clone(),
-                }
-            }
-        };
-        Some(Some(beside))
+        // 別ウィンドウ用のデバイスは別ウィンドウのスレッドが初めて開くときに作る（使わなければ要らない）。
+        Some(Some(gpu.shared()))
     }
 
     /// バックエンドを替える：デバイスとサーフェスを捨て、メインスレッドにインスタンスを作り直してもらう。
