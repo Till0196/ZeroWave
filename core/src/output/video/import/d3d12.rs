@@ -122,25 +122,10 @@ impl Direct {
     }
 
     fn wrap(&self, frame: &Frame) -> Vec<wgpu::TextureView> {
-        let planes = if frame.ten_bit {
-            [
-                (0u32, wgpu::TextureFormat::R16Unorm, 1u32),
-                (1, wgpu::TextureFormat::Rg16Unorm, 2),
-            ]
-        } else {
-            [
-                (0, wgpu::TextureFormat::R8Unorm, 1),
-                (1, wgpu::TextureFormat::Rg8Unorm, 2),
-            ]
-        };
-        planes
+        planes(frame)
             .into_iter()
-            .map(|(plane, format, divisor)| {
-                let size = wgpu::Extent3d {
-                    width: frame.width.div_ceil(divisor),
-                    height: frame.height.div_ceil(divisor),
-                    depth_or_array_layers: 1,
-                };
+            .zip(0u32..)
+            .map(|((format, size), plane)| {
                 // SAFETY: このデバイスのテクスチャで、形式と大きさは宣言どおり。コピーを持つ間は有効。
                 let hal = unsafe {
                     wgpu::hal::dx12::Device::texture_from_raw(
@@ -179,4 +164,22 @@ impl Direct {
     pub fn forget(&mut self) {
         self.made.clear();
     }
+}
+
+/// プレーンごとの形式と大きさ（NV12・P010 の輝度と、縦横半分の色差）。
+pub(super) fn planes(frame: &Frame) -> [(wgpu::TextureFormat, wgpu::Extent3d); 2] {
+    let formats = if frame.ten_bit {
+        [
+            wgpu::TextureFormat::R16Unorm,
+            wgpu::TextureFormat::Rg16Unorm,
+        ]
+    } else {
+        [wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm]
+    };
+    let size = |divisor: u32| wgpu::Extent3d {
+        width: frame.width.div_ceil(divisor),
+        height: frame.height.div_ceil(divisor),
+        depth_or_array_layers: 1,
+    };
+    [(formats[0], size(1)), (formats[1], size(2))]
 }

@@ -12,15 +12,14 @@ use std::sync::Arc;
 use ash::vk;
 use wgpu::hal::api::Vulkan;
 use windows::Win32::Foundation::LUID;
-use windows::Win32::Graphics::Direct3D12::*;
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Direct3D12::{ID3D12Device, ID3D12Resource};
 use windows::core::Interface;
 
 use crate::decode::d3d12::Frame;
-use crate::decode::d3d12::dx::{self, Owned, borrow};
+use crate::decode::d3d12::dx::{self, CopyQueue, Owned};
 use crate::output::video::Error;
 
-use super::d3d12::Taken;
+use super::d3d12::{Taken, planes};
 
 /// wgpu が有効にせず、D3D12 のバッファの取り込みに要る拡張。
 pub const EXTENSIONS: &[&CStr] = &[ash::khr::external_memory_win32::NAME];
@@ -37,8 +36,7 @@ const HANDLE_TYPE: vk::ExternalMemoryHandleTypeFlags =
 /// Vulkan のデバイスと同じ GPU の D3D12 のデバイス（デコーダーに使わせる）。取り込みの拡張が無ければ `None`。
 /// D3D12 はアダプターごとにデバイスを一つしか作らないので、何度呼んでも同じデバイスが返る。
 pub fn beside(device: &wgpu::Device) -> Option<ID3D12Device> {
-    let luid = vulkan_luid(device)?;
-    dx::device_by_luid(luid).ok()
+    dx::device_by_luid(vulkan_luid(device)?).ok()
 }
 
 fn vulkan_luid(device: &wgpu::Device) -> Option<LUID> {
@@ -48,19 +46,20 @@ fn vulkan_luid(device: &wgpu::Device) -> Option<LUID> {
             if !hal.enabled_device_extensions().contains(&EXTENSIONS[0]) {
                 return None;
             }
-            let instance = hal.shared_instance().raw_instance();
             let mut id = vk::PhysicalDeviceIDProperties::default();
-            {
-                let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut id);
-                instance
-                    .get_physical_device_properties2(hal.raw_physical_device(), &mut properties);
-            }
+            hal.shared_instance()
+                .raw_instance()
+                .get_physical_device_properties2(
+                    hal.raw_physical_device(),
+                    &mut vk::PhysicalDeviceProperties2::default().push_next(&mut id),
+                );
             (id.device_luid_valid == vk::TRUE).then_some(id.device_luid)
         })
     }?;
+    let [a, b, c, d, e, f, g, h] = bytes;
     Some(LUID {
-        LowPart: u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
-        HighPart: i32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        LowPart: u32::from_ne_bytes([a, b, c, d]),
+        HighPart: i32::from_ne_bytes([e, f, g, h]),
     })
 }
 
@@ -68,14 +67,13 @@ fn vulkan_luid(device: &wgpu::Device) -> Option<LUID> {
 struct Shared {
     resource: ID3D12Resource,
     buffer: wgpu::Buffer,
-    size: u64,
     /// このバッファから読む最後の送信。D3D12 が次に書く前に終わっていなければならない。
     read: Option<wgpu::SubmissionIndex>,
 }
 
 /// スロットへ渡すプレーンのテクスチャの組。スロットが手放すまで（`Arc` が一つになるまで）書かない。
 struct Out {
-    key: (u32, u32, bool),
+    planes: [(wgpu::TextureFormat, wgpu::Extent3d); 2],
     textures: [wgpu::Texture; 2],
     views: Vec<wgpu::TextureView>,
 }
@@ -86,12 +84,7 @@ pub struct Import {
     memory: ash::khr::external_memory_win32::Device,
     kinds: vk::PhysicalDeviceMemoryProperties,
     d3d: ID3D12Device,
-    queue: ID3D12CommandQueue,
-    allocator: ID3D12CommandAllocator,
-    list: ID3D12GraphicsCommandList,
-    fence: ID3D12Fence,
-    event: Owned,
-    step: u64,
+    copy: CopyQueue,
     shared: Vec<Shared>,
     next: usize,
     outs: Vec<Arc<Out>>,
@@ -111,13 +104,6 @@ impl std::fmt::Debug for Import {
 // SAFETY: COM のインターフェイスはスレッドに縛られない。使うのは映像のスレッド一つだけ。
 unsafe impl Send for Import {}
 
-impl Drop for Import {
-    fn drop(&mut self) {
-        // 待ったコピーしか投入しないが、念のため最後の値まで待ってから D3D12 のオブジェクトを手放す。
-        let _ = self.event.wait_fence(&self.fence, self.step);
-    }
-}
-
 fn from_decode(error: crate::decode::Error) -> Error {
     Error::NoDevice(error.to_string())
 }
@@ -125,10 +111,7 @@ fn from_decode(error: crate::decode::Error) -> Error {
 impl Import {
     pub fn new(device: &wgpu::Device) -> Option<Self> {
         let luid = vulkan_luid(device)?;
-        let d3d = dx::adopted().filter(|adopted| {
-            let adopted = dx::luid(adopted);
-            adopted.LowPart == luid.LowPart && adopted.HighPart == luid.HighPart
-        })?;
+        let d3d = dx::adopted().filter(|adopted| dx::same_luid(dx::luid(adopted), luid))?;
         // SAFETY: as_hal の間だけ借り、持ち出すのは `wgpu::Device` と同じだけ生きる `ash` のハンドルだけ。
         let (raw, memory, kinds) = unsafe {
             device.as_hal::<Vulkan>().map(|hal| {
@@ -140,31 +123,13 @@ impl Import {
                 (raw, memory, kinds)
             })
         }?;
-        // SAFETY: どの引数も有効なローカル変数。
-        let made = unsafe {
-            (|| -> windows::core::Result<_> {
-                let queue: ID3D12CommandQueue =
-                    d3d.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC {
-                        Type: D3D12_COMMAND_LIST_TYPE_COPY,
-                        ..Default::default()
-                    })?;
-                let allocator: ID3D12CommandAllocator =
-                    d3d.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY)?;
-                let list: ID3D12GraphicsCommandList =
-                    d3d.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY, &allocator, None)?;
-                list.Close()?;
-                let fence: ID3D12Fence = d3d.CreateFence(0, D3D12_FENCE_FLAG_NONE)?;
-                Ok((queue, allocator, list, fence))
-            })()
-        };
-        let (queue, allocator, list, fence) = match made {
-            Ok(made) => made,
+        let copy = match CopyQueue::new(&d3d) {
+            Ok(copy) => copy,
             Err(error) => {
                 tracing::warn!("Vulkan へ渡す D3D12 のコピーキューを作れない: {error}");
                 return None;
             }
         };
-        let event = Owned::event().ok()?;
         // 映像を作り直すたびに作られるので、言うのは一度だけ。
         static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
@@ -176,12 +141,7 @@ impl Import {
             memory,
             kinds,
             d3d,
-            queue,
-            allocator,
-            list,
-            fence,
-            event,
-            step: 0,
+            copy,
             shared: Vec::new(),
             next: 0,
             outs: Vec::new(),
@@ -193,35 +153,33 @@ impl Import {
             return Err(Error::Unsupported("a picture from another device"));
         }
         let (layouts, rows, total) = dx::footprints(&self.d3d, &dx::describe(&frame.texture), 2);
-        // 最後の行も RowPitch 分読むので、`total`（最後の行は実際の幅まで）より大きく取る。
-        let total = layouts
-            .iter()
-            .zip(&rows)
-            .map(|(layout, rows)| {
-                layout.Offset + u64::from(layout.Footprint.RowPitch) * u64::from(*rows)
-            })
-            .fold(total, u64::max);
-        let index = self.shared_for(total)?;
-        let resource = self.shared[index].resource.clone();
-        self.copy(frame, &layouts, &resource)?;
-
+        let index = self.shared_for(dx::whole_rows(&layouts, &rows, total))?;
         let out = self.out(frame)?;
+        let shared = &self.shared[index];
+
+        // デコーダーが書き終わるのをコピーキューの GPU の上で待ち、コピーの終わりは CPU で待つ。
+        self.copy
+            .begin(frame.ready.as_ref().map(|(fence, value)| (fence, *value)))
+            .map_err(from_decode)?;
+        self.copy
+            .planes_into(&frame.texture, &shared.resource, &layouts);
+        let value = self.copy.submit().map_err(from_decode)?;
+        self.copy.wait(value).map_err(from_decode)?;
+
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("shared planes"),
             });
-        for plane in 0..2 {
-            let texture = &out.textures[plane];
-            let layout = &layouts[plane];
+        for ((texture, layout), rows) in out.textures.iter().zip(&layouts).zip(rows) {
             let extent = wgpu::Extent3d {
                 width: texture.width().min(layout.Footprint.Width),
-                height: texture.height().min(rows[plane]),
+                height: texture.height().min(rows),
                 depth_or_array_layers: 1,
             };
             encoder.copy_buffer_to_texture(
                 wgpu::TexelCopyBufferInfo {
-                    buffer: &self.shared[index].buffer,
+                    buffer: &shared.buffer,
                     layout: wgpu::TexelCopyBufferLayout {
                         offset: layout.Offset,
                         bytes_per_row: Some(layout.Footprint.RowPitch),
@@ -233,7 +191,7 @@ impl Import {
             );
         }
         self.shared[index].read = Some(queue.submit([encoder.finish()]));
-        // コピーし終えたのでデコーダーのフレーム（`lease`）はもう要らない。スロットが持つのはこちらのテクスチャ。
+        // デコーダーのフレーム（`lease`）はもう要らない。スロットが持つのはこちらのテクスチャ。
         let views = out.views.clone();
         Ok((views, Some(out as Arc<dyn std::any::Any + Send + Sync>)))
     }
@@ -255,7 +213,7 @@ impl Import {
         if self
             .shared
             .get(index)
-            .is_some_and(|shared| shared.size >= size)
+            .is_some_and(|shared| shared.buffer.size() >= size)
         {
             return Ok(index);
         }
@@ -269,7 +227,8 @@ impl Import {
     }
 
     fn make_shared(&self, size: u64) -> Result<Shared, Error> {
-        let resource = shared_buffer(&self.d3d, size)?;
+        let resource = dx::shared_buffer(&self.d3d, size).map_err(from_decode)?;
+        // NT ハンドルは取り込んでも引き取られないので、この関数を出たら閉じる。
         let handle = Owned::shared(&self.d3d, &resource).map_err(from_decode)?;
         let mut external = vk::ExternalMemoryBufferCreateInfo::default().handle_types(HANDLE_TYPE);
         let create = vk::BufferCreateInfo::default()
@@ -280,7 +239,6 @@ impl Import {
         // SAFETY: `create` のポインタはどれも有効なローカル変数で、デバイスはこの構造体の物。
         let buffer = unsafe { self.raw.create_buffer(&create, None) }
             .map_err(|error| Error::NoDevice(format!("vkCreateBuffer: {error}")))?;
-        // ハンドルは取り込みが参照を持つので、この関数を出たら閉じてよい（NT ハンドルは引き取られない）。
         let (memory, allocated) = match self.bind(buffer, handle.raw().0 as vk::HANDLE) {
             Ok(bound) => bound,
             Err(error) => {
@@ -289,13 +247,10 @@ impl Import {
                 return Err(error);
             }
         };
-        // SAFETY: このデバイスで作り、専用に確保したメモリを結んだバッファ。以後は wgpu が両方を手放す。
-        let hal =
-            unsafe { wgpu::hal::vulkan::Buffer::from_raw_managed(buffer, memory, 0, allocated) };
-        // SAFETY: いま作った未使用のバッファで、記述どおりの大きさと用途。
+        // SAFETY: このデバイスで作り、専用に確保したメモリを結んだ未使用のバッファ。以後は wgpu が両方を手放す。
         let buffer = unsafe {
             self.device.create_buffer_from_hal::<Vulkan>(
-                hal,
+                wgpu::hal::vulkan::Buffer::from_raw_managed(buffer, memory, 0, allocated),
                 &wgpu::BufferDescriptor {
                     label: Some("shared planes"),
                     size,
@@ -307,7 +262,6 @@ impl Import {
         Ok(Shared {
             resource,
             buffer,
-            size,
             read: None,
         })
     }
@@ -329,16 +283,8 @@ impl Import {
             Ok(()) => properties.memory_type_bits,
             Err(_) => u32::MAX,
         };
-        let usable = requirements.memory_type_bits & allowed;
-        let count = (self.kinds.memory_type_count as usize).min(vk::MAX_MEMORY_TYPES);
-        let local = |bit: usize| {
-            self.kinds.memory_types[bit]
-                .property_flags
-                .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
-        };
-        let kind = (0..count)
-            .filter(|bit| usable & (1 << bit) != 0)
-            .max_by_key(|bit| local(*bit))
+        let kind = self
+            .memory_kind(requirements.memory_type_bits & allowed)
             .ok_or(Error::Unsupported(
                 "no memory a shared buffer can be read from",
             ))?;
@@ -351,7 +297,7 @@ impl Import {
             .push_next(&mut import)
             .push_next(&mut dedicated)
             .allocation_size(requirements.size)
-            .memory_type_index(kind as u32);
+            .memory_type_index(kind);
         // SAFETY: 繋いだ構造体は有効なローカル変数。ハンドルの所有は移らない。
         let memory = unsafe { self.raw.allocate_memory(&allocate, None) }
             .map_err(|error| Error::NoDevice(format!("vkAllocateMemory: {error}")))?;
@@ -364,100 +310,40 @@ impl Import {
         Ok((memory, requirements.size))
     }
 
-    /// フレームのプレーンを共有したバッファへ D3D12 のコピーキューで置き、終わるまで待つ。
-    fn copy(
-        &mut self,
-        frame: &Frame,
-        layouts: &[D3D12_PLACED_SUBRESOURCE_FOOTPRINT; 2],
-        into: &ID3D12Resource,
-    ) -> Result<(), Error> {
-        let failed =
-            |what: &str, error: windows::core::Error| Error::NoDevice(format!("{what}: {error}"));
-        // SAFETY: アロケーターとリストはこの構造体の物で、前のコピーは待ち終えている。
-        unsafe {
-            self.allocator
-                .Reset()
-                .map_err(|error| failed("CommandAllocator::Reset", error))?;
-            self.list
-                .Reset(&self.allocator, None)
-                .map_err(|error| failed("CommandList::Reset", error))?;
-            for (plane, layout) in layouts.iter().enumerate() {
-                let destination = D3D12_TEXTURE_COPY_LOCATION {
-                    pResource: borrow(into),
-                    Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                        PlacedFootprint: *layout,
-                    },
-                };
-                let source = D3D12_TEXTURE_COPY_LOCATION {
-                    pResource: borrow(&frame.texture),
-                    Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                        SubresourceIndex: plane as u32,
-                    },
-                };
-                self.list
-                    .CopyTextureRegion(&destination, 0, 0, 0, &source, None);
-            }
-            self.list
-                .Close()
-                .map_err(|error| failed("CommandList::Close", error))?;
-            // デコーダーが書き終わるのを、このキューの GPU の上で待つ。
-            if let Some((fence, value)) = frame.ready.as_ref() {
-                self.queue
-                    .Wait(fence, *value)
-                    .map_err(|error| failed("Queue::Wait", error))?;
-            }
-            self.queue.ExecuteCommandLists(&[Some(
-                self.list
-                    .cast()
-                    .map_err(|error| failed("cast to ID3D12CommandList", error))?,
-            )]);
-            self.step += 1;
-            self.queue
-                .Signal(&self.fence, self.step)
-                .map_err(|error| failed("Queue::Signal", error))?;
-        }
-        self.event
-            .wait_fence(&self.fence, self.step)
-            .map_err(from_decode)
+    /// `usable` のビットのうち、GPU のメモリーを優先した種類。
+    fn memory_kind(&self, usable: u32) -> Option<u32> {
+        let count = (self.kinds.memory_type_count as usize).min(vk::MAX_MEMORY_TYPES);
+        self.kinds.memory_types[..count]
+            .iter()
+            .zip(0u32..)
+            .filter(|(_, bit)| usable & (1 << bit) != 0)
+            .max_by_key(|(kind, _)| {
+                kind.property_flags
+                    .contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+            })
+            .map(|(_, bit)| bit)
     }
 
     /// スロットが手放したテクスチャの組。無ければ作る。
     fn out(&mut self, frame: &Frame) -> Result<Arc<Out>, Error> {
-        let key = (frame.width, frame.height, frame.ten_bit);
+        let planes = planes(frame);
         // 大きさの替わった組は、手放されたものから捨てる。
         self.outs
-            .retain(|out| out.key == key || Arc::strong_count(out) > 1);
+            .retain(|out| out.planes == planes || Arc::strong_count(out) > 1);
         if let Some(free) = self
             .outs
             .iter()
-            .find(|out| out.key == key && Arc::strong_count(out) == 1)
+            .find(|out| out.planes == planes && Arc::strong_count(out) == 1)
         {
             return Ok(free.clone());
         }
         if self.outs.len() >= OUTS_MOST {
             return Err(Error::Unsupported("every converted picture is still held"));
         }
-        let planes = if frame.ten_bit {
-            [
-                (wgpu::TextureFormat::R16Unorm, 1u32),
-                (wgpu::TextureFormat::Rg16Unorm, 2),
-            ]
-        } else {
-            [
-                (wgpu::TextureFormat::R8Unorm, 1),
-                (wgpu::TextureFormat::Rg8Unorm, 2),
-            ]
-        };
-        let textures = planes.map(|(format, divisor)| {
+        let textures = planes.map(|(format, size)| {
             self.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("shared plane"),
-                size: wgpu::Extent3d {
-                    width: frame.width.div_ceil(divisor),
-                    height: frame.height.div_ceil(divisor),
-                    depth_or_array_layers: 1,
-                },
+                size,
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -471,7 +357,7 @@ impl Import {
             .map(|texture| texture.create_view(&wgpu::TextureViewDescriptor::default()))
             .collect();
         let out = Arc::new(Out {
-            key,
+            planes,
             textures,
             views,
         });
@@ -480,47 +366,7 @@ impl Import {
     }
 
     pub fn forget(&mut self) {
-        // スロットが持っている組はスロットが捨てる。ここでは手放されたものだけ。
+        // スロットが持っている組はスロットが手放す。
         self.outs.retain(|out| Arc::strong_count(out) > 1);
     }
-}
-
-/// D3D12 が書き、Vulkan が取り込む線形のバッファ。`D3D12_HEAP_FLAG_SHARED` が無いと共有できない。
-fn shared_buffer(device: &ID3D12Device, size: u64) -> Result<ID3D12Resource, Error> {
-    let properties = D3D12_HEAP_PROPERTIES {
-        Type: D3D12_HEAP_TYPE_DEFAULT,
-        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-        CreationNodeMask: 1,
-        VisibleNodeMask: 1,
-    };
-    let description = D3D12_RESOURCE_DESC {
-        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-        Alignment: 0,
-        Width: size,
-        Height: 1,
-        DepthOrArraySize: 1,
-        MipLevels: 1,
-        Format: DXGI_FORMAT(0),
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-        Flags: D3D12_RESOURCE_FLAG_NONE,
-    };
-    let mut made: Option<ID3D12Resource> = None;
-    // SAFETY: both descriptions and `made` are live locals.
-    unsafe {
-        device.CreateCommittedResource(
-            &properties,
-            D3D12_HEAP_FLAG_SHARED,
-            &description,
-            D3D12_RESOURCE_STATE_COMMON,
-            None,
-            &mut made,
-        )
-    }
-    .map_err(|error| Error::NoDevice(format!("CreateCommittedResource（共有）: {error}")))?;
-    made.ok_or_else(|| Error::NoDevice(String::from("共有のバッファが確保できません")))
 }

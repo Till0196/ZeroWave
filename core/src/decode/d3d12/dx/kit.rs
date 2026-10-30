@@ -5,10 +5,8 @@
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE, LUID, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0;
-use windows::Win32::Graphics::Direct3D12::{
-    D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_RANGE, D3D12_RESOURCE_DESC, D3D12CreateDevice,
-    ID3D12Device, ID3D12DeviceChild, ID3D12Fence, ID3D12Resource,
-};
+use windows::Win32::Graphics::Direct3D12::*;
+use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_SAMPLE_DESC};
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, DXGI_ADAPTER_DESC1, DXGI_ADAPTER_FLAG, DXGI_ADAPTER_FLAG_SOFTWARE,
     DXGI_SHARED_RESOURCE_READ, DXGI_SHARED_RESOURCE_WRITE, IDXGIAdapter1, IDXGIFactory1,
@@ -130,6 +128,73 @@ pub(crate) fn footprints(
         );
     }
     (layouts, rows, total)
+}
+
+/// `footprints` の大きさは最後の行を実際の幅までしか数えない。行ごとに `RowPitch` 分読み書きするときの大きさ。
+pub(crate) fn whole_rows(
+    layouts: &[D3D12_PLACED_SUBRESOURCE_FOOTPRINT],
+    rows: &[u32],
+    total: u64,
+) -> u64 {
+    layouts
+        .iter()
+        .zip(rows)
+        .map(|(layout, rows)| {
+            layout.Offset + u64::from(layout.Footprint.RowPitch) * u64::from(*rows)
+        })
+        .fold(total, u64::max)
+}
+
+pub(crate) fn heap(kind: D3D12_HEAP_TYPE) -> D3D12_HEAP_PROPERTIES {
+    D3D12_HEAP_PROPERTIES {
+        Type: kind,
+        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+        CreationNodeMask: 1,
+        VisibleNodeMask: 1,
+    }
+}
+
+pub(crate) fn buffer(
+    raw: &ID3D12Device,
+    size: u64,
+    kind: D3D12_HEAP_TYPE,
+    flags: D3D12_HEAP_FLAGS,
+    state: D3D12_RESOURCE_STATES,
+) -> Result<ID3D12Resource, Error> {
+    let description = D3D12_RESOURCE_DESC {
+        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
+        Alignment: 0,
+        Width: size.max(1),
+        Height: 1,
+        DepthOrArraySize: 1,
+        MipLevels: 1,
+        Format: DXGI_FORMAT(0),
+        SampleDesc: DXGI_SAMPLE_DESC {
+            Count: 1,
+            Quality: 0,
+        },
+        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
+        Flags: D3D12_RESOURCE_FLAG_NONE,
+    };
+    let mut buffer: Option<ID3D12Resource> = None;
+    // SAFETY: both descriptions are live locals; `buffer` is written at most once.
+    unsafe {
+        raw.CreateCommittedResource(&heap(kind), flags, &description, state, None, &mut buffer)
+    }
+    .map_err(|error| failed("CreateCommittedResource", error))?;
+    buffer.ok_or_else(|| Error::Unavailable(String::from("バッファが確保できません")))
+}
+
+/// 別の API（CUDA・Vulkan）が取り込む線形のバッファ。`D3D12_HEAP_FLAG_SHARED` が無いと共有できない。
+pub(crate) fn shared_buffer(raw: &ID3D12Device, size: u64) -> Result<ID3D12Resource, Error> {
+    buffer(
+        raw,
+        size,
+        D3D12_HEAP_TYPE_DEFAULT,
+        D3D12_HEAP_FLAG_SHARED,
+        D3D12_RESOURCE_STATE_COMMON,
+    )
 }
 
 pub(crate) fn factory<T: Interface>() -> Result<T, Error> {

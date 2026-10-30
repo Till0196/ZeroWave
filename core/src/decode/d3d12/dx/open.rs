@@ -3,7 +3,6 @@
 
 //! デバイスを開く、機能を問い合わせる、デコーダー・テクスチャ・バッファを作る。
 
-use super::adapter::same_luid;
 use super::*;
 
 impl Device {
@@ -326,45 +325,10 @@ impl Device {
     pub(super) fn buffer(
         &self,
         size: u64,
-        heap: D3D12_HEAP_TYPE,
+        kind: D3D12_HEAP_TYPE,
         state: D3D12_RESOURCE_STATES,
     ) -> Result<ID3D12Resource, Error> {
-        let properties = D3D12_HEAP_PROPERTIES {
-            Type: heap,
-            CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-            MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-            CreationNodeMask: 1,
-            VisibleNodeMask: 1,
-        };
-        let description = D3D12_RESOURCE_DESC {
-            Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-            Alignment: 0,
-            Width: size.max(1),
-            Height: 1,
-            DepthOrArraySize: 1,
-            MipLevels: 1,
-            Format: DXGI_FORMAT(0),
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-            Flags: D3D12_RESOURCE_FLAG_NONE,
-        };
-        let mut buffer: Option<ID3D12Resource> = None;
-        // SAFETY: both descriptions are live locals; `buffer` is written at most once.
-        unsafe {
-            self.raw.CreateCommittedResource(
-                &properties,
-                D3D12_HEAP_FLAG_NONE,
-                &description,
-                state,
-                None,
-                &mut buffer,
-            )
-        }
-        .map_err(|error| failed("CreateCommittedResource", error))?;
-        buffer.ok_or_else(|| Error::Unavailable(String::from("バッファが確保できません")))
+        buffer(&self.raw, size, kind, D3D12_HEAP_FLAG_NONE, state)
     }
 
     /// バッファの先頭へ `data` を書く。バッファは `data` 以上のサイズであること。
@@ -397,13 +361,7 @@ pub(crate) fn texture(
     reference_only: bool,
     layers: u32,
 ) -> Result<ID3D12Resource, Error> {
-    let properties = D3D12_HEAP_PROPERTIES {
-        Type: D3D12_HEAP_TYPE_DEFAULT,
-        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-        CreationNodeMask: 1,
-        VisibleNodeMask: 1,
-    };
+    let properties = heap(D3D12_HEAP_TYPE_DEFAULT);
     let mut description = D3D12_RESOURCE_DESC {
         Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
         Alignment: 0,

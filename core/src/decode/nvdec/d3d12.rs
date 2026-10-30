@@ -6,7 +6,6 @@
 //! D3D12 がプレーンごとにテクスチャへコピーする。同期は共有したフェンス一本。
 //! CPU が待つのは CUDA のコピーだけ（NVDEC のフレームを手放す前）。D3D12 のコピーはレンダラーが GPU の上で待つ。
 
-use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
 use mediadecoder::es::Format;
@@ -91,7 +90,7 @@ impl Bridge {
             )));
         }
 
-        let staging = shared_buffer(&device, total)?;
+        let staging = dx::shared_buffer(&device, total)?;
         let mapped = import(context, &device, &staging, total)?;
 
         // SAFETY: every out parameter and description is a live local.
@@ -220,24 +219,14 @@ impl Bridge {
                 D3D12_RESOURCE_STATE_COPY_DEST,
             )]);
             for plane in 0..2u32 {
-                let destination = D3D12_TEXTURE_COPY_LOCATION {
-                    pResource: ManuallyDrop::new(Some(texture.clone())),
-                    Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                        SubresourceIndex: plane,
-                    },
-                };
-                let source = D3D12_TEXTURE_COPY_LOCATION {
-                    pResource: ManuallyDrop::new(Some(self.staging.clone())),
-                    Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-                    Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                        PlacedFootprint: self.layouts[plane as usize],
-                    },
-                };
-                self.list
-                    .CopyTextureRegion(&destination, 0, 0, 0, &source, None);
-                drop(ManuallyDrop::into_inner(destination.pResource));
-                drop(ManuallyDrop::into_inner(source.pResource));
+                self.list.CopyTextureRegion(
+                    &dx::subresource(&texture, plane),
+                    0,
+                    0,
+                    0,
+                    &dx::placed(&self.staging, self.layouts[plane as usize]),
+                    None,
+                );
             }
             // `COMMON` に戻す。受け取る側はそこから始める前提。
             self.list.ResourceBarrier(&[dx::transition(
@@ -331,7 +320,7 @@ fn texture(
     device: &ID3D12Device,
     description: &D3D12_RESOURCE_DESC,
 ) -> Result<ID3D12Resource, Error> {
-    let properties = default_heap();
+    let properties = dx::heap(D3D12_HEAP_TYPE_DEFAULT);
     let mut made: Option<ID3D12Resource> = None;
     // SAFETY: both descriptions and `made` are live locals.
     unsafe {
@@ -347,51 +336,6 @@ fn texture(
             .map_err(|error| failed("CreateCommittedResource", error))?;
     }
     made.ok_or_else(|| Error::Unavailable(String::from("サーフェスが確保できません")))
-}
-
-/// The linear buffer CUDA writes into. `D3D12_HEAP_FLAG_SHARED` が無いと共有できない。
-fn shared_buffer(device: &ID3D12Device, size: u64) -> Result<ID3D12Resource, Error> {
-    let properties = default_heap();
-    let description = D3D12_RESOURCE_DESC {
-        Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-        Alignment: 0,
-        Width: size,
-        Height: 1,
-        DepthOrArraySize: 1,
-        MipLevels: 1,
-        Format: DXGI_FORMAT(0),
-        SampleDesc: DXGI_SAMPLE_DESC {
-            Count: 1,
-            Quality: 0,
-        },
-        Layout: D3D12_TEXTURE_LAYOUT_ROW_MAJOR,
-        Flags: D3D12_RESOURCE_FLAG_NONE,
-    };
-    let mut made: Option<ID3D12Resource> = None;
-    // SAFETY: as in `texture`, with the shared heap flag the import needs.
-    unsafe {
-        device
-            .CreateCommittedResource(
-                &properties,
-                D3D12_HEAP_FLAG_SHARED,
-                &description,
-                D3D12_RESOURCE_STATE_COMMON,
-                None,
-                &mut made,
-            )
-            .map_err(|error| failed("CreateCommittedResource（共有）", error))?;
-    }
-    made.ok_or_else(|| Error::Unavailable(String::from("共有のバッファが確保できません")))
-}
-
-fn default_heap() -> D3D12_HEAP_PROPERTIES {
-    D3D12_HEAP_PROPERTIES {
-        Type: D3D12_HEAP_TYPE_DEFAULT,
-        CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-        MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
-        CreationNodeMask: 1,
-        VisibleNodeMask: 1,
-    }
 }
 
 /// Hands the buffer to CUDA. インポートが参照を持つので、ハンドルはすぐ閉じてよい。
