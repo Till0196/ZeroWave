@@ -238,6 +238,15 @@ pub(crate) struct CopyQueue {
 
 impl CopyQueue {
     pub(crate) fn new(raw: &ID3D12Device) -> Result<Self, Error> {
+        Self::with_fence(raw, D3D12_FENCE_FLAG_NONE)
+    }
+
+    /// フェンスを別の API（CUDA）でも待てるようにした物。
+    pub(crate) fn shared(raw: &ID3D12Device) -> Result<Self, Error> {
+        Self::with_fence(raw, D3D12_FENCE_FLAG_SHARED)
+    }
+
+    fn with_fence(raw: &ID3D12Device, flags: D3D12_FENCE_FLAGS) -> Result<Self, Error> {
         // SAFETY: the description is a live local; the device outlives the objects.
         unsafe {
             let queue: ID3D12CommandQueue = raw
@@ -260,7 +269,7 @@ impl CopyQueue {
                 .map_err(|error| failed("CreateCommandList", error))?;
             list.Close().map_err(|error| failed("Close", error))?;
             let fence: ID3D12Fence = raw
-                .CreateFence(0, D3D12_FENCE_FLAG_NONE)
+                .CreateFence(0, flags)
                 .map_err(|error| failed("CreateFence", error))?;
             Ok(Self {
                 queue,
@@ -282,6 +291,15 @@ impl CopyQueue {
 
     pub(crate) fn wait(&self, value: u64) -> Result<(), Error> {
         self.event.wait_fence(&self.fence, value)
+    }
+
+    pub(crate) fn fence(&self) -> &ID3D12Fence {
+        &self.fence
+    }
+
+    /// 最後に積んだコピーが終わると届く値。
+    pub(crate) fn last(&self) -> u64 {
+        self.value
     }
 
     /// 前のコピーを待ってからコマンドリストを開く。`after` があれば、キューにそのフェンスを先に待たせる。
@@ -326,6 +344,21 @@ impl CopyQueue {
             self.region(
                 &placed(buffer, *layout),
                 &subresource(texture, plane as u32),
+            );
+        }
+    }
+
+    /// バッファに `layouts` の配置で置いたプレーンを、テクスチャへ。
+    pub(crate) fn planes_from(
+        &self,
+        buffer: &ID3D12Resource,
+        texture: &ID3D12Resource,
+        layouts: &[D3D12_PLACED_SUBRESOURCE_FOOTPRINT],
+    ) {
+        for (plane, layout) in layouts.iter().enumerate() {
+            self.region(
+                &subresource(texture, plane as u32),
+                &placed(buffer, *layout),
             );
         }
     }
