@@ -269,26 +269,11 @@ impl Video {
             .import
             .as_mut()
             .ok_or(Error::Unsupported("a device that cannot import a frame"))?;
-        let views = import.views(frame)?;
+        let (views, keep) = import.take(frame, &self.queue)?;
         if views.len() != self.shape.textures() as usize {
             return Err(Error::Unsupported("a frame of the wrong number of planes"));
         }
-        // 書き終わるのを、このキューの GPU の上で待つ（後の送信が読むのはそれから）。
-        if let Some((fence, value)) = frame.ready.as_ref() {
-            // SAFETY: キューを借りて、生きているフェンスで待機を投入するだけ。
-            let waited = unsafe {
-                self.queue
-                    .as_hal::<wgpu::hal::api::Dx12>()
-                    .map(|hal| hal.as_raw().Wait(fence, *value))
-            };
-            if !matches!(waited, Some(Ok(()))) {
-                return Err(Error::Unsupported(
-                    "a frame whose fence cannot be waited on",
-                ));
-            }
-        }
-        // スロットがこのフレームを持つ間、デコーダーにそのテクスチャを使わせない（`decode::d3d12::Frame::lease`）。
-        Ok((views, frame.lease.clone()))
+        Ok((views, keep))
     }
 
     #[cfg(all(feature = "android", target_os = "android"))]
