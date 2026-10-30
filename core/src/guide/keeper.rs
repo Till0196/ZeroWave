@@ -309,6 +309,8 @@ pub fn keeping(
             }
         };
         let mut fresh = false;
+        // 番組表をまとめて入れ替えた後は、空いた heap を返す（細かい文字列が大量に入れ替わり、そのまま残る）。
+        let mut compact = false;
         if let Some(back) = &opening {
             match back.try_recv() {
                 Ok((mut opened, mut loaded)) => {
@@ -319,6 +321,7 @@ pub fn keeping(
                     }
                     loaded.merge(std::mem::take(&mut master));
                     master = loaded;
+                    compact = true;
                     if keeping_file != keep {
                         opened = Store::open(cache.clone(), keeping_file);
                         opened.save(&master, kept_from);
@@ -338,6 +341,7 @@ pub fn keeping(
             match what {
                 ToGuide::Merge(guide) => {
                     master.merge(*guide);
+                    compact = true;
                     fresh |= recording.is_none();
                     dirty |= recording.is_some();
                 }
@@ -437,6 +441,9 @@ pub fn keeping(
                 }
                 return;
             }
+        }
+        if compact {
+            crate::memory::give_back();
         }
         if dirty
             && saved.elapsed() >= SAVE_EVERY

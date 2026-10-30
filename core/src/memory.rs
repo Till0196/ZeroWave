@@ -21,8 +21,18 @@ pub fn few_arenas() {
 }
 
 /// 解放したメモリーを OS へ返す（大量に使った後、メモリー 1 GB の環境でスワップアウトされないように）。
-/// glibc でなければ何もしない。
+/// glibc と Windows のプロセスの heap だけ。
 pub fn give_back() {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetProcessHeap() -> isize;
+            fn HeapCompact(heap: isize, flags: u32) -> usize;
+        }
+        // SAFETY: プロセスの heap を詰めるだけで、どの状態から呼んでもよい。
+        unsafe { HeapCompact(GetProcessHeap(), 0) };
+    }
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
         unsafe extern "C" {

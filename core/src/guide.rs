@@ -787,8 +787,9 @@ impl Arrival {
 #[derive(Debug, Clone)]
 pub struct Guide {
     services: BTreeMap<Key, Service>,
-    /// 開始時刻をキーにする（イベント ID だと時刻が変わった番組が二重に並ぶ）。
-    programmes: BTreeMap<Key, BTreeMap<Moment, Programme>>,
+    /// 開始時刻をキーにする（イベント ID だと時刻が変わった番組が二重に並ぶ）。サービスごとに共有し、変えるときだけ
+    /// 写す：番組表は更新のたびに写して UI へ渡すので、まるごと写すと一週間分（100 MB を超える）が何組も並ぶ。
+    programmes: BTreeMap<Key, Arc<BTreeMap<Moment, Programme>>>,
     arrivals: BTreeMap<Key, Arrival>,
     logos: BTreeMap<(u16, u8, u16), Arc<Logo>>,
     /// 見える画素が一つも無いロゴ（受け取ったときに調べる）。表示では無いものとして扱う。
@@ -1162,7 +1163,7 @@ impl Guide {
             self.tell_service(service);
         }
         for (_, by_time) in other.programmes {
-            for (_, programme) in by_time {
+            for (_, programme) in Arc::unwrap_or_clone(by_time) {
                 self.tell(programme);
             }
         }
@@ -1175,7 +1176,7 @@ impl Guide {
     }
 
     pub fn programme_count(&self) -> usize {
-        self.programmes.values().map(BTreeMap::len).sum()
+        self.programmes.values().map(|by_time| by_time.len()).sum()
     }
 
     pub fn tell(&mut self, programme: Programme) {
@@ -1183,7 +1184,13 @@ impl Guide {
         let Some(start) = programme.start else {
             return;
         };
-        let by_time = self.programmes.entry(programme.key()).or_default();
+        let key = programme.key();
+        // 先に変わるかを読むだけで決め、変わるときだけそのサービスの番組を写す（同じ内容は何度も届く）。
+        let empty = BTreeMap::new();
+        let by_time = self
+            .programmes
+            .get(&key)
+            .map_or(&empty, |by_time| &**by_time);
         // 現在・次の番組は固定する（古い編成で入れ替わってちらつくため）。
         if programme.told != Told::Now
             && by_time.values().any(|known| {
@@ -1195,25 +1202,25 @@ impl Guide {
             return;
         }
         // 重なる番組を消すのは現在・次だけ（ほかは届く順で正しい番組を消しかねない）。
+        let mut gone: Vec<Moment> = Vec::new();
         if programme.told == Told::Now
             && let Some(ends) = programme.ends()
         {
-            let overlapped: Vec<Moment> = by_time
-                .iter()
-                .filter(|(at, known)| {
-                    known.event != programme.event
-                        && **at < ends
-                        && known.ends().is_none_or(|known_ends| known_ends > start)
-                })
-                .map(|(at, _)| *at)
-                .collect();
-            for at in overlapped {
-                by_time.remove(&at);
-            }
+            gone.extend(
+                by_time
+                    .iter()
+                    .filter(|(at, known)| {
+                        known.event != programme.event
+                            && **at < ends
+                            && known.ends().is_none_or(|known_ends| known_ends > start)
+                    })
+                    .map(|(at, _)| *at),
+            );
         }
-        match by_time.get_mut(&start) {
+        let put = match by_time.get(&start).filter(|_| !gone.contains(&start)) {
             Some(known) => {
                 // 放送からの情報を優先する。Mirakurun は空いた項目だけ足し、スケジュールは Mirakurun を上書きしない。
+                let mut merged = known.clone();
                 match (known.told, programme.told) {
                     (Told::Mirakurun, Told::Broadcast) => return,
                     (Told::Now, Told::Broadcast | Told::Mirakurun)
@@ -1222,25 +1229,30 @@ impl Guide {
                         return;
                     }
                     (Told::Broadcast | Told::Now, Told::Mirakurun)
-                    | (Told::Now, Told::Broadcast) => {
-                        known.fill_from(programme);
-                        return;
-                    }
-                    _ => {}
+                    | (Told::Now, Told::Broadcast) => merged.fill_from(programme),
+                    _ => merged.absorb(programme),
                 }
-                known.absorb(programme);
+                (merged != *known).then_some(merged)
             }
             None => {
-                let moved: Vec<Moment> = by_time
-                    .iter()
-                    .filter(|(_, known)| known.event == programme.event)
-                    .map(|(at, _)| *at)
-                    .collect();
-                for at in moved {
-                    by_time.remove(&at);
-                }
-                by_time.insert(start, programme);
+                gone.extend(
+                    by_time
+                        .iter()
+                        .filter(|(_, known)| known.event == programme.event)
+                        .map(|(at, _)| *at),
+                );
+                Some(programme)
             }
+        };
+        if gone.is_empty() && put.is_none() {
+            return;
+        }
+        let by_time = Arc::make_mut(self.programmes.entry(key).or_default());
+        for at in gone {
+            by_time.remove(&at);
+        }
+        if let Some(programme) = put {
+            by_time.insert(start, programme);
         }
     }
 
@@ -1250,17 +1262,24 @@ impl Guide {
         let Some(start) = programme.start else {
             return;
         };
-        self.programmes
-            .entry(programme.key())
-            .or_default()
-            .entry(start)
-            .or_insert(programme);
+        let by_time = self.programmes.entry(programme.key()).or_default();
+        if !by_time.contains_key(&start) {
+            Arc::make_mut(by_time).insert(start, programme);
+        }
     }
 
     pub fn forget_before(&mut self, moment: Moment) {
         let before = self.programme_count();
+        let kept = |start: &Moment, programme: &Programme| {
+            programme.ends().unwrap_or(*start + 86_400) > moment
+        };
         for by_time in self.programmes.values_mut() {
-            by_time.retain(|start, programme| programme.ends().unwrap_or(*start + 86_400) > moment);
+            if !by_time
+                .iter()
+                .all(|(start, programme)| kept(start, programme))
+            {
+                Arc::make_mut(by_time).retain(|start, programme| kept(start, programme));
+            }
         }
         self.programmes.retain(|_, by_time| !by_time.is_empty());
         if self.programme_count() != before {
