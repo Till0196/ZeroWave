@@ -242,10 +242,11 @@ pub fn show(ui: &mut Ui, frame: Rect, idle: &Idle) {
     }
 
     // 拡張形式は決まった高さの背景の中に。入らない分は背景で切る。
-    if !programme.extended.is_empty() {
+    let extended = zwcore::guide::extended_of(programme);
+    if !extended.is_empty() {
         let inside = ground(&painter, &place);
         let mut y = EXTENDED_TOP + 12.0;
-        for (heading, value) in &programme.extended {
+        for (heading, value) in extended.iter() {
             if y >= EXTENDED_TOP + EXTENDED_HEIGHT - 12.0 {
                 break;
             }

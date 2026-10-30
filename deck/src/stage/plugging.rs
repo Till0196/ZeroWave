@@ -245,7 +245,7 @@ fn event_of(programme: &zwcore::guide::Programme) -> zwsdk::control::Event {
         id: programme.event,
         name: programme.title.clone(),
         text: programme.detail.clone(),
-        extended: programme.extended.clone(),
+        extended: zwcore::guide::extended_of(programme).into_owned(),
         genres: programme
             .genres
             .iter()
