@@ -790,6 +790,7 @@ fn programme(said: &Value, guide: &Guide) -> Option<Programme> {
         title: said.text("name").unwrap_or_default().to_owned(),
         detail: said.text("description").unwrap_or_default().to_owned(),
         extended,
+        stored_extended: None,
         genres,
         video: said.get("video").and_then(picture),
         audios: items(said, "audios").iter().filter_map(sound).collect(),

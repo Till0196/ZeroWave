@@ -510,7 +510,11 @@ pub struct Programme {
     pub seconds: Option<u32>,
     pub title: String,
     pub detail: String,
+    /// 読むときは [`extended_of`]：番組表のファイルに保存した物はメモリーから外す（[`Self::stored_extended`]）。
     pub extended: Vec<(String, String)>,
+    /// 拡張説明を番組表のファイルにだけ置いている（メモリーの `extended` は空）。値は内容のハッシュ
+    /// （[`extended_hash`]）で、同じ内容がまた届いてもメモリーへ戻さない。
+    pub stored_extended: Option<u64>,
     pub genres: Vec<Genre>,
     pub video: Option<Picture>,
     pub audios: Vec<Component>,
@@ -586,6 +590,7 @@ impl Programme {
             title: String::new(),
             detail: String::new(),
             extended: Vec::new(),
+            stored_extended: None,
             genres: Vec::new(),
             video: None,
             audios: Vec::new(),
@@ -631,9 +636,7 @@ impl Programme {
         if !told.detail.is_empty() {
             self.detail = told.detail;
         }
-        if !told.extended.is_empty() {
-            self.extended = told.extended;
-        }
+        self.take_extended(told.extended, told.stored_extended);
         if !told.genres.is_empty() {
             self.genres = told.genres;
         }
@@ -663,8 +666,8 @@ impl Programme {
         if self.detail.is_empty() {
             self.detail = told.detail;
         }
-        if self.extended.is_empty() {
-            self.extended = told.extended;
+        if self.extended.is_empty() && self.stored_extended.is_none() {
+            self.take_extended(told.extended, told.stored_extended);
         }
         if self.genres.is_empty() {
             self.genres = told.genres;
@@ -682,6 +685,25 @@ impl Programme {
             self.shared = told.shared;
         }
         self.details.fill_from(told.details);
+    }
+
+    /// 届いた拡張説明に替える。ファイルにある物と同じなら替えない（メモリーへ戻して写すことになる）。
+    fn take_extended(&mut self, told: Vec<(String, String)>, stored: Option<u64>) {
+        if !told.is_empty() {
+            if self.stored_extended != Some(extended_hash(&told)) {
+                self.extended = told;
+                self.stored_extended = None;
+            }
+        } else if stored.is_some() && stored != self.stored_extended {
+            self.extended.clear();
+            self.stored_extended = stored;
+        }
+    }
+
+    /// 拡張説明の内容のハッシュ。ファイルにあるかどうかに関わらず同じ値。
+    pub fn extended_digest(&self) -> u64 {
+        self.stored_extended
+            .unwrap_or_else(|| extended_hash(&self.extended))
     }
 
     pub fn at(&self, moment: Moment) -> bool {
@@ -1268,6 +1290,26 @@ impl Guide {
         }
     }
 
+    /// 拡張説明をメモリーから外し、ファイルにだけ置く（保存し終えた番組表だけ）。外した番組の数。
+    pub fn strip_extended(&mut self) -> usize {
+        let mut stripped = 0;
+        for by_time in self.programmes.values_mut() {
+            let holds =
+                |programme: &Programme| programme.start.is_some() && !programme.extended.is_empty();
+            if !by_time.values().any(holds) {
+                continue;
+            }
+            for programme in Arc::make_mut(by_time).values_mut() {
+                if holds(programme) {
+                    programme.stored_extended = Some(extended_hash(&programme.extended));
+                    programme.extended = Vec::new();
+                    stripped += 1;
+                }
+            }
+        }
+        stripped
+    }
+
     pub fn forget_before(&mut self, moment: Moment) {
         let before = self.programme_count();
         let kept = |start: &Moment, programme: &Programme| {
@@ -1304,6 +1346,32 @@ impl Guide {
             last_table,
         );
     }
+}
+
+/// 拡張説明の内容のハッシュ（FNV-1a）。番組表のファイルの digest に入るので `std` のハッシュは使わない。
+pub fn extended_hash(pairs: &[(String, String)]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for (head, body) in pairs {
+        for bytes in [head.as_bytes(), body.as_bytes()] {
+            for byte in (bytes.len() as u32).to_le_bytes().iter().chain(bytes) {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    hash
+}
+
+/// 番組の拡張説明。ファイルにだけ置いている物はファイルから読む（読めなければ空）。
+pub fn extended_of(programme: &Programme) -> std::borrow::Cow<'_, [(String, String)]> {
+    #[cfg(feature = "epg-db")]
+    if programme.extended.is_empty()
+        && let Some(digest) = programme.stored_extended
+        && let Some(start) = programme.start
+    {
+        return std::borrow::Cow::Owned(db::read_extended(programme.key(), start, digest).to_vec());
+    }
+    std::borrow::Cow::Borrowed(&programme.extended)
 }
 
 fn overlaps(a: &Programme, b: &Programme) -> bool {

@@ -24,6 +24,9 @@ const MOST_FOUND: usize = 500;
 
 struct Store {
     path: Option<PathBuf>,
+    /// 番組をファイルに書いている（拡張説明をメモリーから外してよい）。
+    #[cfg(feature = "epg-db")]
+    file: bool,
     #[cfg(feature = "epg-db")]
     connection: Option<rusqlite::Connection>,
     #[cfg(feature = "epg-db")]
@@ -78,8 +81,13 @@ impl Store {
             },
             (None, _) => None,
         };
+        let file = keep && path.is_some() && connection.is_some();
+        if file {
+            super::db::set_reader(path.clone());
+        }
         Self {
             path,
+            file,
             connection,
             known: super::db::Known::new(),
         }
@@ -89,7 +97,13 @@ impl Store {
         let (Some(path), Some(connection)) = (&self.path, &self.connection) else {
             return Guide::new();
         };
-        let mut guide = match super::db::load_after(connection, after) {
+        // 拡張説明はメモリーに読まない（画面がファイルから読む）。メモリーにだけ置くときは全部読む。
+        let read = if self.file {
+            super::db::load_after_lazy(connection, after)
+        } else {
+            super::db::load_after(connection, after)
+        };
+        let mut guide = match read {
             Ok((guide, known)) => {
                 self.known = known;
                 guide
@@ -110,20 +124,27 @@ impl Store {
         guide
     }
 
-    fn save(&mut self, guide: &Guide, kept_from: Moment) {
+    /// 保存し、ファイルに書けたら拡張説明をメモリーから外す（画面はファイルから読む）。
+    fn save(&mut self, guide: &mut Guide, kept_from: Moment) {
         let (Some(path), Some(connection)) = (&self.path, &mut self.connection) else {
             return;
         };
         let keep_since = guide.now_or_machine().min(guide.machine_now()) - KEEP_IN_FILE;
         let began = Instant::now();
         match super::db::save(connection, guide, &mut self.known, kept_from, keep_since) {
-            Ok(saved) if saved != super::db::Saved::default() => tracing::debug!(
-                "番組表を保存: 書き込み {}、削除 {} 番組（{} ms）",
-                saved.written,
-                saved.dropped,
-                began.elapsed().as_millis()
-            ),
-            Ok(_) => {}
+            Ok(saved) => {
+                if saved != super::db::Saved::default() {
+                    tracing::debug!(
+                        "番組表を保存: 書き込み {}、削除 {} 番組（{} ms）",
+                        saved.written,
+                        saved.dropped,
+                        began.elapsed().as_millis()
+                    );
+                }
+                if self.file {
+                    guide.strip_extended();
+                }
+            }
             Err(error) => tracing::warn!("番組表を保存できない {}: {error}", path.display()),
         }
     }
@@ -169,7 +190,7 @@ impl Store {
         self.load_logos(&mut guide);
         guide
     }
-    fn save(&mut self, _: &Guide, _: Moment) {}
+    fn save(&mut self, _: &mut Guide, _: Moment) {}
     fn past(&self, _: Moment, _: Moment, _: Moment) -> Vec<Programme> {
         Vec::new()
     }
@@ -301,7 +322,7 @@ pub fn keeping(
             Err(RecvTimeoutError::Disconnected) => {
                 if let Some(store) = store.as_mut() {
                     if dirty {
-                        store.save(&master, kept_from);
+                        store.save(&mut master, kept_from);
                     }
                     store.save_logos(&master);
                 }
@@ -324,7 +345,7 @@ pub fn keeping(
                     compact = true;
                     if keeping_file != keep {
                         opened = Store::open(cache.clone(), keeping_file);
-                        opened.save(&master, kept_from);
+                        opened.save(&mut master, kept_from);
                     }
                     store = Some(opened);
                     fresh = true;
@@ -402,7 +423,7 @@ pub fn keeping(
                     keeping_file = on;
                     if let Some(store) = store.as_mut() {
                         *store = Store::open(cache.clone(), on);
-                        store.save(&master, kept_from);
+                        store.save(&mut master, kept_from);
                         dirty = false;
                         saved = Instant::now();
                     }
@@ -418,7 +439,7 @@ pub fn keeping(
                 if dirty && let Some(store) = store.as_mut() {
                     saved = Instant::now();
                     dirty = false;
-                    store.save(&master, kept_from);
+                    store.save(&mut master, kept_from);
                 }
                 kept_from = behind;
                 master.forget_before(kept_from);
@@ -436,7 +457,7 @@ pub fn keeping(
             shown.apply_prefs(&prefs);
             if merged.send(Arc::new(shown)).is_err() {
                 if let Some(store) = store.as_mut() {
-                    store.save(&master, kept_from);
+                    store.save(&mut master, kept_from);
                     store.save_logos(&master);
                 }
                 return;
@@ -451,7 +472,7 @@ pub fn keeping(
         {
             saved = Instant::now();
             dirty = false;
-            store.save(&master, kept_from);
+            store.save(&mut master, kept_from);
             store.save_logos(&master);
         }
         if let Some(query) = query {
@@ -459,7 +480,7 @@ pub fn keeping(
             if dirty && let Some(store) = store.as_mut() {
                 saved = Instant::now();
                 dirty = false;
-                store.save(&master, kept_from);
+                store.save(&mut master, kept_from);
             }
             let (searched, guide) = match &recording {
                 Some(recorded) => (&blank, recorded),
@@ -757,7 +778,7 @@ mod tests {
         let path = folder.join("epg.sqlite");
         let _ = std::fs::remove_dir_all(&folder);
         let mut store = Store::open(Some(path.clone()), false);
-        store.save(&Guide::new(), 0);
+        store.save(&mut Guide::new(), 0);
         assert!(store.connection.is_some(), "検索はメモリーで引ける");
         assert!(!path.exists());
         drop(Store::open(Some(path.clone()), true));
