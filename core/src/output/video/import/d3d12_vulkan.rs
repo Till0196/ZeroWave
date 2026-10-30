@@ -165,7 +165,11 @@ impl Import {
             }
         };
         let event = Owned::event().ok()?;
-        tracing::info!("デコーダーのフレームは D3D12 から共有したバッファで Vulkan へ渡す");
+        // 映像を作り直すたびに作られるので、言うのは一度だけ。
+        static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!("デコーダーのフレームは D3D12 から共有したバッファで Vulkan へ渡す");
+        }
         Some(Self {
             device: device.clone(),
             raw,
