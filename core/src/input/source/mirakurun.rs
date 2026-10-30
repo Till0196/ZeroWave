@@ -131,26 +131,11 @@ impl Mirakurun {
     }
 
     fn ask_bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
-        let mut answer = http::get(
-            self.connect()?,
-            &format!("{}{path}", self.root),
-            self.host.as_str(),
-            &[],
-        )?;
-        let body = answer.read_to_end()?;
-        if answer.status != 200 {
-            return Err(Error::Refused(format!(
-                "{path}: {} {}",
-                answer.status,
-                String::from_utf8_lossy(&body).trim()
-            )));
-        }
-        Ok(body)
+        Ok(self.answer(path)?.read_to_end()?)
     }
 
-    /// 配列の応答を一要素ずつ、届いた分から読む。一週間分の番組を一度にツリーにすると数百 MB になり、
-    /// 応答をまるごと持つだけでも数十 MB になる。
-    fn read_each(&self, path: &str, mut each: impl FnMut(&Value)) -> Result<(), Error> {
+    /// `GET` の応答。本文は届いた分から読める。200 でなければ本文を理由にして失敗する。
+    fn answer(&self, path: &str) -> Result<http::Response<Connection>, Error> {
         let mut answer = http::get(
             self.connect()?,
             &format!("{}{path}", self.root),
@@ -165,6 +150,13 @@ impl Mirakurun {
                 String::from_utf8_lossy(&body).trim()
             )));
         }
+        Ok(answer)
+    }
+
+    /// 配列の応答を一要素ずつ、届いた分から読む。一週間分の番組を一度にツリーにすると数百 MB になり、
+    /// 応答をまるごと持つだけでも数十 MB になる。
+    fn read_each(&self, path: &str, mut each: impl FnMut(&Value)) -> Result<(), Error> {
+        let mut answer = self.answer(path)?;
         let mut broken = None;
         let mut items = Items::default();
         let mut chunk = vec![0u8; 64 << 10];
@@ -198,6 +190,15 @@ impl Mirakurun {
         let stations = self.services_into_guide(true)?;
         let mut filling = stations.stations();
         let mut first = Some(stations);
+        let mut hand = |done: Guide| {
+            part(match first.take() {
+                Some(mut first) => {
+                    first.merge(done);
+                    first
+                }
+                None => done,
+            });
+        };
         self.read_each("/api/programs", |said| {
             let Some(programme) = programme(said, &filling) else {
                 return;
@@ -205,23 +206,10 @@ impl Mirakurun {
             filling.tell(programme);
             if filling.programme_count() >= PART {
                 let fresh = filling.stations();
-                let done = std::mem::replace(&mut filling, fresh);
-                part(match first.take() {
-                    Some(mut first) => {
-                        first.merge(done);
-                        first
-                    }
-                    None => done,
-                });
+                hand(std::mem::replace(&mut filling, fresh));
             }
         })?;
-        part(match first.take() {
-            Some(mut first) => {
-                first.merge(filling);
-                first
-            }
-            None => filling,
-        });
+        hand(filling);
         crate::memory::give_back();
         Ok(())
     }

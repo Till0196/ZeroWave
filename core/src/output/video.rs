@@ -289,6 +289,13 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// デコーダーの側の D3D12 などが返した失敗。
+impl From<crate::decode::Error> for Error {
+    fn from(error: crate::decode::Error) -> Self {
+        Self::NoDevice(error.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

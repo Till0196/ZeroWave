@@ -259,7 +259,6 @@ fn slots(format: Format, shape: Shape) -> usize {
     (BUDGET / bytes.max(1)).clamp(FEWEST_SLOTS as u64, 16) as usize
 }
 
-/// プールのスロットの下限。
 const FEWEST_SLOTS: usize = 6;
 
 /// フレームレート変換：長さ `step` の間に来る目標の時刻の位相。一つも来なければ 0 を一つ。

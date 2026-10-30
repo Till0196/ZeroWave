@@ -98,12 +98,7 @@ impl Store {
             return Guide::new();
         };
         // 拡張説明はメモリーに読まない（画面がファイルから読む）。メモリーにだけ置くときは全部読む。
-        let read = if self.file {
-            super::db::load_after_lazy(connection, after)
-        } else {
-            super::db::load_after(connection, after)
-        };
-        let mut guide = match read {
+        let mut guide = match super::db::load_after(connection, after, self.file) {
             Ok((guide, known)) => {
                 self.known = known;
                 guide

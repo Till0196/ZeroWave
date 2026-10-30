@@ -325,13 +325,10 @@ static OVERRIDDEN: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new()
 /// 起動時のコマンドライン。設定を保存し直しても設定ファイルより優先する（保存した設定には含まれない）。
 #[derive(Debug, Default)]
 pub struct CommandLine {
-    /// `--set` の値。
     pub sets: Vec<(String, toml::Value)>,
     /// 設定の選択（[`crate::choice::Choices`]）に当てる引数と値。
     pub flags: Vec<(String, Option<String>)>,
-    /// `--passthrough`。
     pub passthrough: bool,
-    /// `--sound-device`。
     pub sound_device: Option<String>,
 }
 
