@@ -762,17 +762,18 @@ fn fetch_guide(url: String) -> Receiver<Guide> {
             let Ok(mut source) = zwcore::input::source::mirakurun::Mirakurun::at(&url) else {
                 return;
             };
-            match zwcore::input::source::Source::guide(&mut source) {
-                Ok(Some(guide)) => {
-                    tracing::info!(
-                        "全局の番組表 {} 局・{} 番組（{:.1} 秒）",
-                        guide.services().count(),
-                        guide.programme_count(),
-                        began.elapsed().as_secs_f64()
-                    );
-                    let _ = send.send(guide);
-                }
-                Ok(None) => {}
+            // 届いた分から渡す（全部をまとめてから渡すと、番組表のスレッドがまとめ終えるまで二組並ぶ）。
+            let (mut services, mut programmes) = (0, 0);
+            let fetched = source.guide_in_parts(|part| {
+                services = services.max(part.services().count());
+                programmes += part.programme_count();
+                let _ = send.send(part);
+            });
+            match fetched {
+                Ok(()) => tracing::info!(
+                    "全局の番組表 {services} 局・{programmes} 番組（{:.1} 秒）",
+                    began.elapsed().as_secs_f64()
+                ),
                 Err(why) => tracing::warn!("全局の番組表を取得できない: {why}"),
             }
         });
