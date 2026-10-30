@@ -147,9 +147,22 @@ pub fn choices(file: &File) -> Result<Applied, String> {
         "auto" => Passthrough::Auto,
         other => return Err(format!("audio.passthrough に {other}: off|on|auto")),
     };
+    // 引数は設定ファイルより優先する（画面で設定を保存し直しても）。読めない引数は起動時に知らせてある。
+    let line = super::command_line();
+    for (flag, value) in &line.flags {
+        let _ = Choices::parse(flag, value.as_deref(), &mut choices);
+    }
+    let passthrough = if line.passthrough {
+        Passthrough::On
+    } else {
+        passthrough
+    };
     Ok(Applied {
         choices,
-        sound_device: file.audio.device.clone(),
+        sound_device: line
+            .sound_device
+            .clone()
+            .unwrap_or_else(|| file.audio.device.clone()),
         passthrough,
         volume,
         restore_mute: file.playback.restore_mute,
@@ -179,6 +192,10 @@ pub fn mirakurun_asking(file: &File) -> bool {
 /// コーデックごとの並びを読む。先頭に `!` の付いた物は使わない。`zerowave` は最後に使う内蔵のデコーダーで、
 /// 並びには入らない。
 pub fn plan(file: &File) -> Result<zwcore::decode::Plan, String> {
+    plan_with(file, super::command_line())
+}
+
+fn plan_with(file: &File, line: &super::CommandLine) -> Result<zwcore::decode::Plan, String> {
     let read = |key: &str, written: &[String]| -> Result<Vec<zwcore::decode::Pick>, String> {
         written
             .iter()
@@ -203,10 +220,18 @@ pub fn plan(file: &File) -> Result<zwcore::decode::Plan, String> {
     .filter(|(_, written)| zerowave_off(written))
     .map(|(codec, _)| codec)
     .collect();
+    // デコーダーを引数で選んだら、設定ファイルのコーデックごとの並びは使わない（並びが先に試されて引数が
+    // 効かない）。並びそのものを `--set` で与えたコーデックはその並び。
+    let listed = |key: &str, written: &[String]| -> Result<Vec<zwcore::decode::Pick>, String> {
+        if line.names_decoder() && !line.sets_key(&format!("video.decoder.{key}")) {
+            return Ok(Vec::new());
+        }
+        read(key, written)
+    };
     Ok(zwcore::decode::Plan {
-        mpeg2: read("mpeg2", &decoder.mpeg2)?,
-        h264: read("h264", &decoder.h264)?,
-        hevc: read("hevc", &decoder.hevc)?,
+        mpeg2: listed("mpeg2", &decoder.mpeg2)?,
+        h264: listed("h264", &decoder.h264)?,
+        hevc: listed("hevc", &decoder.hevc)?,
         zerowave_off,
     })
 }
@@ -351,6 +376,39 @@ pub fn knobs(file: &File) -> Result<Knobs, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_decoder_named_on_the_command_line_beats_the_written_order() {
+        let mut file = File::default();
+        file.video.decoder.mpeg2 = vec![String::from("nvdec")];
+        file.video.decoder.h264 = vec![String::from("nvdec")];
+        let line = crate::config::CommandLine {
+            flags: vec![(String::from("--decoder-api"), Some(String::from("d3d12")))],
+            sets: vec![(
+                String::from("video.decoder.h264"),
+                toml::Value::Array(vec![toml::Value::String(String::from("d3d11"))]),
+            )],
+            ..Default::default()
+        };
+        let read = plan_with(&file, &line).unwrap();
+        assert!(
+            read.mpeg2.is_empty(),
+            "引数で選んだので設定の並びは使わない"
+        );
+        assert_eq!(
+            read.h264.len(),
+            1,
+            "並びそのものを --set で与えたらその並び"
+        );
+        assert_eq!(
+            plan_with(&file, &crate::config::CommandLine::default())
+                .unwrap()
+                .mpeg2
+                .len(),
+            1,
+            "引数が無ければ設定の並び"
+        );
+    }
 
     #[test]
     fn the_decoder_order_is_read() {

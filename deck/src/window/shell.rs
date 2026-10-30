@@ -570,6 +570,8 @@ impl Shell {
                 }
                 Request::Panel(said) => self.deck.panel_said(said),
                 Request::Settings(file) => {
+                    // 画面で保存した設定には `--set` が入っていない。引数を優先するので重ねる。
+                    let file = Box::new(crate::config::over_command_line(*file));
                     ui::text::font::choose(ui::text::font::Choice::of(&file));
                     ui::text::font::refresh(&self.context, &mut self.fonts_seen);
                     ui::theme::choose(&file.ui.theme);

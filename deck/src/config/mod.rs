@@ -322,6 +322,80 @@ pub fn take_notices() -> Vec<String> {
 
 static OVERRIDDEN: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 
+/// 起動時のコマンドライン。設定を保存し直しても設定ファイルより優先する（保存した設定には含まれない）。
+#[derive(Debug, Default)]
+pub struct CommandLine {
+    /// `--set` の値。
+    pub sets: Vec<(String, toml::Value)>,
+    /// 設定の選択（[`crate::choice::Choices`]）に当てる引数と値。
+    pub flags: Vec<(String, Option<String>)>,
+    /// `--passthrough`。
+    pub passthrough: bool,
+    /// `--sound-device`。
+    pub sound_device: Option<String>,
+}
+
+impl CommandLine {
+    /// デコーダーを引数で選んだか（`--decoder`・`--decoder-api`）。
+    pub fn names_decoder(&self) -> bool {
+        self.flags
+            .iter()
+            .any(|(flag, _)| flag == "--decoder" || flag == "--decoder-api")
+    }
+
+    /// 設定のこのキーを `--set` で与えたか。
+    pub fn sets_key(&self, key: &str) -> bool {
+        self.sets.iter().any(|(path, _)| path == key)
+    }
+}
+
+static COMMAND_LINE: std::sync::OnceLock<CommandLine> = std::sync::OnceLock::new();
+
+/// 起動したときに一度だけ。読めない `--set` は読み込みのときに知らせてあるので黙って落とす。
+pub fn set_command_line(
+    sets: &[String],
+    flags: &[(String, Option<String>)],
+    passthrough: bool,
+    sound_device: Option<String>,
+) {
+    let _ = COMMAND_LINE.set(CommandLine {
+        sets: sets.iter().filter_map(|set| parse_set(set).ok()).collect(),
+        flags: flags.to_vec(),
+        passthrough,
+        sound_device,
+    });
+}
+
+pub fn command_line() -> &'static CommandLine {
+    static NONE: CommandLine = CommandLine {
+        sets: Vec::new(),
+        flags: Vec::new(),
+        passthrough: false,
+        sound_device: None,
+    };
+    COMMAND_LINE.get().unwrap_or(&NONE)
+}
+
+/// 画面で保存し直した設定に `--set` を重ねる（起動時は [`Config::effective`] が重ねている）。
+pub fn over_command_line(file: File) -> File {
+    over_sets(file, &command_line().sets)
+}
+
+fn over_sets(file: File, sets: &[(String, toml::Value)]) -> File {
+    if sets.is_empty() {
+        return file;
+    }
+    let Ok(mut table) = toml::Table::try_from(&file) else {
+        return file;
+    };
+    for (path, value) in sets {
+        if set_path(&mut table, path, value.clone()).is_err() {
+            return file;
+        }
+    }
+    table.try_into().unwrap_or(file)
+}
+
 pub fn set_overridden(keys: Vec<String>) {
     let _ = OVERRIDDEN.set(keys);
 }
@@ -857,6 +931,18 @@ pub fn write_template() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_command_line_sets_stay_over_a_saved_file() {
+        let mut file = File::default();
+        file.audio.latency = 10;
+        file.audio.downmix = String::from("off");
+        let sets = [parse_set("audio.latency=120").unwrap()];
+        let over = over_sets(file.clone(), &sets);
+        assert_eq!(over.audio.latency, 120, "--set が保存した値より優先");
+        assert_eq!(over.audio.downmix, "off", "ほかは保存した値のまま");
+        assert_eq!(over_sets(file.clone(), &[]), file);
+    }
 
     #[test]
     fn only_the_keys_that_differ_are_changes() {

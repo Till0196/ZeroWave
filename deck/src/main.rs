@@ -280,6 +280,8 @@ fn main() {
         tracing::warn!("別の deck が起動しているため終了する（複数起動しない設定）");
         return;
     }
+    // 設定を当てるたびに引数を重ねる（画面で保存し直したときも引数が優先）。
+    config::set_command_line(&sets, &flags, passthrough, sound_device.clone());
     let applied = match config::apply::choices(&file) {
         Ok(applied) => applied,
         Err(why) => {
