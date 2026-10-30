@@ -504,12 +504,20 @@ fn load_after_with(
         guide.tell_service(row?);
     }
     let mut known = Known::new();
-    for (programme, digest) in read_programmes(
+    // 前の版が書いた digest（拡張説明を内容のまま入れていた）は、ここで今の作り方に直す。直さないと
+    // 次の保存で全番組を書き直すことになる（検索の本文ごとで、数万番組では数十秒ファイルを塞ぐ）。
+    let mut restamp: Vec<(i64, i64)> = Vec::new();
+    for (programme, written, id) in read_programmes(
         connection,
         "WHERE ends IS NULL OR ends > ?1 ORDER BY network, service, start",
         params![after],
         lazy,
     )? {
+        let rating = programme.details.rating().map(|rating| rating.rating);
+        let digest = digest_of(&programme, rating, &rest_of(&programme));
+        if digest != written {
+            restamp.push((id, digest));
+        }
         if let Some(start) = programme.start {
             known.insert(
                 (programme.network, programme.service, start),
@@ -518,8 +526,24 @@ fn load_after_with(
         }
         guide.tell(programme);
     }
+    if !restamp.is_empty()
+        && let Err(error) = write_digests(connection, &restamp)
+    {
+        tracing::warn!("番組表の digest を直せない（次に読むときにまた直す）: {error}");
+    }
     guide.forget_before(after);
     Ok((guide, known))
+}
+
+fn write_digests(connection: &Connection, digests: &[(i64, i64)]) -> rusqlite::Result<()> {
+    let tx = connection.unchecked_transaction()?;
+    {
+        let mut write = tx.prepare("UPDATE programmes SET digest = ?1 WHERE id = ?2")?;
+        for (id, digest) in digests {
+            write.execute(params![digest, id])?;
+        }
+    }
+    tx.commit()
 }
 
 pub fn load_range(
@@ -535,7 +559,7 @@ pub fn load_range(
         false,
     )?
     .into_iter()
-    .map(|(programme, _)| programme)
+    .map(|(programme, _, _)| programme)
     .collect())
 }
 
@@ -637,7 +661,7 @@ pub fn search(
         false,
     )?
     .into_iter()
-    .map(|(programme, _)| programme)
+    .map(|(programme, _, _)| programme)
     .collect())
 }
 
@@ -663,7 +687,7 @@ fn read_programmes(
     filter: &str,
     values: impl rusqlite::Params,
     lazy: bool,
-) -> rusqlite::Result<Vec<(Programme, i64)>> {
+) -> rusqlite::Result<Vec<(Programme, i64, i64)>> {
     let mut extended = connection
         .prepare_cached("SELECT head, body FROM extended WHERE programme = ?1 ORDER BY position")?;
     let mut genres =
@@ -722,7 +746,7 @@ fn read_programmes(
                 });
         }
         let _ = read_rest(&rest, &mut programme);
-        read.push((programme, digest));
+        read.push((programme, digest, id));
     }
     Ok(read)
 }
@@ -1096,6 +1120,61 @@ mod tests {
         let bs: Vec<String> = back.programmes(other).map(|p| p.title.clone()).collect();
         assert_eq!(bs, vec!["BS の番組".to_owned()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn digests_written_the_old_way_are_fixed_on_load_without_rewriting() {
+        let dir = scratch();
+        let path = dir.join("epg.sqlite");
+        let mut connection = open(&path).unwrap();
+        let mut guide = Guide::new();
+        for event in 0..20u16 {
+            let mut drama = programme(KEY, event, 1000 + i64::from(event) * 1800, "ドラマ");
+            drama.extended = vec![("出演".to_owned(), format!("出演者{event}"))];
+            guide.tell(drama);
+        }
+        let mut known = Known::new();
+        save(&mut connection, &guide, &mut known, 0, 0).unwrap();
+        // 前の版の digest（作り方が違う）の代わり。
+        connection
+            .execute("UPDATE programmes SET digest = digest + 1", [])
+            .unwrap();
+        let (mut loaded, mut known) = load_after_lazy(&connection, 0).unwrap();
+        let written: Vec<(At, i64)> = {
+            let mut read = connection
+                .prepare("SELECT network, service, start, digest FROM programmes")
+                .unwrap();
+            read.query_map([], |row| {
+                Ok(((row.get(0)?, row.get(1)?, row.get(2)?), row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+        assert_eq!(written.len(), 20);
+        for (at, digest) in &written {
+            assert_eq!(
+                known[at].0, *digest,
+                "読み込んだときにファイルの digest を直す"
+            );
+        }
+        assert_eq!(
+            save(&mut connection, &loaded, &mut known, 0, 0)
+                .unwrap()
+                .written,
+            0,
+            "直したので保存で書き直さない"
+        );
+        loaded.strip_extended();
+        let (again, _) = load_after(&connection, 0).unwrap();
+        assert_eq!(again.programme_count(), 20);
+        assert!(
+            again
+                .programmes(KEY)
+                .all(|p| p.extended.len() == 1 && p.extended[0].1.starts_with("出演者")),
+            "拡張説明はそのまま"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
