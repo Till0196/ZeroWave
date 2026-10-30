@@ -201,7 +201,6 @@ pub(super) fn measured(format: Format) -> Frame {
     }
 }
 
-/// マップしたままのバッファーの組の数。
 const STAGING_SETS: usize = 3;
 
 pub(super) fn padded(bytes: u32) -> u32 {

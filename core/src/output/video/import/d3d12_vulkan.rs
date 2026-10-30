@@ -101,13 +101,6 @@ impl std::fmt::Debug for Import {
     }
 }
 
-// SAFETY: COM のインターフェイスはスレッドに縛られない。使うのは映像のスレッド一つだけ。
-unsafe impl Send for Import {}
-
-fn from_decode(error: crate::decode::Error) -> Error {
-    Error::NoDevice(error.to_string())
-}
-
 impl Import {
     pub fn new(device: &wgpu::Device) -> Option<Self> {
         let luid = vulkan_luid(device)?;
@@ -159,12 +152,11 @@ impl Import {
 
         // デコーダーが書き終わるのをコピーキューの GPU の上で待ち、コピーの終わりは CPU で待つ。
         self.copy
-            .begin(frame.ready.as_ref().map(|(fence, value)| (fence, *value)))
-            .map_err(from_decode)?;
+            .begin(frame.ready.as_ref().map(|(fence, value)| (fence, *value)))?;
         self.copy
             .planes_into(&frame.texture, &shared.resource, &layouts);
-        let value = self.copy.submit().map_err(from_decode)?;
-        self.copy.wait(value).map_err(from_decode)?;
+        let value = self.copy.submit()?;
+        self.copy.wait(value)?;
 
         let mut encoder = self
             .device
@@ -227,9 +219,9 @@ impl Import {
     }
 
     fn make_shared(&self, size: u64) -> Result<Shared, Error> {
-        let resource = dx::shared_buffer(&self.d3d, size).map_err(from_decode)?;
+        let resource = dx::shared_buffer(&self.d3d, size)?;
         // NT ハンドルは取り込んでも引き取られないので、この関数を出たら閉じる。
-        let handle = Owned::shared(&self.d3d, &resource).map_err(from_decode)?;
+        let handle = Owned::shared(&self.d3d, &resource)?;
         let mut external = vk::ExternalMemoryBufferCreateInfo::default().handle_types(HANDLE_TYPE);
         let create = vk::BufferCreateInfo::default()
             .push_next(&mut external)
