@@ -262,17 +262,84 @@ impl Gpu {
     fn device_on(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), Error> {
         let wanted = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM & adapter.features()
             | ((wgpu::Features::TIMESTAMP_QUERY & adapter.features()) | compute(adapter));
-        let opened = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let descriptor = wgpu::DeviceDescriptor {
             label: Some("zerowave video"),
             required_features: wanted,
             required_limits: device_limits(adapter),
             experimental_features: experimental(adapter),
             memory_hints: MEMORY_HINTS,
             ..Default::default()
-        }))
-        .map_err(|error| Error::NoDevice(error.to_string()))?;
+        };
+        // Vulkan はデコーダーのフレームを D3D12 から取り込む拡張を足して開く（取り込めなければ普通に開く）。
+        let opened = match Self::vulkan_importing(adapter, &descriptor) {
+            Some(opened) => opened,
+            None => pollster::block_on(adapter.request_device(&descriptor))
+                .map_err(|error| Error::NoDevice(error.to_string()))?,
+        };
         super::import::d3d12::adopt(&opened.0);
         Ok(opened)
+    }
+
+    /// Vulkan のアダプターなら、D3D12 のバッファを取り込む拡張を有効にして開く。拡張が無いか開けなければ `None`。
+    #[cfg(all(
+        feature = "d3d12",
+        windows,
+        not(any(feature = "vaapi", all(feature = "nvdec", target_os = "linux"))),
+        not(all(feature = "android", target_os = "android"))
+    ))]
+    fn vulkan_importing(
+        adapter: &wgpu::Adapter,
+        descriptor: &wgpu::DeviceDescriptor<'_>,
+    ) -> Option<(wgpu::Device, wgpu::Queue)> {
+        use wgpu::hal::api::Vulkan;
+
+        let wanted = super::import::d3d12_vulkan::EXTENSIONS;
+        // SAFETY: the hal adapter is borrowed only for the calls; the callback only appends names.
+        let opened = unsafe {
+            adapter.as_hal::<Vulkan>().and_then(|hal| {
+                let instance = hal.shared_instance().raw_instance();
+                let has = instance
+                    .enumerate_device_extension_properties(hal.raw_physical_device())
+                    .ok()?;
+                let all = wanted.iter().all(|name| {
+                    has.iter()
+                        .any(|found| found.extension_name_as_c_str() == Ok(*name))
+                });
+                if !all {
+                    tracing::info!("Vulkan: D3D12 のバッファを取り込む拡張が無い");
+                    return None;
+                }
+                Some(hal.open_with_callback(
+                    descriptor.required_features,
+                    &descriptor.required_limits,
+                    &descriptor.memory_hints,
+                    Some(Box::new(
+                        |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
+                            for name in wanted {
+                                if !args.extensions.contains(name) {
+                                    args.extensions.push(name);
+                                }
+                            }
+                        },
+                    )),
+                ))
+            })
+        }?;
+        let opened = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                tracing::warn!("Vulkan: 取り込みの拡張を足して開けない: {error}");
+                return None;
+            }
+        };
+        // SAFETY: `opened` came from this adapter just now and is unused.
+        match unsafe { adapter.create_device_from_hal(opened, descriptor) } {
+            Ok(opened) => Some(opened),
+            Err(error) => {
+                tracing::warn!("Vulkan: 取り込みの拡張を足したデバイスを包めない: {error}");
+                None
+            }
+        }
     }
 
     #[cfg(all(feature = "android", target_os = "android"))]
