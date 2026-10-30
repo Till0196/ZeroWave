@@ -236,17 +236,21 @@ impl Stage {
                     return;
                 }
                 for (label, url) in guided {
-                    match zwcore::input::source::mirakurun::Mirakurun::at(&url)
+                    let mut gone = false;
+                    let fetched = zwcore::input::source::mirakurun::Mirakurun::at(&url)
                         .map_err(|why| why.to_string())
-                        .and_then(|mut source| source.guide().map_err(|why| why.to_string()))
-                    {
-                        Ok(Some(guide)) => {
-                            if send.send(Built::Guide(guide)).is_err() {
-                                return;
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(why) => tracing::warn!("{label}: 全局の番組表を取得できない: {why}"),
+                        .and_then(|mut source| {
+                            source
+                                .guide_in_parts(|part| {
+                                    gone |= send.send(Built::Guide(part)).is_err();
+                                })
+                                .map_err(|why| why.to_string())
+                        });
+                    if gone {
+                        return;
+                    }
+                    if let Err(why) = fetched {
+                        tracing::warn!("{label}: 全局の番組表を取得できない: {why}");
                     }
                 }
             });

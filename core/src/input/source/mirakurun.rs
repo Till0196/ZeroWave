@@ -148,11 +148,27 @@ impl Mirakurun {
         Ok(body)
     }
 
-    /// 配列の応答を一要素ずつ読む。一週間分の番組を一度にツリーにすると数百 MB になる。
+    /// 配列の応答を一要素ずつ、届いた分から読む。一週間分の番組を一度にツリーにすると数百 MB になり、
+    /// 応答をまるごと持つだけでも数十 MB になる。
     fn read_each(&self, path: &str, mut each: impl FnMut(&Value)) -> Result<(), Error> {
-        let body = self.ask_bytes(path)?;
+        let mut answer = http::get(
+            self.connect()?,
+            &format!("{}{path}", self.root),
+            self.host.as_str(),
+            &[],
+        )?;
+        if answer.status != 200 {
+            let body = answer.read_to_end()?;
+            return Err(Error::Refused(format!(
+                "{path}: {} {}",
+                answer.status,
+                String::from_utf8_lossy(&body).trim()
+            )));
+        }
         let mut broken = None;
-        let walked = each_item(&body, |item| {
+        let mut items = Items::default();
+        let mut chunk = vec![0u8; 64 << 10];
+        let mut parse = |item: &[u8]| {
             let text = String::from_utf8_lossy(item);
             match json::parse(&text) {
                 Ok(value) => each(&value),
@@ -160,10 +176,53 @@ impl Mirakurun {
                     broken.get_or_insert(why);
                 }
             }
-        });
+        };
+        let walked = loop {
+            let read = answer.read_body(&mut chunk)?;
+            if read == 0 {
+                break items.finish();
+            }
+            if let Err(why) = items.feed(&chunk[..read], &mut parse) {
+                break Err(why);
+            }
+        };
         if let Some(why) = broken.or(walked.err()) {
             return Err(Error::Malformed(format!("{path}: {why}")));
         }
+        Ok(())
+    }
+
+    /// 全局の番組表を [`PART`] 番組ずつ渡す。一度に全部を作ると、受け取った側がまとめ終えるまで二組並ぶ。
+    /// 最初の一つに局と局ロゴが入り、後の物にも局は入る（番組の時刻を合わせるため）。
+    pub fn guide_in_parts(&mut self, mut part: impl FnMut(Guide)) -> Result<(), Error> {
+        let stations = self.services_into_guide(true)?;
+        let mut filling = stations.stations();
+        let mut first = Some(stations);
+        self.read_each("/api/programs", |said| {
+            let Some(programme) = programme(said, &filling) else {
+                return;
+            };
+            filling.tell(programme);
+            if filling.programme_count() >= PART {
+                let fresh = filling.stations();
+                let done = std::mem::replace(&mut filling, fresh);
+                part(match first.take() {
+                    Some(mut first) => {
+                        first.merge(done);
+                        first
+                    }
+                    None => done,
+                });
+            }
+        })?;
+        part(match first.take() {
+            Some(mut first) => {
+                first.merge(filling);
+                first
+            }
+            None => filling,
+        });
+        crate::memory::give_back();
         Ok(())
     }
 
@@ -394,60 +453,99 @@ fn items<'a>(said: &'a Value, name: &str) -> &'a [Value] {
     said.get(name).map(Value::items).unwrap_or_default()
 }
 
+/// 全局の番組表を一度に渡す番組の数（一週間分で 3 万を超える）。
+const PART: usize = 4096;
+
+#[cfg(test)]
 fn each_item(body: &[u8], mut each: impl FnMut(&[u8])) -> Result<(), String> {
-    let mut at = 0;
-    let skip = |at: &mut usize| {
-        while body.get(*at).is_some_and(u8::is_ascii_whitespace) {
-            *at += 1;
+    let mut items = Items::default();
+    items.feed(body, &mut each)?;
+    items.finish()
+}
+
+/// JSON の配列を、届いた分ずつ一要素に切り分ける（応答をまるごと持たない）。要素の途中で切れた分だけ残す。
+#[derive(Debug, Default)]
+struct Items {
+    /// まだ渡していない分。`start` 以降が書きかけの要素。
+    pending: Vec<u8>,
+    opened: bool,
+    closed: bool,
+    depth: usize,
+    start: Option<usize>,
+    in_string: bool,
+    escaped: bool,
+}
+
+impl Items {
+    fn feed(&mut self, chunk: &[u8], each: &mut impl FnMut(&[u8])) -> Result<(), String> {
+        if self.closed {
+            return Ok(());
         }
-    };
-    skip(&mut at);
-    if body.get(at) != Some(&b'[') {
-        return Err(String::from("配列ではない"));
-    }
-    at += 1;
-    let mut depth = 0usize;
-    let mut start = None;
-    let mut in_string = false;
-    let mut escaped = false;
-    while let Some(&byte) = body.get(at) {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                in_string = false;
-            }
+        let from = self.pending.len();
+        self.pending.extend_from_slice(chunk);
+        let mut at = from;
+        while let Some(&byte) = self.pending.get(at) {
             at += 1;
-            continue;
-        }
-        match byte {
-            b'"' => {
-                in_string = true;
-                start.get_or_insert(at);
-            }
-            b'[' | b'{' => {
-                depth += 1;
-                start.get_or_insert(at);
-            }
-            b']' | b'}' if depth > 0 => depth -= 1,
-            b',' | b']' if depth == 0 => {
-                if let Some(from) = start.take() {
-                    each(body[from..at].trim_ascii_end());
+            if !self.opened {
+                match byte {
+                    b'[' => self.opened = true,
+                    byte if byte.is_ascii_whitespace() => {}
+                    _ => return Err(String::from("配列ではない")),
                 }
-                if byte == b']' {
-                    return Ok(());
+                continue;
+            }
+            if self.in_string {
+                if self.escaped {
+                    self.escaped = false;
+                } else if byte == b'\\' {
+                    self.escaped = true;
+                } else if byte == b'"' {
+                    self.in_string = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => {
+                    self.in_string = true;
+                    self.start.get_or_insert(at - 1);
+                }
+                b'[' | b'{' => {
+                    self.depth += 1;
+                    self.start.get_or_insert(at - 1);
+                }
+                b']' | b'}' if self.depth > 0 => self.depth -= 1,
+                b',' | b']' if self.depth == 0 => {
+                    if let Some(begun) = self.start.take() {
+                        each(self.pending[begun..at - 1].trim_ascii_end());
+                    }
+                    if byte == b']' {
+                        self.closed = true;
+                        self.pending.clear();
+                        return Ok(());
+                    }
+                }
+                byte if byte.is_ascii_whitespace() => {}
+                _ => {
+                    self.start.get_or_insert(at - 1);
                 }
             }
-            byte if byte.is_ascii_whitespace() => {}
-            _ => {
-                start.get_or_insert(at);
-            }
         }
-        at += 1;
+        // 渡し終えた分を捨てる。書きかけの要素は先頭へ寄せて残す。
+        let keep = self.start.unwrap_or(self.pending.len());
+        self.pending.drain(..keep);
+        if let Some(start) = self.start.as_mut() {
+            *start = 0;
+        }
+        Ok(())
     }
-    Err(String::from("配列が閉じていない"))
+
+    fn finish(&self) -> Result<(), String> {
+        match (self.opened, self.closed) {
+            (_, true) => Ok(()),
+            (false, false) => Err(String::from("配列ではない")),
+            (true, false) => Err(String::from("配列が閉じていない")),
+        }
+    }
 }
 
 impl Source for Mirakurun {
@@ -519,14 +617,12 @@ impl Source for Mirakurun {
 
     /// 重い（数十 MB）ので、選局のたびには [`Source::guide_of`] を使う。
     fn guide(&mut self) -> Result<Option<Guide>, Error> {
-        let mut guide = self.services_into_guide(true)?;
-        self.read_each("/api/programs", |said| {
-            if let Some(programme) = programme(said, &guide) {
-                guide.tell(programme);
-            }
+        let mut whole: Option<Guide> = None;
+        self.guide_in_parts(|part| match whole.as_mut() {
+            Some(whole) => whole.merge(part),
+            None => whole = Some(part),
         })?;
-        crate::memory::give_back();
-        Ok(Some(guide))
+        Ok(whole)
     }
 
     fn guide_of(&mut self, key: Key) -> Result<Option<Guide>, Error> {
@@ -718,6 +814,27 @@ fn programme(said: &Value, guide: &Guide) -> Option<Programme> {
 mod tests {
     use super::*;
     use crate::guide::Described;
+
+    #[test]
+    fn an_array_cut_anywhere_gives_the_same_items() {
+        let body = br#" [ {"a":[1,{"b":"x]y"}]}, "q\"]," , 12 ,[ ], null ] "#;
+        let mut whole = Vec::new();
+        each_item(body, |item| whole.push(item.to_vec())).expect("配列");
+        for size in 1..body.len() {
+            let mut got = Vec::new();
+            let mut items = Items::default();
+            for chunk in body.chunks(size) {
+                items
+                    .feed(chunk, &mut |item: &[u8]| got.push(item.to_vec()))
+                    .expect("配列");
+            }
+            items.finish().expect("閉じている");
+            assert_eq!(got, whole, "{size} バイトずつ");
+        }
+        let mut items = Items::default();
+        items.feed(b"[1, 2", &mut |_: &[u8]| {}).unwrap();
+        assert!(items.finish().is_err(), "閉じていない");
+    }
 
     #[test]
     fn the_items_of_an_array_come_out_one_by_one() {

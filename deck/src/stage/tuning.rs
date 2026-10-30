@@ -29,12 +29,10 @@ pub(super) fn open_mirakurun(
             let Ok(mut source) = zwcore::input::source::mirakurun::Mirakurun::at(&far) else {
                 return;
             };
-            match source.guide() {
-                Ok(Some(guide)) => {
-                    let _ = send.send(guide);
-                }
-                Ok(None) => {}
-                Err(why) => tracing::warn!("全局の番組表を取得できない: {why}"),
+            if let Err(why) = source.guide_in_parts(|part| {
+                let _ = send.send(part);
+            }) {
+                tracing::warn!("全局の番組表を取得できない: {why}");
             }
         })
         .ok();
@@ -426,13 +424,23 @@ impl Stage {
         let Some(fetched) = live.fetched.as_ref() else {
             return;
         };
-        let Ok(guide) = fetched.try_recv() else {
-            return;
-        };
-        live.fetched = None;
-        self.learn_stations(&guide);
-        // エンジンへは渡さない（追加する間止まり、音に穴が開く）。
-        let _ = self.guide_to.send(ToGuide::Merge(Box::new(guide)));
+        // 全局の番組表は幾つかに分けて届く。送り終えたら受け口を閉じる。
+        let mut parts = Vec::new();
+        loop {
+            match fetched.try_recv() {
+                Ok(guide) => parts.push(guide),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    live.fetched = None;
+                    break;
+                }
+            }
+        }
+        for guide in parts {
+            self.learn_stations(&guide);
+            // エンジンへは渡さない（追加する間止まり、音に穴が開く）。
+            let _ = self.guide_to.send(ToGuide::Merge(Box::new(guide)));
+        }
     }
 
     pub(super) fn take_merged(&mut self) {
