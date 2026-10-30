@@ -212,7 +212,7 @@ impl Gpu {
             label: Some("zerowave video"),
             required_features: (wgpu::Features::TIMESTAMP_QUERY & adapter.features())
                 | compute(adapter),
-            required_limits: limits(adapter),
+            required_limits: device_limits(adapter),
             experimental_features: experimental(adapter),
             memory_hints: MEMORY_HINTS,
             ..Default::default()
@@ -234,7 +234,7 @@ impl Gpu {
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("zerowave video"),
             required_features: wanted,
-            required_limits: limits(adapter),
+            required_limits: device_limits(adapter),
             experimental_features: experimental(adapter),
             memory_hints: MEMORY_HINTS,
             ..Default::default()
@@ -255,7 +255,7 @@ impl Gpu {
         let opened = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("zerowave video"),
             required_features: wanted,
-            required_limits: limits(adapter),
+            required_limits: device_limits(adapter),
             experimental_features: experimental(adapter),
             memory_hints: MEMORY_HINTS,
             ..Default::default()
@@ -273,7 +273,7 @@ impl Gpu {
             | wgpu::Features::TEXTURE_FORMAT_P010
             | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
             & adapter.features();
-        let limits = limits(adapter);
+        let limits = device_limits(adapter);
         // SAFETY: the hal adapter is borrowed only for the call; the callback only appends names.
         let opened = unsafe {
             adapter.as_hal::<Vulkan>().map(|hal| {
@@ -297,7 +297,7 @@ impl Gpu {
             return pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("zerowave video"),
                 required_features: wgpu::Features::empty(),
-                required_limits: limits(adapter),
+                required_limits: device_limits(adapter),
                 memory_hints: MEMORY_HINTS,
                 ..Default::default()
             }))
@@ -336,7 +336,7 @@ impl Gpu {
         let importing: &[&std::ffi::CStr] = &[];
         let wanted = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM & adapter.features()
             | ((wgpu::Features::TIMESTAMP_QUERY & adapter.features()) | compute(adapter));
-        let limits = limits(adapter);
+        let limits = device_limits(adapter);
         // デバイスが持つ拡張だけ足す（知らない名前を渡すと `vkCreateDevice` の前に落ちる）。
         // SAFETY: hal のアダプターは呼び出しの間だけ借りて読むだけ。
         let wanted_extensions: Vec<&'static std::ffi::CStr> = unsafe {
@@ -389,7 +389,7 @@ impl Gpu {
             return pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("zerowave video"),
                 required_features: wgpu::Features::empty(),
-                required_limits: limits(adapter),
+                required_limits: device_limits(adapter),
                 memory_hints: MEMORY_HINTS,
                 ..Default::default()
             }))
@@ -427,7 +427,7 @@ const MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::MemoryUsage;
 /// 同時に生きているバインドグループのテクスチャとバッファーの数で足りる。
 const DESCRIPTORS: u32 = 1 << 16;
 
-fn limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
     let mut limits = adapter.limits();
     limits.max_non_sampler_bindings = limits.max_non_sampler_bindings.min(DESCRIPTORS);
     limits
