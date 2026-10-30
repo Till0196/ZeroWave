@@ -212,8 +212,9 @@ impl Gpu {
             label: Some("zerowave video"),
             required_features: (wgpu::Features::TIMESTAMP_QUERY & adapter.features())
                 | compute(adapter),
-            required_limits: adapter.limits(),
+            required_limits: limits(adapter),
             experimental_features: experimental(adapter),
+            memory_hints: MEMORY_HINTS,
             ..Default::default()
         }))
         .map_err(|error| Error::NoDevice(error.to_string()))
@@ -233,8 +234,9 @@ impl Gpu {
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("zerowave video"),
             required_features: wanted,
-            required_limits: adapter.limits(),
+            required_limits: limits(adapter),
             experimental_features: experimental(adapter),
+            memory_hints: MEMORY_HINTS,
             ..Default::default()
         }))
         .map_err(|error| Error::NoDevice(error.to_string()))
@@ -253,8 +255,9 @@ impl Gpu {
         let opened = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("zerowave video"),
             required_features: wanted,
-            required_limits: adapter.limits(),
+            required_limits: limits(adapter),
             experimental_features: experimental(adapter),
+            memory_hints: MEMORY_HINTS,
             ..Default::default()
         }))
         .map_err(|error| Error::NoDevice(error.to_string()))?;
@@ -270,14 +273,14 @@ impl Gpu {
             | wgpu::Features::TEXTURE_FORMAT_P010
             | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
             & adapter.features();
-        let limits = adapter.limits();
+        let limits = limits(adapter);
         // SAFETY: the hal adapter is borrowed only for the call; the callback only appends names.
         let opened = unsafe {
             adapter.as_hal::<Vulkan>().map(|hal| {
                 hal.open_with_callback(
                     wanted,
                     &limits,
-                    &wgpu::MemoryHints::Performance,
+                    &MEMORY_HINTS,
                     Some(Box::new(
                         |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
                             for name in super::import::android::EXTENSIONS {
@@ -294,7 +297,8 @@ impl Gpu {
             return pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("zerowave video"),
                 required_features: wgpu::Features::empty(),
-                required_limits: adapter.limits(),
+                required_limits: limits(adapter),
+                memory_hints: MEMORY_HINTS,
                 ..Default::default()
             }))
             .map_err(|error| Error::NoDevice(error.to_string()));
@@ -309,6 +313,7 @@ impl Gpu {
                     required_features: wanted,
                     required_limits: limits,
                     experimental_features: experimental(adapter),
+                    memory_hints: MEMORY_HINTS,
                     ..Default::default()
                 },
             )
@@ -331,7 +336,7 @@ impl Gpu {
         let importing: &[&std::ffi::CStr] = &[];
         let wanted = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM & adapter.features()
             | ((wgpu::Features::TIMESTAMP_QUERY & adapter.features()) | compute(adapter));
-        let limits = adapter.limits();
+        let limits = limits(adapter);
         // デバイスが持つ拡張だけ足す（知らない名前を渡すと `vkCreateDevice` の前に落ちる）。
         // SAFETY: hal のアダプターは呼び出しの間だけ借りて読むだけ。
         let wanted_extensions: Vec<&'static std::ffi::CStr> = unsafe {
@@ -367,7 +372,7 @@ impl Gpu {
                 hal.open_with_callback(
                     wanted,
                     &limits,
-                    &wgpu::MemoryHints::Performance,
+                    &MEMORY_HINTS,
                     Some(Box::new(
                         |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
                             for name in &wanted_extensions {
@@ -384,7 +389,8 @@ impl Gpu {
             return pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("zerowave video"),
                 required_features: wgpu::Features::empty(),
-                required_limits: adapter.limits(),
+                required_limits: limits(adapter),
+                memory_hints: MEMORY_HINTS,
                 ..Default::default()
             }))
             .map_err(|error| Error::NoDevice(error.to_string()));
@@ -399,6 +405,7 @@ impl Gpu {
                     required_features: wanted,
                     required_limits: limits,
                     experimental_features: experimental(adapter),
+                    memory_hints: MEMORY_HINTS,
                     ..Default::default()
                 },
             )
@@ -410,6 +417,20 @@ impl Gpu {
         let info = self.adapter.get_info();
         format!("{} ({:?}, {})", info.name, info.backend, info.driver)
     }
+}
+
+/// アロケーターは小さなブロックから確保する。既定の `Performance` は種類ごとに 128 MiB（GPU）と 64 MiB（転送）から
+/// 確保して空になるまで返さないので、デバイス二つで数百 MiB が使われないまま残る。
+const MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::MemoryUsage;
+
+/// D3D12 はこの数だけシェーダーから見える descriptor heap を作る（既定の 100 万では一つで 32〜64 MB）。
+/// 同時に生きているバインドグループのテクスチャとバッファーの数で足りる。
+const DESCRIPTORS: u32 = 1 << 16;
+
+fn limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    let mut limits = adapter.limits();
+    limits.max_non_sampler_bindings = limits.max_non_sampler_bindings.min(DESCRIPTORS);
+    limits
 }
 
 /// プラグインの映像フィルター（NN など）のために、あれば有効にするコンピュートの機能。

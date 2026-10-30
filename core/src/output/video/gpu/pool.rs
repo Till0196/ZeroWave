@@ -79,7 +79,7 @@ impl Capability {
         let (upload, staged_ms, mapped_ms) = Upload::measure(device, queue);
         // Weave は候補に無いが基準として計測する（他との差がフィルターそのものの負荷）。
         let mut costs = Vec::new();
-        let mut video = match Video::new(
+        let mut video = match Video::for_measure(
             device,
             queue,
             wgpu::TextureFormat::Rgba8Unorm,
@@ -199,12 +199,15 @@ pub(super) fn measured(format: Format) -> Frame {
     }
 }
 
+/// マップしたままのバッファーの組の数。
+const STAGING_SETS: usize = 3;
+
 pub(super) fn padded(bytes: u32) -> u32 {
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     bytes.div_ceil(align) * align
 }
 
-/// マップしたままのバッファー。スロットが回ってきてもマップが戻っていなければステージング経由で送る。
+/// マップしたままのバッファー。順番が回ってきてもマップが戻っていなければステージング経由で送る。
 #[derive(Debug)]
 pub(super) struct Staging {
     pub(super) buffer: wgpu::Buffer,
@@ -238,7 +241,6 @@ impl Staging {
 pub(super) enum Store {
     Owned {
         planes: Vec<wgpu::Texture>,
-        staging: Vec<Staging>,
     },
     /// 自前の物は無い。view はデコーダーが書いたメモリにバインドした物で、毎フレーム変わる。
     Imported,
@@ -257,6 +259,10 @@ pub(super) struct Slot {
 #[derive(Debug)]
 pub struct Pool {
     pub(super) slots: Vec<Slot>,
+    /// マップしたままのバッファーの組（三プレーン分ずつ）。スロットごとには持たず、順に使い回す
+    /// （GPU のコピーとマップのし直しが済むまでの数で足りる）。
+    pub(super) staging: Vec<Vec<Staging>>,
+    pub(super) turn: usize,
     pub(super) sizes: [(u32, u32); 3],
     pub(super) bytes: u32,
     pub(super) format: Format,
@@ -325,10 +331,7 @@ impl Pool {
                         .map(|plane| plane.create_view(&wgpu::TextureViewDescriptor::default()))
                         .collect();
                     Slot {
-                        store: Store::Owned {
-                            planes,
-                            staging: Vec::new(),
-                        },
+                        store: Store::Owned { planes },
                         views,
                         keep: None,
                     }
@@ -336,6 +339,8 @@ impl Pool {
                 .collect();
             return Ok(Self {
                 slots,
+                staging: Vec::new(),
+                turn: 0,
                 sizes,
                 bytes,
                 format,
@@ -351,13 +356,15 @@ impl Pool {
                         keep: None,
                     })
                     .collect(),
+                staging: Vec::new(),
+                turn: 0,
                 sizes,
                 bytes,
                 format,
                 shape,
             });
         }
-        let slots = (0..slots)
+        let slots: Vec<Slot> = (0..slots)
             .map(|_| {
                 let planes: Vec<wgpu::Texture> = (0..3)
                     .map(|plane| {
@@ -383,21 +390,27 @@ impl Pool {
                     .iter()
                     .map(|plane| plane.create_view(&wgpu::TextureViewDescriptor::default()))
                     .collect();
-                let staging = (0..3)
-                    .map(|plane| {
-                        let (width, height) = sizes[plane];
-                        Staging::new(device, u64::from(padded(width * bytes) * height))
-                    })
-                    .collect();
                 Slot {
-                    store: Store::Owned { planes, staging },
+                    store: Store::Owned { planes },
                     views,
                     keep: None,
                 }
             })
             .collect();
+        let staging = (0..STAGING_SETS.min(slots.len()))
+            .map(|_| {
+                (0..3)
+                    .map(|plane| {
+                        let (width, height) = sizes[plane];
+                        Staging::new(device, u64::from(padded(width * bytes) * height))
+                    })
+                    .collect()
+            })
+            .collect();
         Ok(Self {
             slots,
+            staging,
+            turn: 0,
             sizes,
             bytes,
             format,
@@ -453,18 +466,22 @@ impl Pool {
         let Store::Owned { .. } = self.slots[slot].store else {
             return;
         };
+        let set = (!self.staging.is_empty()).then(|| self.turn % self.staging.len());
+        self.turn = self.turn.wrapping_add(1);
         let mut encoder = None;
         for plane in 0..3 {
             let (width, height) = self.sizes[plane];
             let row = width * self.bytes;
             let stride = padded(row);
             let source = &frame.planes[plane];
-            let Store::Owned { planes, staging } = &self.slots[slot].store else {
+            let Store::Owned { planes } = &self.slots[slot].store else {
                 return;
             };
-            let mapped = upload == Upload::Mapped && staging[plane].ready.load(Ordering::Acquire);
-            if mapped {
-                let staging = &staging[plane];
+            let staging = set.map(|set| &self.staging[set][plane]);
+            let staging = staging.filter(|staging| {
+                upload == Upload::Mapped && staging.ready.load(Ordering::Acquire)
+            });
+            if let Some(staging) = staging {
                 if let Ok(mut view) = staging.buffer.get_mapped_range_mut(..) {
                     rows(source, row, stride, height, |at, bytes| {
                         view.slice(at..at + bytes.len()).copy_from_slice(bytes);
@@ -480,12 +497,9 @@ impl Pool {
                         label: Some("upload"),
                     })
                 });
-                let Store::Owned { planes, staging } = &self.slots[slot].store else {
-                    return;
-                };
                 encoder.copy_buffer_to_texture(
                     wgpu::TexelCopyBufferInfo {
-                        buffer: &staging[plane].buffer,
+                        buffer: &staging.buffer,
                         layout: wgpu::TexelCopyBufferLayout {
                             offset: 0,
                             bytes_per_row: Some(stride),
@@ -533,8 +547,8 @@ impl Pool {
         }
         if let Some(encoder) = encoder {
             queue.submit([encoder.finish()]);
-            if let Store::Owned { staging, .. } = &self.slots[slot].store {
-                for staging in staging {
+            if let Some(set) = set {
+                for staging in &self.staging[set] {
                     if !staging.ready.load(Ordering::Acquire) {
                         staging.remap();
                     }
