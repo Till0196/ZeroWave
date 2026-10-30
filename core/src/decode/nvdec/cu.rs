@@ -114,13 +114,6 @@ struct Symbols {
     #[cfg(windows)]
     destroy_external_semaphore: unsafe extern "C" fn(CUexternalSemaphore) -> CUresult,
     #[cfg(windows)]
-    signal_external_semaphores: unsafe extern "C" fn(
-        *const CUexternalSemaphore,
-        *const ExternalSemaphoreParams,
-        c_uint,
-        CUstream,
-    ) -> CUresult,
-    #[cfg(windows)]
     wait_external_semaphores: unsafe extern "C" fn(
         *const CUexternalSemaphore,
         *const ExternalSemaphoreParams,
@@ -232,8 +225,6 @@ impl Library {
             import_external_semaphore: symbol!(cuda, b"cuImportExternalSemaphore\0"),
             #[cfg(windows)]
             destroy_external_semaphore: symbol!(cuda, b"cuDestroyExternalSemaphore\0"),
-            #[cfg(windows)]
-            signal_external_semaphores: symbol!(cuda, b"cuSignalExternalSemaphoresAsync\0"),
             #[cfg(windows)]
             wait_external_semaphores: symbol!(cuda, b"cuWaitExternalSemaphoresAsync\0"),
             #[cfg(unix)]

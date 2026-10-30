@@ -303,36 +303,23 @@ impl std::fmt::Debug for Fence {
 
 #[cfg(windows)]
 impl Fence {
+    /// ストリームに、フェンスが `value` に届くまで待たせる。
     pub fn wait(&self, stream: &Stream, value: u64) -> Result<(), Error> {
-        self.signal_or_wait(stream, value, false)
-    }
-
-    pub fn signal(&self, stream: &Stream, value: u64) -> Result<(), Error> {
-        self.signal_or_wait(stream, value, true)
-    }
-
-    fn signal_or_wait(&self, stream: &Stream, value: u64, signal: bool) -> Result<(), Error> {
         let _current = Current::push(&self.context)?;
         let params = ExternalSemaphoreParams {
             fence_value: value,
             ..ExternalSemaphoreParams::default()
         };
-        let symbols = &self.context.library.symbols;
-        let call = if signal {
-            symbols.signal_external_semaphores
-        } else {
-            symbols.wait_external_semaphores
-        };
         // SAFETY: フェンスもストリームもこのコンテキストのもの、引数は生きたローカル変数。
-        let status = unsafe { call(&self.semaphore, &params, 1, stream.raw) };
-        self.context.check(
-            if signal {
-                "cuSignalExternalSemaphoresAsync"
-            } else {
-                "cuWaitExternalSemaphoresAsync"
-            },
-            status,
-        )
+        let status = unsafe {
+            (self.context.library.symbols.wait_external_semaphores)(
+                &self.semaphore,
+                &params,
+                1,
+                stream.raw,
+            )
+        };
+        self.context.check("cuWaitExternalSemaphoresAsync", status)
     }
 }
 
