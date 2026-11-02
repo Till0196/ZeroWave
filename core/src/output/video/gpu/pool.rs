@@ -290,7 +290,7 @@ pub(super) struct Slot {
 /// 一つの形式のストリームを見せるテクスチャ。形式が変わったら（選局）作り直す。
 #[derive(Debug)]
 pub struct Pool {
-    /// 二つのフィールドを GPU で一枚のフレームに組み合わせることがある（[`Self::woven_into`]）。
+    /// 二つのフィールドを GPU で一枚のフレームに合成することがある（[`Self::woven_into`]）。
     weaves: bool,
     pub(super) slots: Vec<Slot>,
     /// マップしたままのバッファーの組（三プレーン分ずつ）。スロットごとには持たず、順に使い回す
@@ -405,8 +405,8 @@ impl Pool {
         }
     }
 
-    /// 二つのフィールドを組み合わせたフレームを書くスロットのテクスチャ。初めて使うときに作る：デコーダーが
-    /// 組み合わせて渡すなら要らない（1080p の 10 ビットで一スロット 12 MB）。
+    /// 二つのフィールドを合成したフレームを書くスロットのテクスチャ。初めて使うときに作る：デコーダーが
+    /// 合成して渡すなら要らない（1080p の 10 ビットで一スロット 12 MB）。
     pub(super) fn woven_into(
         &mut self,
         device: &wgpu::Device,
@@ -445,7 +445,7 @@ impl Pool {
         let Store::Owned { planes } = &slot.store else {
             return None;
         };
-        // 取り込んだフレームを見せていたスロットでも、以後は組み合わせた物を見せる。
+        // 取り込んだフレームを見せていたスロットでも、以後は合成した物を見せる。
         slot.views = views(planes);
         slot.keep = None;
         Some(planes)
