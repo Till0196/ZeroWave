@@ -120,6 +120,7 @@ pub struct Plugin {
     manifest: Manifest,
     path: PathBuf,
     cache: Option<PathBuf>,
+    script: Option<std::sync::Arc<[u8]>>,
 }
 
 impl std::fmt::Debug for Plugin {
@@ -227,15 +228,16 @@ impl Plugin {
             let manifest: Manifest = serde_json::from_str(&text)
                 .map_err(|error| format!("manifest.json が読めない: {error}"))?;
             manifest.check_abi()?;
-            let (module, cache) = match &manifest.module {
+            let (module, cache, script) = match &manifest.module {
                 Some(name) => {
                     let bytes = std::fs::read(path.join(name))
                         .map_err(|error| format!("{name} が読めない: {error}"))?;
                     let (module, cache) = compile(engine, &bytes, &path.join(name))
                         .map_err(|error| format!("{name} が wasm としてビルドできない: {error}"))?;
-                    (Some(module), cache)
+                    let script = custom_section(&bytes, abi::SCRIPT).map(std::sync::Arc::from);
+                    (Some(module), cache, script)
                 }
-                None => (None, None),
+                None => (None, None, None),
             };
             return Ok(Self {
                 engine: engine.clone(),
@@ -243,6 +245,7 @@ impl Plugin {
                 manifest,
                 path: path.to_owned(),
                 cache,
+                script,
             });
         }
         let bytes = std::fs::read(path).map_err(|error| format!("読めない: {error}"))?;
@@ -269,6 +272,7 @@ impl Plugin {
             manifest,
             path: path.to_owned(),
             cache,
+            script: custom_section(bytes, abi::SCRIPT).map(std::sync::Arc::from),
         })
     }
 
@@ -341,7 +345,8 @@ impl Plugin {
         let module = self.module_for("layer")?;
         let (width, height) = config.size;
         let draw = layer::Draw::new(fonts, f64::from(width.max(1)), f64::from(height.max(1)));
-        let made = Made::new(&self.engine, module, Limits::LAYER, logger, Some(draw), io)?;
+        let mut made = Made::new(&self.engine, module, Limits::LAYER, logger, Some(draw), io)?;
+        made.store.data_mut().script = self.script.clone();
         LayerInstance::new(self.name().to_owned(), made, config)
     }
 }
@@ -378,6 +383,8 @@ pub struct HostState {
     /// 書きかけ（`eprintln!` は一行を何度かに分けて書く）。
     stdio: [Vec<u8>; 2],
     blobs: std::collections::BTreeMap<String, crate::video::Blob>,
+    /// [`abi::SCRIPT`]。
+    script: Option<std::sync::Arc<[u8]>>,
     /// 放送で届いたものはこのインスタンスの通信だけに追加する。
     net: Box<dyn crate::net::Session>,
     conns: conn::Conns,
@@ -511,6 +518,7 @@ impl Made {
             engine,
             HostState {
                 blobs: std::collections::BTreeMap::new(),
+                script: None,
                 bufs: Bufs::new(limits.bufs),
                 output: Vec::new(),
                 log: LoggerBox(logger),

@@ -328,6 +328,17 @@ pub(crate) fn link(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
 
     linker.func_wrap(
         abi::import::LAYER,
+        "script",
+        |mut caller: Caller<'_, HostState>| -> u32 {
+            let state = caller.data_mut();
+            match state.script.clone() {
+                Some(script) => state.put_buf(script.to_vec()),
+                None => 0,
+            }
+        },
+    )?;
+    linker.func_wrap(
+        abi::import::LAYER,
         "width",
         |mut caller: Caller<'_, HostState>| -> f64 {
             draw(&mut caller).map_or(0.0, |d| d.root().width())

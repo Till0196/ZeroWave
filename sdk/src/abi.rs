@@ -7,6 +7,8 @@
 pub const VERSION: u32 = 1;
 
 pub const MANIFEST: &str = "zw_manifest";
+/// JavaScript のプラグインのスクリプト（`sdk/ts` の `zw-stamp` が書き込む）。
+pub const SCRIPT: &str = "zw_script";
 pub const ALLOC: &str = "zw_alloc";
 pub const FREE: &str = "zw_free";
 

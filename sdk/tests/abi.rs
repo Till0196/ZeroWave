@@ -90,10 +90,12 @@ fn the_stamp_writes_the_same_manifest_version() {
         source.contains(&format!("abi: {}", abi::VERSION)),
         "zw-stamp.mjs の abi"
     );
-    assert!(
-        source.contains(&format!("\"{}\"", abi::MANIFEST)),
-        "zw-stamp.mjs のセクション名"
-    );
+    for name in [abi::MANIFEST, abi::SCRIPT] {
+        assert!(
+            source.contains(&format!("\"{name}\"")),
+            "zw-stamp.mjs のセクション名 {name}"
+        );
+    }
 }
 
 #[test]
