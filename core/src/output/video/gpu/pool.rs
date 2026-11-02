@@ -259,6 +259,8 @@ pub(super) struct Slot {
 /// 一つの形式のストリームを見せるテクスチャ。形式が変わったら（選局）作り直す。
 #[derive(Debug)]
 pub struct Pool {
+    /// フィールドのピクチャーを GPU でウィーブすることがある（[`Self::woven_into`]）。
+    weaves: bool,
     pub(super) slots: Vec<Slot>,
     /// マップしたままのバッファーの組（三プレーン分ずつ）。スロットごとには持たず、順に使い回す
     /// （GPU のコピーとマップのし直しが済むまでの数で足りる）。
@@ -294,62 +296,9 @@ impl Pool {
             (format.width.div_ceil(2), format.height.div_ceil(2)),
             (format.width.div_ceil(2), format.height.div_ceil(2)),
         ];
-        // ウィーブするフレーム（[`super::weave`]）は自前のテクスチャに書く。16 ビットの正規化形式はレンダーターゲットに
-        // できないことがあるので、10 ビットは 32 ビットの浮動小数点で持つ。
-        if shape == Shape::Biplanar && format.woven {
-            let (luma, chroma) = if format.depth > 8 {
-                (
-                    wgpu::TextureFormat::R32Float,
-                    wgpu::TextureFormat::Rg32Float,
-                )
-            } else {
-                (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm)
-            };
-            let slots = (0..slots)
-                .map(|_| {
-                    let planes: Vec<wgpu::Texture> = [(sizes[0], luma), (sizes[1], chroma)]
-                        .into_iter()
-                        .map(|((width, height), format)| {
-                            device.create_texture(&wgpu::TextureDescriptor {
-                                label: Some("woven plane"),
-                                size: wgpu::Extent3d {
-                                    width,
-                                    height,
-                                    depth_or_array_layers: 1,
-                                },
-                                mip_level_count: 1,
-                                sample_count: 1,
-                                dimension: wgpu::TextureDimension::D2,
-                                format,
-                                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                                view_formats: &[],
-                            })
-                        })
-                        .collect();
-                    let views = planes
-                        .iter()
-                        .map(|plane| plane.create_view(&wgpu::TextureViewDescriptor::default()))
-                        .collect();
-                    Slot {
-                        store: Store::Owned { planes },
-                        views,
-                        keep: None,
-                    }
-                })
-                .collect();
-            return Ok(Self {
-                slots,
-                staging: Vec::new(),
-                turn: 0,
-                sizes,
-                bytes,
-                format,
-                shape,
-            });
-        }
         if shape == Shape::Biplanar {
             return Ok(Self {
+                weaves: format.woven,
                 slots: (0..slots)
                     .map(|_| Slot {
                         store: Store::Imported,
@@ -409,6 +358,7 @@ impl Pool {
             })
             .collect();
         Ok(Self {
+            weaves: false,
             slots,
             staging,
             turn: 0,
@@ -435,11 +385,61 @@ impl Pool {
         }
     }
 
-    pub(super) fn owned(&self, slot: usize) -> Option<&[wgpu::Texture]> {
-        match &self.slots.get(slot)?.store {
-            Store::Owned { planes, .. } => Some(planes),
-            Store::Imported => None,
+    /// ウィーブしたフレームを書くスロットのテクスチャ。初めてウィーブするときに作る：デコーダーがウィーブや
+    /// デインターレースまで済ませて渡すなら、一度も使わない（1080p の 10 ビットで一スロット 12 MB）。
+    pub(super) fn woven_into(
+        &mut self,
+        device: &wgpu::Device,
+        slot: usize,
+    ) -> Option<&[wgpu::Texture]> {
+        if !self.weaves {
+            return None;
         }
+        let sizes = [self.sizes[0], self.sizes[1]];
+        // 16 ビットの正規化形式はレンダーターゲットにできないことがあるので、10 ビットは 32 ビットの浮動小数点で持つ。
+        let formats = if self.format.depth > 8 {
+            [
+                wgpu::TextureFormat::R32Float,
+                wgpu::TextureFormat::Rg32Float,
+            ]
+        } else {
+            [wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm]
+        };
+        let slot = self.slots.get_mut(slot)?;
+        if let Store::Imported = slot.store {
+            let planes = sizes
+                .into_iter()
+                .zip(formats)
+                .map(|((width, height), format)| {
+                    device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("woven plane"),
+                        size: wgpu::Extent3d {
+                            width,
+                            height,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING
+                            | wgpu::TextureUsages::RENDER_ATTACHMENT,
+                        view_formats: &[],
+                    })
+                })
+                .collect();
+            slot.store = Store::Owned { planes };
+        }
+        let Store::Owned { planes } = &slot.store else {
+            return None;
+        };
+        // 取り込んだフレームを持っていたスロットでも、見せるのはウィーブした物。
+        slot.views = planes
+            .iter()
+            .map(|plane| plane.create_view(&wgpu::TextureViewDescriptor::default()))
+            .collect();
+        slot.keep = None;
+        Some(planes)
     }
 
     pub fn format(&self) -> Format {

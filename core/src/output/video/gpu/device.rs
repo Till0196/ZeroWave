@@ -353,9 +353,12 @@ impl Gpu {
     }
 }
 
-/// アロケーターは小さなブロックから確保する。既定の `Performance` は種類ごとに 128 MiB（GPU）と 64 MiB（転送）から
-/// 確保して空になるまで返さないので、デバイス二つで数百 MiB が使われないまま残る。
-const MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::MemoryUsage;
+/// アロケーターは小さなブロックから確保し、大きくしても 16 MiB まで。既定の `Performance` は種類ごとに 128 MiB（GPU）と
+/// 64 MiB（転送）から確保して空になるまで返さないので、デバイス二つで数百 MiB が使われないまま残る。`MemoryUsage` でも
+/// 64 MiB まで育ったブロックが小さな割り当て一つで残り、GPU のメモリーが主記憶と共有の PC ではそのまま RAM を使う。
+const MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::Manual {
+    suballocated_device_memory_block_size: 4 << 20..16 << 20,
+};
 
 /// D3D12 はこの数だけシェーダーから見える descriptor heap を作る（既定の 100 万では一つで 32〜64 MB）。
 /// 同時に生きているバインドグループのテクスチャとバッファーの数で足りる。

@@ -50,7 +50,6 @@ impl std::fmt::Debug for Bridge {
     }
 }
 
-
 impl Bridge {
     pub fn open(context: &Arc<cu::Context>, format: Format) -> Result<Self, Error> {
         let Some(device) = dx::adopted() else {
