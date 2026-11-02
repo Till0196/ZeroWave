@@ -30,7 +30,7 @@
 - `zwsdk::config`：一覧とマップの設定（`kind = "list"`・`"map"`）。
 - `zwsdk::fonts`：フォントの探し方です。
 - `zwsdk::draw`：canvas 2D の API でレンダリングして画像にします（ホスト側だけ、feature `host`）。
-- `zwsdk::net`：データ放送の通信など。本体がプラグインの代わりに通信します。
+- `zwsdk::net`：ネットワーク通信。
 - `sdk/ts`・`sdk/javy`：TypeScript でレイヤーを書くための SDK と、それを wasm にする Javy のプラグイン。
 
 プラグインは [zerowave_plugins](https://github.com/Till0196/zerowave_plugins) にあります。

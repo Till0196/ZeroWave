@@ -244,6 +244,21 @@ fn deliver(caller: &Caller<'_, HostState>, notice: crate::ui::Notice) {
     }
 }
 
+/// `名前: 値` の行。
+pub(super) fn header_lines(state: &HostState, buf: u32) -> Vec<(String, String)> {
+    state
+        .bufs
+        .get(buf)
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_owned(), value.trim().to_owned()))
+        })
+        .collect()
+}
+
 fn give(caller: &mut Caller<'_, HostState>, bytes: Option<Vec<u8>>) -> u32 {
     bytes.map_or(0, |bytes| caller.data_mut().put_buf(bytes))
 }
@@ -389,7 +404,10 @@ pub(crate) fn link(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
         abi::import::NET,
         "has_ip",
         |caller: Caller<'_, HostState>| -> u32 {
-            u32::from(caller.data().io.net_allowed() && crate::net::has_ip())
+            u32::from(
+                caller.data().io.net_allowed()
+                    && crate::net::network().is_some_and(|network| network.has_ip()),
+            )
         },
     )?;
     linker.func_wrap(
@@ -400,7 +418,9 @@ pub(crate) fn link(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
             if !caller.data().io.net_allowed() {
                 return 0;
             }
-            let found = crate::net::resolve(&host).map(String::into_bytes);
+            let found = crate::net::network()
+                .and_then(|network| network.resolve(&host))
+                .map(String::into_bytes);
             give(&mut caller, found)
         },
     )?;
@@ -417,13 +437,16 @@ pub(crate) fn link(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
             if !caller.data().io.net_allowed() {
                 return 0;
             }
-            let found = crate::net::reach_from(
-                &host,
-                port as u16,
-                std::time::Duration::from_millis(u64::from(timeout_ms)),
-                caller.data().io.net_inner(),
-            )
-            .map(|(address, ms)| format!("{address} {ms}").into_bytes());
+            let found = crate::net::network()
+                .and_then(|network| {
+                    network.reach(
+                        &host,
+                        port as u16,
+                        std::time::Duration::from_millis(u64::from(timeout_ms)),
+                        caller.data().io.net_inner(),
+                    )
+                })
+                .map(|(address, ms)| format!("{address} {ms}").into_bytes());
             give(&mut caller, found)
         },
     )?;
@@ -440,18 +463,7 @@ pub(crate) fn link(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
          -> u32 {
             let method = guest_text(&mut caller, method_ptr, method_len);
             let url = guest_text(&mut caller, url_ptr, url_len);
-            let headers: Vec<(String, String)> = caller
-                .data()
-                .bufs
-                .get(headers)
-                .map(|b| String::from_utf8_lossy(b).into_owned())
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|line| {
-                    let (k, v) = line.split_once(':')?;
-                    Some((k.trim().to_owned(), v.trim().to_owned()))
-                })
-                .collect();
+            let headers = header_lines(caller.data(), headers);
             let body = caller.data().bufs.get(body).cloned();
             let state = caller.data();
             let reply = if state.io.net_allowed() {

@@ -16,6 +16,8 @@ pub mod input;
 #[cfg(feature = "plugins")]
 pub mod layers;
 pub mod memory;
+#[cfg(feature = "net")]
+pub mod net;
 pub mod output;
 /// データ放送のスレッドを使うので `plugins` のときだけ。
 #[cfg(feature = "plugins")]

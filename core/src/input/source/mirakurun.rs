@@ -5,16 +5,15 @@
 //! [`crate::guide::Guide::wall_clock`] で実時刻に合わせる。
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::io::Read as _;
+use std::sync::RwLock;
 
-use coax::daemon::{Connection, Endpoint, Interrupter};
-use coax::http;
 use coax::json::{self, Value};
 
-use super::{Bytes, Channel, Error, Source, Streamed, Tuner};
+use super::{Bytes, Channel, Error, Source, Tuner};
 use crate::filters::{Component, Container};
 use crate::guide::{Genre, Guide, Key, Picture, Programme, Service, Told};
+use crate::net::http::{Client, Closer, Options, Request, Response};
 
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -23,17 +22,13 @@ const PATIENCE: std::time::Duration = std::time::Duration::from_secs(30);
 pub const NOTHING_CAME: &str =
     "TS を受信できないまま接続が切れました（電波が出ていないか、放送を休止しています）。";
 
-fn unanswered(how: &str, why: std::io::Error) -> Error {
-    match why.kind() {
-        std::io::ErrorKind::UnexpectedEof
-        | std::io::ErrorKind::ConnectionReset
-        | std::io::ErrorKind::ConnectionAborted
-        | std::io::ErrorKind::TimedOut
-        | std::io::ErrorKind::WouldBlock => {
+fn unanswered(how: &str, why: crate::net::Error) -> Error {
+    match why {
+        crate::net::Error::Closed(_) | crate::net::Error::Timeout => {
             tracing::warn!("{how}: 応答がない（{why}）");
             Error::Refused(NOTHING_CAME.to_owned())
         }
-        _ => Error::from(why),
+        _ => Error::Unreachable(why.to_string()),
     }
 }
 
@@ -62,7 +57,10 @@ static ASKING: RwLock<BTreeMap<(String, String), Asking>> = RwLock::new(BTreeMap
 pub fn set_asking<'a>(sources: impl IntoIterator<Item = (&'a str, Asking)>) -> bool {
     let wanted: BTreeMap<(String, String), Asking> = sources
         .into_iter()
-        .filter_map(|(url, asking)| Some((split(url).ok()?, asking)))
+        .filter_map(|(url, asking)| {
+            let place = place(url).ok()?;
+            Some(((place.host, place.root), asking))
+        })
         .collect();
     let mut kept = ASKING.write().unwrap_or_else(|e| e.into_inner());
     if *kept == wanted {
@@ -93,25 +91,30 @@ impl By {
 
 #[derive(Debug)]
 pub struct Mirakurun {
-    host: String,
+    place: Place,
     by: By,
-    root: String,
     name: String,
+    client: Client,
     /// 選局の前に切断する（チューナーが一つの相手は `503` で断る）。
-    open: Option<Interrupter>,
-    cut: Arc<AtomicBool>,
+    open: Option<Closer>,
 }
 
 impl Mirakurun {
     pub fn at(url: &str) -> Result<Self, Error> {
-        let (host, root) = split(url)?;
+        let place = place(url)?;
+        let client = Client::new(&Options {
+            inner: true,
+            patience: PATIENCE,
+            roots: Vec::new(),
+            agent: Some(concat!("ZeroWave/", env!("CARGO_PKG_VERSION")).to_owned()),
+        })
+        .map_err(|why| Error::Unreachable(why.to_string()))?;
         Ok(Self {
-            name: format!("Mirakurun {host}"),
-            host,
-            root,
+            name: format!("Mirakurun {}", place.host),
+            place,
             by: By::Auto,
+            client,
             open: None,
-            cut: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -124,26 +127,28 @@ impl Mirakurun {
         Ok(String::from_utf8_lossy(&body).into_owned())
     }
 
-    fn connect(&self) -> Result<Connection, Error> {
-        let connection = Connection::to(&Endpoint::Network(self.host.clone()))?;
-        connection.set_read_timeout(PATIENCE)?;
-        Ok(connection)
+    fn url(&self, path: &str) -> String {
+        format!("{}{}{path}", self.place.base, self.place.root)
+    }
+
+    fn unreachable(&self, why: crate::net::Error) -> Error {
+        Error::Unreachable(format!("{}: {why}", self.place.host))
     }
 
     fn ask_bytes(&self, path: &str) -> Result<Vec<u8>, Error> {
-        Ok(self.answer(path)?.read_to_end()?)
+        self.answer(path)?
+            .read_all()
+            .map_err(|why| self.unreachable(why))
     }
 
     /// `GET` の応答。本文は届いた分から読める。200 でなければ本文を理由にして失敗する。
-    fn answer(&self, path: &str) -> Result<http::Response<Connection>, Error> {
-        let mut answer = http::get(
-            self.connect()?,
-            &format!("{}{path}", self.root),
-            self.host.as_str(),
-            &[],
-        )?;
+    fn answer(&self, path: &str) -> Result<Response, Error> {
+        let mut answer = self
+            .client
+            .send(Request::get(&self.url(path)))
+            .map_err(|why| self.unreachable(why))?;
         if answer.status != 200 {
-            let body = answer.read_to_end()?;
+            let body = answer.read_all().unwrap_or_default();
             return Err(Error::Refused(format!(
                 "{path}: {} {}",
                 answer.status,
@@ -170,7 +175,7 @@ impl Mirakurun {
             }
         };
         let walked = loop {
-            let read = answer.read_body(&mut chunk)?;
+            let read = answer.read(&mut chunk)?;
             if read == 0 {
                 break items.finish();
             }
@@ -312,7 +317,7 @@ impl Mirakurun {
         ASKING
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&(self.host.clone(), self.root.clone()))
+            .get(&(self.place.host.clone(), self.place.root.clone()))
             .copied()
             .unwrap_or_default()
     }
@@ -323,28 +328,52 @@ impl Mirakurun {
     }
 }
 
-fn split(url: &str) -> Result<(String, String), Error> {
+/// `host` は `名前:ポート`（パスワードは入れない）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Place {
+    base: String,
+    host: String,
+    root: String,
+}
+
+fn place(url: &str) -> Result<Place, Error> {
     let trimmed = url.trim();
-    let rest = trimmed
-        .strip_prefix("http://")
-        .or_else(|| trimmed.strip_prefix("https://"))
-        .unwrap_or(trimmed);
+    let (secure, rest) = match trimmed.strip_prefix("https://") {
+        Some(rest) => (true, rest),
+        None => (false, trimmed.strip_prefix("http://").unwrap_or(trimmed)),
+    };
     let (authority, path) = match rest.find('/') {
         Some(at) => (&rest[..at], rest[at..].trim_end_matches('/')),
         None => (rest, ""),
     };
-    if authority.is_empty() {
+    let (credentials, named) = match authority.rsplit_once('@') {
+        Some((credentials, named)) => (Some(credentials), named),
+        None => (None, authority),
+    };
+    if named.is_empty() {
         return Err(Error::Refused(format!("URL にホストが無い: {url}")));
     }
-    let host = if authority.contains(':') {
-        authority.to_owned()
+    // `[::1]` のコロンはポートではない。
+    let has_port = named
+        .rsplit_once(']')
+        .map_or(named.contains(':'), |(_, after)| after.starts_with(':'));
+    let host = if has_port {
+        named.to_owned()
     } else {
-        format!("{authority}:40772")
+        format!("{named}:{}", if secure { 443 } else { 40772 })
     };
-    Ok((host, path.to_owned()))
+    let scheme = if secure { "https" } else { "http" };
+    let base = match credentials {
+        Some(credentials) => format!("{scheme}://{credentials}@{host}"),
+        None => format!("{scheme}://{host}"),
+    };
+    Ok(Place {
+        base,
+        host,
+        root: path.to_owned(),
+    })
 }
 
-/// 番組の `video`。Mirakurun と DMirakurun でフィールドが違うので全部コピーし、名前を付けるときに使い分ける。
 fn picture(said: &Value) -> Option<Picture> {
     let component_type = number(said, "componentType").map(|kind| kind as u8);
     let resolution = said.get("resolution").and_then(Value::as_str);
@@ -571,35 +600,26 @@ impl Source for Mirakurun {
         crate::plugins::lend(None);
         // 前のストリームを開いたまま要求すると `503 Tuner Resource Unavailable`。
         self.interrupt();
-        let connection = self.connect()?;
-        let interrupter = connection.interrupter().ok();
         let asking = self.asking();
         let priority = asking.priority.to_string();
-        let answer = http::get(
-            connection,
-            &format!("{}{}", self.root, with_decode(&channel.how, asking.decode)),
-            self.host.as_str(),
-            &[("X-Mirakurun-Priority", priority.as_str())],
-        )
-        .map_err(|why| unanswered(&channel.how, why))?;
+        let url = self.url(&with_decode(&channel.how, asking.decode));
+        let answer = self
+            .client
+            .send(Request::get(&url).header("X-Mirakurun-Priority", &priority))
+            .map_err(|why| unanswered(&channel.how, why))?;
         if answer.status != 200 {
             return Err(Error::Refused(format!(
                 "{}: {} {}",
                 channel.how, answer.status, answer.reason
             )));
         }
-        self.open = interrupter;
-        self.cut = Arc::new(AtomicBool::new(false));
-        Ok((
-            Box::new(Streamed::new(answer, Arc::clone(&self.cut))),
-            channel.container,
-        ))
+        self.open = Some(answer.closer());
+        Ok((Box::new(answer), channel.container))
     }
 
     fn interrupt(&mut self) {
-        self.cut.store(true, Ordering::Relaxed);
         if let Some(open) = self.open.take() {
-            open.interrupt();
+            open.close();
         }
     }
 
@@ -848,6 +868,61 @@ mod tests {
         let mut none = 0;
         each_item(b"[]", |_| none += 1).expect("空の配列");
         assert_eq!(none, 0);
+    }
+
+    fn split(url: &str) -> Result<(String, String), Error> {
+        place(url).map(|place| (place.host, place.root))
+    }
+
+    #[test]
+    fn https_and_credentials_are_written_in_the_url() {
+        assert_eq!(
+            place("https://user:pa%40ss@tv.example/mirakurun/").unwrap(),
+            Place {
+                base: String::from("https://user:pa%40ss@tv.example:443"),
+                host: String::from("tv.example:443"),
+                root: String::from("/mirakurun"),
+            }
+        );
+        assert_eq!(split("http://[::1]").unwrap().0, "[::1]:40772");
+        assert_eq!(split("http://[::1]:8080").unwrap().0, "[::1]:8080");
+        let source = Mirakurun::at("http://user:secret@mirakurun").unwrap();
+        assert!(!source.name().contains("secret"), "{}", source.name());
+    }
+
+    #[test]
+    fn credentials_in_the_url_are_sent_as_basic() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().unwrap().port();
+        let heard = std::thread::spawn(move || {
+            let (mut asked, _) = listener.accept().expect("a request");
+            let mut request = Vec::new();
+            let mut piece = [0u8; 1024];
+            while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                match asked.read(&mut piece) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&piece[..read]),
+                }
+            }
+            let body = br#"{"current":"4.0.0"}"#;
+            let _ = write!(
+                asked,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = asked.write_all(body);
+            String::from_utf8_lossy(&request).into_owned()
+        });
+        let source = Mirakurun::at(&format!("http://zero:wave@127.0.0.1:{port}")).unwrap();
+        assert_eq!(source.version().unwrap(), "4.0.0");
+        let request = heard.join().unwrap();
+        // "zero:wave" の Base64。
+        assert!(
+            request.contains("Authorization: Basic emVybzp3YXZl\r\n"),
+            "{request}"
+        );
+        assert!(request.contains("User-Agent: ZeroWave/"), "{request}");
     }
 
     #[test]

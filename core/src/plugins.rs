@@ -151,7 +151,7 @@ impl Loaded {
         if paths.is_empty() {
             return Self::default();
         }
-        let engine = match zwsdk::host::engine() {
+        let engine = match engine() {
             Ok(engine) => engine,
             Err(why) => {
                 say(&format!("プラグイン  {why}"));
@@ -190,7 +190,7 @@ impl Loaded {
     pub fn plus(&self, path: &Path, say: &mut dyn FnMut(&str)) -> Result<Self, String> {
         let engine = match self.engine.clone() {
             Some(engine) => engine,
-            None => zwsdk::host::engine()?,
+            None => engine()?,
         };
         let file = text_of(path.file_name());
         let plugin = Plugin::load(&engine, path).map_err(|why| format!("{file}: {why}"))?;
@@ -326,6 +326,12 @@ pub fn give_control(control: zwsdk::host::IoControl) {
 
 fn control() -> Option<zwsdk::host::IoControl> {
     CONTROL.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// プラグインのネットワーク通信を差し込んでから。
+fn engine() -> Result<zwsdk::host::Engine, String> {
+    crate::net::broadcast::install();
+    zwsdk::host::engine()
 }
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ pub use wasmtime::Engine;
 use crate::abi;
 use crate::slots::Slots;
 
+mod conn;
 mod files;
 pub mod fonts;
 mod io;
@@ -378,7 +379,8 @@ pub struct HostState {
     stdio: [Vec<u8>; 2],
     blobs: std::collections::BTreeMap<String, crate::video::Blob>,
     /// 放送で届いたものはこのインスタンスの通信だけに追加する。
-    net: crate::net::Session,
+    net: Box<dyn crate::net::Session>,
+    conns: conn::Conns,
     limits: Limits,
 }
 
@@ -519,7 +521,8 @@ impl Made {
                 borrowed: Slots::with_most(16),
                 began: std::time::Instant::now(),
                 stdio: [Vec::new(), Vec::new()],
-                net: crate::net::Session::new(),
+                net: crate::net::session(),
+                conns: Slots::with_most(16),
                 limits,
             },
         );
@@ -842,6 +845,7 @@ fn link_all(linker: &mut Linker<HostState>) -> wasmtime::Result<()> {
     files::link(linker)?;
     proc::link(linker)?;
     sock::link(linker)?;
+    conn::link(linker)?;
     video::link(linker)?;
     tuner::link(linker)
 }

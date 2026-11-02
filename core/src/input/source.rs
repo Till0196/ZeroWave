@@ -79,13 +79,13 @@ impl From<std::io::Error> for Error {
 pub type Bytes = Box<dyn Read + Send>;
 
 /// こちらから切った（[`Source::interrupt`]）なら、`read` のエラーは終端として 0 を返す。
-#[cfg(any(feature = "coaxd", feature = "mirakurun"))]
+#[cfg(feature = "coaxd")]
 pub(crate) struct Streamed {
     answer: coax::http::Response<coax::daemon::Connection>,
     cut: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-#[cfg(any(feature = "coaxd", feature = "mirakurun"))]
+#[cfg(feature = "coaxd")]
 impl Streamed {
     pub(crate) fn new(
         answer: coax::http::Response<coax::daemon::Connection>,
@@ -95,7 +95,7 @@ impl Streamed {
     }
 }
 
-#[cfg(any(feature = "coaxd", feature = "mirakurun"))]
+#[cfg(feature = "coaxd")]
 impl Read for Streamed {
     fn read(&mut self, into: &mut [u8]) -> std::io::Result<usize> {
         match self.answer.read_body(into) {
@@ -106,7 +106,7 @@ impl Read for Streamed {
     }
 }
 
-#[cfg(any(feature = "coaxd", feature = "mirakurun"))]
+#[cfg(feature = "coaxd")]
 impl fmt::Debug for Streamed {
     fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         out.debug_struct("Streamed").finish_non_exhaustive()
@@ -181,7 +181,7 @@ pub trait Source: Send {
     fn interrupt(&mut self) {}
 }
 
-#[cfg(all(test, any(feature = "coaxd", feature = "mirakurun")))]
+#[cfg(all(test, feature = "coaxd"))]
 mod tests {
     use std::io::{Read, Write};
     use std::sync::Arc;
