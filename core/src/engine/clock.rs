@@ -309,25 +309,20 @@ impl Clock {
 #[derive(Debug, Clone, Copy)]
 pub struct Drift {
     target: f64,
-    /// ならした誤差（目標に対する比）。途切れた後は測り直す。
     smoothed: Option<f64>,
     /// 積分した比。時計のずれそのものに落ち着き、選局をまたいで引き継ぐ。
     lean: f64,
     ratio: f64,
-    /// 途切れた後、調整を止めておく残り時間（秒）。
     held: f64,
 }
 
-/// ならす時定数（秒）。
 const DRIFT_SMOOTH: f64 = 4.0;
-/// 溜めた量は速さの差を積み上げた物なので、比例の項で揺れを抑え、積分の項がずれそのものに落ち着く。
-/// 0.4% のずれを数十秒で吸収し、1〜250 ms のばらばらな間隔で届いても揺れは 0.3% 以内（試験の値）。
+/// 溜めた量は速さの差が積もったものなので、比例の項で揺れを抑え、積分の項でずれそのものに合わせる。
+/// 0.4% のずれを数十秒で吸収し、1〜250 ms のばらばらな間隔で届いても揺れは 0.3% 以内。
 const DRIFT_PROPORTIONAL: f64 = 0.02;
-/// 一秒あたりの積分の利き。
 const DRIFT_INTEGRAL: f64 = 5e-4;
 /// 伸び縮みの上限。0.5% で音の高さは 9 セントほど。
 pub const DRIFT_MOST: f64 = 5e-3;
-/// 途切れた（音声が届かなかった）後に調整を止める時間（秒）。
 const DRIFT_HOLD: f64 = 1.0;
 
 impl Drift {
@@ -341,7 +336,7 @@ impl Drift {
         }
     }
 
-    /// 目標を替える。積分した比（時計のずれ）は引き継ぐ。
+    /// 同じソースなら時計のずれは同じなので、積分した比は引き継ぐ。
     pub fn retarget(self, target: u64) -> Self {
         Self {
             lean: self.lean,
@@ -354,7 +349,6 @@ impl Drift {
         self.target as u64
     }
 
-    /// `seconds` 前からの溜めた量 `queued` で比を決める。
     pub fn update(&mut self, queued: u64, seconds: f64) -> f64 {
         let seconds = seconds.clamp(0.0, 0.5);
         let error = (queued as f64 - self.target) / self.target;
@@ -382,25 +376,13 @@ impl Drift {
     }
 
     /// 調整せず、学んだ比のまま進める（溜めた量が大きく減ったのを別の手段で戻している間）。
-    pub fn coast(&mut self) -> f64 {
+    pub fn coast(&mut self) {
         self.smoothed = None;
         self.ratio = 1.0 + self.lean;
-        self.ratio
-    }
-
-    pub fn holding(&self) -> bool {
-        self.held > 0.0
     }
 
     pub fn ratio(&self) -> f64 {
         self.ratio
-    }
-
-    pub fn reset(&mut self) {
-        self.lean = 0.0;
-        self.ratio = 1.0;
-        self.smoothed = None;
-        self.held = 0.0;
     }
 }
 

@@ -193,7 +193,6 @@ struct Sounding {
     extra_latency: i64,
     mix: Mix,
     shaped: Option<Shape>,
-    /// 余裕が目標の半分を切っている時間（秒）。
     low_for: f64,
     /// 次に書く音声の前に挟む、時刻を進めない無音（サンプル数）。
     pad: usize,
@@ -284,7 +283,6 @@ impl Sounding {
         }
     }
 
-    /// 届いた物を書き、`seconds` 進んだ時計を合わせる。書いた物があれば真。
     fn step(&mut self, seconds: f64) -> bool {
         let took = self.take_all();
         self.move_clock(seconds);
@@ -398,7 +396,6 @@ impl Sounding {
         self.filled = false;
         self.low_for = 0.0;
         self.pad = 0;
-        // 同じソースなら時計のずれは同じなので、学んだ比は引き継ぐ。
         self.drift = self.drift.retarget(QUEUE);
         let mut clock = Clock::new(rate);
         if let Some(device) = self.device.as_ref() {
@@ -463,7 +460,6 @@ impl Sounding {
 
     /// 最初のフレームを待つ間に溜まる音声。クロックを映像に合わせるにはその音声が要る。
     fn held_while_opening(&self) -> u64 {
-        let rate = u64::from(self.device_rate());
         let expected = self
             .video_expected
             .as_ref()
@@ -473,7 +469,7 @@ impl Sounding {
         } else {
             OPEN_FOR_VIDEO
         };
-        (wait.as_millis() as u64 * rate / 1000).max(AHEAD)
+        self.samples_in(wait).max(AHEAD)
     }
 
     fn take(&mut self, out: Out) {
@@ -686,7 +682,7 @@ impl Sounding {
             skip_to.fetch_max(*first, Ordering::Relaxed);
         }
         // ライブでは溜めた量を目標にする（減らすと映像が遅れる）。少なくとも LIVE_LEAD。
-        let lead = self.opening_samples.max(self.lead_samples());
+        let lead = self.opening_samples.max(self.samples_in(LIVE_LEAD));
         if self.live {
             self.ahead = (lead * 2).max(AHEAD);
         }
@@ -705,13 +701,17 @@ impl Sounding {
             self.drift = self.drift.retarget(lead);
             tracing::debug!(
                 "音声のバッファ {:.0} ms（映像に合わせる）",
-                lead as f64 * 1000.0 / f64::from(self.device_rate())
+                self.millis(lead)
             );
         }
     }
 
-    fn lead_samples(&self) -> u64 {
-        LIVE_LEAD.as_millis() as u64 * u64::from(self.device_rate()) / 1000
+    fn samples_in(&self, span: Duration) -> u64 {
+        span.as_millis() as u64 * u64::from(self.device_rate()) / 1000
+    }
+
+    fn millis(&self, samples: u64) -> f64 {
+        samples as f64 * 1000.0 / f64::from(self.device_rate())
     }
 
     fn opening_done(&self, since: Instant, video_first: Option<i64>) -> bool {
@@ -857,38 +857,34 @@ impl Sounding {
         if !self.started {
             return;
         }
-        // 途切れて減った分は時計のずれではない。
+        let low = queued * 2 < self.drift.target();
         if gained > 0 {
             self.drift.interrupted();
-            self.watch_lead(queued, seconds);
-            return;
-        }
-        // 目標の半分を切るほど減ったのは途切れの名残で、無音を挟んで戻す（伸び縮みで追うと速さを読み違える）。
-        if self.live && queued * 2 < self.drift.target() {
+        } else if self.live && low {
+            // 途切れの名残。伸び縮みで追うと速さを読み違えるので、無音で戻す。
             self.drift.coast();
         } else {
             self.drift.update(queued, seconds);
         }
-        self.watch_lead(queued, seconds);
+        self.watch_lead(low, queued, seconds);
     }
 
     /// ライブの端に追いつきそうなら、時刻を進めない無音を挟んで余裕を戻す（伸び縮みで戻るのを待つと、
     /// その間映像が間に合わずに捨てられる）。
-    fn watch_lead(&mut self, queued: u64, seconds: f64) {
-        let low = queued * 2 < self.drift.target();
-        if !self.live || !self.started || self.paused || self.pad > 0 || !low {
+    fn watch_lead(&mut self, low: bool, queued: u64, seconds: f64) {
+        if !self.live || self.paused || self.pad > 0 || !low {
             self.low_for = 0.0;
             return;
         }
         self.low_for += seconds;
         if self.low_for >= LOW_FOR {
             self.low_for = 0.0;
-            // 足りない分を一度に挟む（小分けにすると映像がその回数だけ止まる）。
+            // 一度に挟む（小分けにすると映像がその回数だけ止まる）。
             let short = self.drift.target().saturating_sub(queued);
             self.pad = short as usize;
             tracing::debug!(
                 "ライブの端に追いつきそうなので、無音を {:.0} ms 挟む",
-                short as f64 * 1000.0 / f64::from(self.device_rate())
+                self.millis(short)
             );
         }
     }
@@ -940,7 +936,7 @@ mod tests {
     use mediadecoder::audio::{Mixdown, Speaker};
     use std::sync::Mutex;
 
-    /// 試験の音声デバイス。呼ぶたびに [`Fake::play`] の分だけ再生し、無ければその分を無音で埋めて数える。
+    /// テスト用の音声デバイス。[`Fake::play`] で呼んだ分だけ再生し、足りない分は無音で埋めて数える。
     #[derive(Debug, Default)]
     struct Tape {
         written: u64,
@@ -1033,7 +1029,7 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct Watched {
-        /// （秒、デバイスに溜まった量、比）を 1 秒ごと。
+        /// 1 秒ごとの（時刻、デバイスに溜まった量、比）。
         seconds: Vec<(f64, u64, f64)>,
         target: u64,
         started_at: Option<f64>,
@@ -1091,7 +1087,7 @@ mod tests {
             {
                 cut += STEP;
             }
-            // 届いた放送の分だけフレームができる。途切れた間の分は来ない。
+            // 途切れている間の放送は届かない。
             let aired = ((now - cut) * 48_000.0 * air.source / FRAME as f64) as u64;
             while made < aired {
                 made += 1;
@@ -1156,7 +1152,7 @@ mod tests {
 
     #[test]
     fn a_tuner_that_runs_slow_keeps_its_lead_without_running_dry() {
-        // us3pout：PC の音声に対して 0.4% 遅い。いままでは 0.1% しか吸収せず、溜めた量が尽きては補っていた。
+        // us3pout：PC の音声に対して 0.4% 遅い。
         let watched = watch(&Air::steady(0.996), 240.0);
         assert_eq!(watched.missed_after_start, 0);
         assert!(

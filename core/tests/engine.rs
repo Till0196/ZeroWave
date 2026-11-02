@@ -49,7 +49,7 @@ fn play_bytes(bytes: &[u8], container: Container) -> Played {
     played
 }
 
-/// 電波が悪いときのように TS のパケットを抜く：`every` 個に一つと、`burst` の範囲（パケットの番号）をまとめて。
+/// 電波が悪いときのように TS のパケットを抜く：`every` 個に一つと、`pid` のパケットのうち `burst` 番目の範囲をまとめて。
 fn lossy(bytes: &[u8], every: usize, pid: u16, burst: std::ops::Range<usize>) -> Vec<u8> {
     let mut of_pid = 0;
     bytes
@@ -173,8 +173,8 @@ fn a_stream_with_lost_packets_still_gives_pictures_and_sound_in_order() {
     let bytes = read(name);
     let container = Container::of_path(name).expect("a name that says which");
     let clean = play_bytes(&bytes, container);
-    // 37 個に一つと、音声（PID 0x101）を途中で 15 パケット続けて抜く。素材の音声は一つの PES に
-    // 数フレーム入っているので、一パケット抜けると数フレーム無くなる（放送は普通一フレームずつ）。
+    // このファイルは音声（PID 0x101）の PES 一つに数フレーム入っているので、1 パケット抜けるだけで
+    // 数フレーム失われる（放送では普通 1 フレームずつ）。
     let played = play_bytes(&lossy(&bytes, 37, 0x101, 30..45), container);
 
     assert!(
