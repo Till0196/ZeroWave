@@ -22,8 +22,11 @@ mod common;
 use common::testdata as read;
 
 fn play(name: &str) -> Played {
-    let bytes = read(name);
     let container = Container::of_path(name).expect("a name that says which");
+    play_bytes(&read(name), container)
+}
+
+fn play_bytes(bytes: &[u8], container: Container) -> Played {
     // The head goes through one engine to find what is there; the stream is then played
     // from the beginning through another.
     let mut looking = Engine::new(container, 48_000);
@@ -44,6 +47,26 @@ fn play(name: &str) -> Played {
     }
     finish(&mut decoding, &mut played);
     played
+}
+
+/// 電波が悪いときのように TS のパケットを抜く：`every` 個に一つと、`burst` の範囲（パケットの番号）をまとめて。
+fn lossy(bytes: &[u8], every: usize, pid: u16, burst: std::ops::Range<usize>) -> Vec<u8> {
+    let mut of_pid = 0;
+    bytes
+        .chunks(188)
+        .enumerate()
+        .filter(|(at, packet)| {
+            if (at + 1) % every == 0 {
+                return false;
+            }
+            if u16::from_be_bytes([packet[1] & 0x1f, packet[2]]) != pid {
+                return true;
+            }
+            of_pid += 1;
+            !burst.contains(&(of_pid - 1))
+        })
+        .flat_map(|(_, packet)| packet.iter().copied())
+        .collect()
 }
 
 /// The same, handing the sound over coded.
@@ -142,6 +165,59 @@ fn a_stream_of_mpeg2_gives_pictures_and_sound_that_belong_together() {
     let first_sound = played.sounds[0].0;
     let apart = (first_picture - first_sound).abs();
     assert!(apart < HZ, "映像と音声が {apart} 離れている");
+}
+
+#[test]
+fn a_stream_with_lost_packets_still_gives_pictures_and_sound_in_order() {
+    let name = "mpeg2-interlaced.ts";
+    let bytes = read(name);
+    let container = Container::of_path(name).expect("a name that says which");
+    let clean = play_bytes(&bytes, container);
+    // 37 個に一つと、音声（PID 0x101）を途中で 15 パケット続けて抜く。素材の音声は一つの PES に
+    // 数フレーム入っているので、一パケット抜けると数フレーム無くなる（放送は普通一フレームずつ）。
+    let played = play_bytes(&lossy(&bytes, 37, 0x101, 30..45), container);
+
+    assert!(
+        played.pictures.len() * 2 > clean.pictures.len(),
+        "映像 {} / {}",
+        played.pictures.len(),
+        clean.pictures.len()
+    );
+    assert!(
+        played.sounds.len() * 2 > clean.sounds.len(),
+        "音声 {} / {}",
+        played.sounds.len(),
+        clean.sounds.len()
+    );
+    let pictures: Vec<i64> = played.pictures.iter().map(|(at, ..)| *at).collect();
+    assert!(
+        pictures.windows(2).all(|pair| pair[0] < pair[1]),
+        "映像の時刻が前後する: {pictures:?}"
+    );
+    let sounds: Vec<i64> = played.sounds.iter().map(|(at, ..)| *at).collect();
+    assert!(
+        sounds.windows(2).all(|pair| pair[0] < pair[1]),
+        "音声の時刻が前後する: {sounds:?}"
+    );
+    // 抜けた音声は時刻の隙間になる（詰めて渡すと、その後の映像と音声がずれる）。
+    let frame = 1_024 * HZ / 48_000;
+    let widest = sounds
+        .windows(2)
+        .map(|pair| pair[1] - pair[0])
+        .max()
+        .unwrap_or(0);
+    assert!(
+        widest > frame * 5,
+        "まとめて抜いた所が隙間になっていない: {widest}"
+    );
+    // 抜けた後も、映像と音声は同じ時計の上にある。
+    let last_picture = *pictures.last().expect("映像");
+    let last_sound = *sounds.last().expect("音声");
+    assert!(
+        (last_picture - last_sound).abs() < HZ,
+        "終わりで映像と音声が {} 離れている",
+        last_picture - last_sound
+    );
 }
 
 #[test]

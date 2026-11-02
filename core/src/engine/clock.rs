@@ -151,6 +151,20 @@ impl Clock {
         Some(mark.ticks + self.ticks_into(mark, self.queued.saturating_sub(mark.at)))
     }
 
+    /// 時刻を進めない無音を足す（ライブの端までの余裕を戻すため）。この間は映像も止まる。
+    pub fn held(&mut self, samples: usize) {
+        let Some(at) = self.ends_at() else {
+            return;
+        };
+        self.marks.push_back(Mark {
+            at: self.queued,
+            ticks: at,
+            pace: 0.0,
+        });
+        self.queued += samples as u64;
+        self.free = None;
+    }
+
     /// Without this the player runs at the rate the sound arrives at.
     pub fn missed(&mut self, samples: u64) {
         if samples == 0 {
@@ -289,36 +303,93 @@ impl Clock {
     }
 }
 
-/// Keeps the device's queue at its depth by resampling by a ratio a hair from one.
-/// Deliberately slow: a fast one would chase reporting jitter and wobble the pitch.
+/// 音声デバイスに溜めた量を目標に保つよう、1 に近い比で音声を伸び縮みする。ライブでは溜めた量がそのまま
+/// ライブの端までの余裕なので、放送と PC の時計のずれ（チューナーによっては 0.4%）をここで吸収する。
+/// 量は数秒でならす：まとめて届く分で音の高さが揺れないように。
 #[derive(Debug, Clone, Copy)]
 pub struct Drift {
     target: f64,
-    proportional: f64,
-    integral: f64,
-    sum: f64,
-    most: f64,
+    /// ならした誤差（目標に対する比）。途切れた後は測り直す。
+    smoothed: Option<f64>,
+    /// 積分した比。時計のずれそのものに落ち着き、選局をまたいで引き継ぐ。
+    lean: f64,
     ratio: f64,
+    /// 途切れた後、調整を止めておく残り時間（秒）。
+    held: f64,
 }
+
+/// ならす時定数（秒）。
+const DRIFT_SMOOTH: f64 = 4.0;
+/// 溜めた量は速さの差を積み上げた物なので、比例の項で揺れを抑え、積分の項がずれそのものに落ち着く。
+/// 0.4% のずれを数十秒で吸収し、1〜250 ms のばらばらな間隔で届いても揺れは 0.3% 以内（試験の値）。
+const DRIFT_PROPORTIONAL: f64 = 0.02;
+/// 一秒あたりの積分の利き。
+const DRIFT_INTEGRAL: f64 = 5e-4;
+/// 伸び縮みの上限。0.5% で音の高さは 9 セントほど。
+pub const DRIFT_MOST: f64 = 5e-3;
+/// 途切れた（音声が届かなかった）後に調整を止める時間（秒）。
+const DRIFT_HOLD: f64 = 1.0;
 
 impl Drift {
     pub fn new(target: u64) -> Self {
         Self {
-            target: target as f64,
-            proportional: 1e-4,
-            integral: 1e-5,
-            sum: 0.0,
-            most: 1e-3,
+            target: (target as f64).max(1.0),
+            smoothed: None,
+            lean: 0.0,
             ratio: 1.0,
+            held: 0.0,
         }
     }
 
-    pub fn update(&mut self, queued: u64) -> f64 {
-        let error = (queued as f64 - self.target) / self.target.max(1.0);
-        self.sum = (self.sum + error * self.integral).clamp(-self.most, self.most);
-        self.ratio =
-            (1.0 + self.sum + error * self.proportional).clamp(1.0 - self.most, 1.0 + self.most);
+    /// 目標を替える。積分した比（時計のずれ）は引き継ぐ。
+    pub fn retarget(self, target: u64) -> Self {
+        Self {
+            lean: self.lean,
+            ratio: 1.0 + self.lean,
+            ..Self::new(target)
+        }
+    }
+
+    pub fn target(&self) -> u64 {
+        self.target as u64
+    }
+
+    /// `seconds` 前からの溜めた量 `queued` で比を決める。
+    pub fn update(&mut self, queued: u64, seconds: f64) -> f64 {
+        let seconds = seconds.clamp(0.0, 0.5);
+        let error = (queued as f64 - self.target) / self.target;
+        let smoothed = match self.smoothed {
+            Some(was) => was + (error - was) * seconds / (DRIFT_SMOOTH + seconds),
+            None => error,
+        };
+        self.smoothed = Some(smoothed);
+        if self.held > 0.0 {
+            self.held -= seconds;
+            self.ratio = 1.0 + self.lean;
+            return self.ratio;
+        }
+        self.lean =
+            (self.lean + smoothed * DRIFT_INTEGRAL * seconds).clamp(-DRIFT_MOST, DRIFT_MOST);
+        self.ratio = (1.0 + self.lean + smoothed * DRIFT_PROPORTIONAL)
+            .clamp(1.0 - DRIFT_MOST, 1.0 + DRIFT_MOST);
         self.ratio
+    }
+
+    /// 音声が途切れた（デバイスが空になった）。溜めた量が減っても時計のずれではないので、しばらく調整しない。
+    pub fn interrupted(&mut self) {
+        self.held = DRIFT_HOLD;
+        self.smoothed = None;
+    }
+
+    /// 調整せず、学んだ比のまま進める（溜めた量が大きく減ったのを別の手段で戻している間）。
+    pub fn coast(&mut self) -> f64 {
+        self.smoothed = None;
+        self.ratio = 1.0 + self.lean;
+        self.ratio
+    }
+
+    pub fn holding(&self) -> bool {
+        self.held > 0.0
     }
 
     pub fn ratio(&self) -> f64 {
@@ -326,14 +397,16 @@ impl Drift {
     }
 
     pub fn reset(&mut self) {
-        self.sum = 0.0;
+        self.lean = 0.0;
         self.ratio = 1.0;
+        self.smoothed = None;
+        self.held = 0.0;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Clock, Drift, HZ, Wrap};
+    use super::{Clock, DRIFT_MOST, Drift, HZ, Wrap};
 
     #[test]
     fn a_count_that_starts_again_keeps_going_up() {
@@ -559,38 +632,195 @@ mod tests {
     #[test]
     fn a_queue_filling_up_is_answered_by_reading_the_input_faster() {
         let mut drift = Drift::new(4_800);
-        let ratio = drift.update(6_000);
+        let ratio = drift.update(7_200, 0.01);
         assert!(ratio > 1.0, "{ratio}");
-        assert!(ratio < 1.001, "{ratio}");
+        assert!(ratio <= 1.0 + DRIFT_MOST, "{ratio}");
     }
 
     #[test]
     fn a_queue_running_dry_is_answered_by_reading_the_input_slower() {
         let mut drift = Drift::new(4_800);
-        let ratio = drift.update(3_600);
+        let ratio = drift.update(2_400, 0.01);
         assert!(ratio < 1.0, "{ratio}");
-        assert!(ratio > 0.999, "{ratio}");
+        assert!(ratio >= 1.0 - DRIFT_MOST, "{ratio}");
     }
 
     #[test]
-    fn a_steady_difference_in_rate_is_taken_out_rather_than_held_at_a_distance() {
+    fn a_queue_at_its_depth_is_left_alone() {
         let mut drift = Drift::new(4_800);
-        let mut queued = 4_800.0f64;
-        for _ in 0..4_000 {
-            let ratio = drift.update(queued as u64);
-            queued += 480.0 / ratio - 480.0 * 1.0001;
-            queued = queued.clamp(0.0, 100_000.0);
+        for _ in 0..10_000 {
+            assert_eq!(drift.update(4_800, 0.001), 1.0);
         }
-        assert!((queued - 4_800.0).abs() < 100.0, "{queued}");
-        assert!((drift.ratio() - 0.9999).abs() < 1e-4, "{}", drift.ratio());
     }
 
     #[test]
     fn the_ratio_never_goes_far_from_one() {
         let mut drift = Drift::new(4_800);
-        for _ in 0..10_000 {
-            let ratio = drift.update(0);
-            assert!((0.999..=1.001).contains(&ratio), "{ratio}");
+        for _ in 0..100_000 {
+            let ratio = drift.update(0, 0.01);
+            assert!(
+                (1.0 - DRIFT_MOST..=1.0 + DRIFT_MOST).contains(&ratio),
+                "{ratio}"
+            );
         }
+    }
+
+    #[test]
+    fn what_was_learned_outlives_a_new_depth() {
+        let mut drift = Drift::new(4_800);
+        for _ in 0..20_000 {
+            drift.update(1_000, 0.01);
+        }
+        let learned = drift.ratio();
+        assert!(learned < 1.0);
+        let moved = drift.retarget(19_200);
+        assert!((moved.ratio() - (1.0 + drift.lean)).abs() < 1e-12);
+        assert_eq!(moved.target(), 19_200);
+    }
+
+    /// 音声デバイスまでの一本の道。ソースは PC の音声の `source` 倍の速さで、`burst` 秒ごとにまとめて届く
+    /// （`gaps` の間は何も届かない）。デバイスは 1 ms に 48 サンプル再生し、溜められるのは目標の 2 倍まで。
+    struct Line {
+        drift: Drift,
+        queued: f64,
+        waiting: f64,
+        least_after: f64,
+        underruns: u32,
+        ratios: Vec<(f64, f64)>,
+    }
+
+    const DEPTH: u64 = 19_200;
+
+    fn run(source: f64, seconds: f64, burst: impl Fn(u64) -> f64, gaps: &[(f64, f64)]) -> Line {
+        let mut line = Line {
+            drift: Drift::new(DEPTH),
+            queued: DEPTH as f64,
+            waiting: 0.0,
+            least_after: f64::MAX,
+            underruns: 0,
+            ratios: Vec::new(),
+        };
+        let step = 0.001;
+        let mut next_burst = burst(0);
+        let mut bursts = 1;
+        let mut arrived = 0.0;
+        for tick in 0..(seconds / step) as u64 {
+            let now = tick as f64 * step;
+            if !gaps.iter().any(|(from, to)| (*from..*to).contains(&now)) {
+                arrived += source * 48.0;
+            }
+            if now >= next_burst {
+                line.waiting += arrived;
+                arrived = 0.0;
+                next_burst += burst(bursts);
+                bursts += 1;
+            }
+            let ratio = line.drift.ratio();
+            let room = (DEPTH * 2) as f64 - line.queued;
+            let written = (line.waiting / ratio).min(room.max(0.0));
+            line.waiting -= written * ratio;
+            line.queued += written;
+            line.queued -= 48.0;
+            if line.queued < 0.0 {
+                line.queued = 0.0;
+                line.underruns += 1;
+                line.drift.interrupted();
+            } else {
+                line.drift.update(line.queued as u64, step);
+            }
+            if now > seconds / 2.0 {
+                line.least_after = line.least_after.min(line.queued);
+            }
+            if tick % 1_000 == 0 {
+                line.ratios.push((now, line.drift.ratio()));
+            }
+        }
+        line
+    }
+
+    #[test]
+    fn a_tuner_four_thousandths_slow_is_taken_out_without_running_dry() {
+        // us3pout：PC の音声に対して 0.4% 遅い。
+        let line = run(0.996, 400.0, |_| 0.03, &[]);
+        assert_eq!(line.underruns, 0);
+        assert!(
+            line.least_after > DEPTH as f64 * 0.75,
+            "後半の最少 {:.0}",
+            line.least_after
+        );
+        let last = line.drift.ratio();
+        assert!((last - 0.996).abs() < 5e-4, "{last}");
+    }
+
+    #[test]
+    fn a_source_a_little_fast_is_read_faster_and_does_not_pile_up() {
+        let line = run(1.003, 400.0, |_| 0.03, &[]);
+        assert_eq!(line.underruns, 0);
+        assert!(
+            (line.drift.ratio() - 1.003).abs() < 5e-4,
+            "{}",
+            line.drift.ratio()
+        );
+        assert!(
+            line.waiting < 48_000.0,
+            "溜まり続けない: {:.0}",
+            line.waiting
+        );
+    }
+
+    #[test]
+    fn bursty_arrival_on_time_does_not_bend_the_pitch() {
+        // 0〜250 ms のばらばらな間隔でまとめて届く。速さそのものは同じ。
+        let gap = |n: u64| {
+            let x = n
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((x >> 33) % 250) as f64 / 1000.0 + 0.001
+        };
+        let line = run(1.0, 300.0, gap, &[]);
+        assert_eq!(line.underruns, 0);
+        // 平均 125 ms ずつまとめて届くのは極端な場合。それでも 0.3%（音の高さで 5 セント）に収まる。
+        for (at, ratio) in line.ratios.iter().filter(|(at, _)| *at > 30.0) {
+            assert!((ratio - 1.0).abs() < 3e-3, "{at:.0} 秒で {ratio}");
+        }
+    }
+
+    #[test]
+    fn a_dropout_is_not_taken_for_a_slow_clock() {
+        // 電波が 3 秒途切れる。届かない間に溜めた分は無くなるが、ソースの速さは変わっていない。
+        let line = run(1.0, 60.0, |_| 0.03, &[(20.0, 23.0)]);
+        assert!(line.underruns > 0, "途切れたのでデバイスは空になる");
+        let around: Vec<f64> = line
+            .ratios
+            .iter()
+            .filter(|(at, _)| (19.0..25.0).contains(at))
+            .map(|(_, ratio)| *ratio)
+            .collect();
+        for ratio in around {
+            assert!(
+                (ratio - 1.0).abs() < 2e-3,
+                "途切れの前後で比を大きく動かさない: {ratio}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_held_stretch_of_silence_stops_the_time() {
+        let mut clock = Clock::new(48_000);
+        clock.wrote(900_000, 4_800);
+        clock.held(4_800);
+        clock.wrote(900_000 + 9_000, 4_800);
+        clock.played_at(4_800, 0.0);
+        assert_eq!(clock.now_at(0.0), Some(900_000 + 9_000));
+        clock.played_at(7_200, 0.0);
+        assert_eq!(
+            clock.now_at(0.0),
+            Some(900_000 + 9_000),
+            "無音の間は時刻が進まない"
+        );
+        clock.played_at(9_600, 0.0);
+        assert_eq!(clock.now_at(0.0), Some(900_000 + 9_000));
+        clock.played_at(12_000, 0.0);
+        assert_eq!(clock.now_at(0.0), Some(900_000 + 9_000 + 4_500));
     }
 }
