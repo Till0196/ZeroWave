@@ -5,18 +5,23 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use tungstenite::client::IntoClientRequest as _;
 use tungstenite::http::{HeaderName, HeaderValue};
 
 use super::address::addresses_of;
-use super::{Error, basic, tls};
+use super::{Error, basic};
 
 const CONNECT_PATIENCE: Duration = Duration::from_secs(3);
-/// 繋いで最初の応答（ハンドシェイク）を待つ上限。
+/// TLS と WebSocket のハンドシェイクを合わせて待つ上限。
 const HANDSHAKE_PATIENCE: Duration = Duration::from_secs(10);
+/// ハンドシェイクの間、止める要求と期限を確かめる間隔。
+const LOOK: Duration = Duration::from_millis(5);
 const MESSAGE_MOST: usize = 16 << 20;
+/// 相手が読まないうちに溜める上限。超えると送れない。
+const UNSENT_MOST: usize = 2 * MESSAGE_MOST;
 /// 相手が close を送らずに切れた（RFC 6455 7.4.1）。
 pub const ABNORMAL: u16 = 1006;
 
@@ -50,15 +55,16 @@ impl std::fmt::Debug for Socket {
 }
 
 impl Socket {
-    /// `inner` は内部ネットワークへ繋いでよいか、`roots` は足すルート証明書（DER）。
+    /// `inner` は内部ネットワークへ繋いでよいか。`stop` が真を返したらハンドシェイクをやめる。
     pub fn open(
         url: &str,
         headers: &[(String, String)],
         inner: bool,
-        roots: &[Vec<u8>],
+        tls: Arc<rustls::ClientConfig>,
+        stop: &dyn Fn() -> bool,
     ) -> Result<Self, Error> {
-        let mut parsed =
-            url::Url::parse(url).map_err(|why| Error::Argument(format!("{url}: {why}")))?;
+        // URL にはパスワードが入り得るので、失敗の理由には書かない。
+        let mut parsed = url::Url::parse(url).map_err(|why| Error::Argument(why.to_string()))?;
         let secure = match parsed.scheme() {
             "ws" => false,
             "wss" => true,
@@ -66,7 +72,7 @@ impl Socket {
         };
         let host = parsed
             .host_str()
-            .ok_or_else(|| Error::Argument(format!("{url}: ホストが無い")))?
+            .ok_or_else(|| Error::Argument(String::from("ホストが無い")))?
             .trim_matches(['[', ']'])
             .to_owned();
         let port = parsed
@@ -96,34 +102,39 @@ impl Socket {
                 .insert(tungstenite::http::header::AUTHORIZATION, value);
         }
 
+        let deadline = Instant::now() + HANDSHAKE_PATIENCE;
         let tcp = connect(&host, port, inner)?;
-        tcp.set_read_timeout(Some(HANDSHAKE_PATIENCE))
-            .and_then(|()| tcp.set_write_timeout(Some(HANDSHAKE_PATIENCE)))
-            .map_err(|_| Error::Connect)?;
+        // ハンドシェイクも待たずに進め、止める要求と期限をこちらで確かめる（少しずつ送ってくる相手で止まらない）。
+        tcp.set_nonblocking(true).map_err(|_| Error::Connect)?;
         let stream = if secure {
             let name = rustls::pki_types::ServerName::try_from(host.clone())
                 .map_err(|_| Error::Argument(format!("{host}: TLS の名前にならない")))?;
-            let connection =
-                rustls::ClientConnection::new(tls::config(roots), name).map_err(|_| Error::Tls)?;
+            let connection = rustls::ClientConnection::new(tls, name).map_err(|_| Error::Tls)?;
             Stream::Tls(Box::new(rustls::StreamOwned::new(connection, tcp)))
         } else {
             Stream::Plain(tcp)
         };
         let config = tungstenite::protocol::WebSocketConfig::default()
             .max_message_size(Some(MESSAGE_MOST))
-            .max_frame_size(Some(MESSAGE_MOST));
-        let (mut socket, answer) =
-            tungstenite::client::client_with_config(request, stream, Some(config)).map_err(
-                |why| match why {
-                    tungstenite::HandshakeError::Failure(why) => failure(why),
-                    tungstenite::HandshakeError::Interrupted(_) => Error::Timeout,
-                },
-            )?;
-        socket
-            .get_mut()
-            .tcp()
-            .set_nonblocking(true)
-            .map_err(|_| Error::Connect)?;
+            .max_frame_size(Some(MESSAGE_MOST))
+            .max_write_buffer_size(UNSENT_MOST);
+        let mut attempt = tungstenite::client::client_with_config(request, stream, Some(config));
+        let (socket, answer) = loop {
+            match attempt {
+                Ok(done) => break done,
+                Err(tungstenite::HandshakeError::Failure(why)) => return Err(failure(why)),
+                Err(tungstenite::HandshakeError::Interrupted(midway)) => {
+                    if stop() {
+                        return Err(Error::Stopped);
+                    }
+                    if Instant::now() > deadline {
+                        return Err(Error::Timeout);
+                    }
+                    std::thread::sleep(LOOK);
+                    attempt = midway.handshake();
+                }
+            }
+        };
         let headers = answer
             .headers()
             .iter()
@@ -219,13 +230,23 @@ impl Socket {
         self.close_with(1001, "");
     }
 
-    /// 相手の close は [`Self::receive`] で来る。
+    /// 相手の close は [`Self::receive`] で来る。送れるコードは 1000 と 3000〜4999 で、ほかは 1000 にする
+    /// （1005・1006 などは送ってはいけない。RFC 6455 7.4.2）。理由は 123 バイトまで。
     pub fn close_with(&mut self, code: u16, reason: &str) {
         if !self.closing && !self.ended {
             self.closing = true;
+            let code = if code == 1000 || (3000..=4999).contains(&code) {
+                code
+            } else {
+                1000
+            };
+            let mut end = reason.len().min(123);
+            while !reason.is_char_boundary(end) {
+                end -= 1;
+            }
             let frame = tungstenite::protocol::CloseFrame {
                 code: code.into(),
-                reason: reason.to_owned().into(),
+                reason: reason[..end].to_owned().into(),
             };
             let _ = self.socket.close(Some(frame));
             let _ = self.socket.flush();
@@ -279,15 +300,6 @@ fn failure(error: tungstenite::Error) -> Error {
 enum Stream {
     Plain(TcpStream),
     Tls(Box<rustls::StreamOwned<rustls::ClientConnection, TcpStream>>),
-}
-
-impl Stream {
-    fn tcp(&self) -> &TcpStream {
-        match self {
-            Self::Plain(tcp) => tcp,
-            Self::Tls(tls) => tls.get_ref(),
-        }
-    }
 }
 
 impl Read for Stream {
@@ -350,6 +362,10 @@ mod tests {
         port
     }
 
+    fn trusting(roots: &[Vec<u8>]) -> std::sync::Arc<rustls::ClientConfig> {
+        crate::net::tls::config(roots, false)
+    }
+
     fn next(socket: &mut Socket) -> Message {
         let began = Instant::now();
         loop {
@@ -364,7 +380,14 @@ mod tests {
     #[test]
     fn what_is_sent_comes_back_without_waiting() {
         let port = echo(None);
-        let mut socket = Socket::open(&format!("ws://127.0.0.1:{port}/"), &[], true, &[]).unwrap();
+        let mut socket = Socket::open(
+            &format!("ws://127.0.0.1:{port}/"),
+            &[],
+            true,
+            trusting(&[]),
+            &|| false,
+        )
+        .unwrap();
         assert_eq!(socket.receive(), None, "何も来ていなければ待たずに戻る");
         socket
             .send(Message::Text(String::from("こんにちは")))
@@ -390,24 +413,62 @@ mod tests {
         let (ca, server) = crate::net::testing::authority();
         let port = echo(Some(server));
         let url = format!("wss://127.0.0.1:{port}/");
-        let mut socket = Socket::open(&url, &[], true, &[ca]).unwrap();
+        let mut socket = Socket::open(&url, &[], true, trusting(&[ca]), &|| false).unwrap();
         socket.send(Message::Text(String::from("secure"))).unwrap();
         assert_eq!(next(&mut socket), Message::Text(String::from("secure")));
 
         let (_, other) = crate::net::testing::authority();
         let port = echo(Some(other));
         let url = format!("wss://127.0.0.1:{port}/");
-        assert_eq!(Socket::open(&url, &[], true, &[]).err(), Some(Error::Tls));
+        assert_eq!(
+            Socket::open(&url, &[], true, trusting(&[]), &|| false).err(),
+            Some(Error::Tls)
+        );
+    }
+
+    #[test]
+    fn a_server_that_answers_drop_by_drop_does_not_hold_the_handshake() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut tcp, _) = listener.accept().unwrap();
+            let _ = tcp.write_all(b"HTTP/1.1 101 Switching Protocols\r\n");
+            for _ in 0..200 {
+                if tcp.write_all(b"X").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let began = Instant::now();
+        let stop_at = began + Duration::from_millis(300);
+        let got = Socket::open(
+            &format!("ws://127.0.0.1:{port}/"),
+            &[],
+            true,
+            trusting(&[]),
+            &|| Instant::now() > stop_at,
+        );
+        assert_eq!(got.err(), Some(Error::Stopped));
+        assert!(began.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn credentials_do_not_show_in_what_went_wrong() {
+        let why = Socket::open("ws://user:secret@[::1", &[], true, trusting(&[]), &|| false)
+            .err()
+            .unwrap();
+        assert!(!why.to_string().contains("secret"), "{why}");
     }
 
     #[test]
     fn the_lan_is_refused_unless_allowed() {
         assert_eq!(
-            Socket::open("ws://127.0.0.1:9/", &[], false, &[]).err(),
+            Socket::open("ws://127.0.0.1:9/", &[], false, trusting(&[]), &|| false).err(),
             Some(Error::Inner)
         );
         assert!(matches!(
-            Socket::open("http://127.0.0.1:9/", &[], true, &[]),
+            Socket::open("http://127.0.0.1:9/", &[], true, trusting(&[]), &|| false),
             Err(Error::Argument(_))
         ));
     }

@@ -12,7 +12,9 @@ pub fn is_inner(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             let [a, b, ..] = v4.octets();
-            v4.is_loopback()
+            // 240.0.0.0/4（予約）
+            a >= 240
+                || v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
                 || v4.is_unspecified()
@@ -27,7 +29,20 @@ pub fn is_inner(ip: IpAddr) -> bool {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_inner(IpAddr::V4(v4));
             }
-            let first = v6.segments()[0];
+            let segments = v6.segments();
+            let embedded = |high: u16, low: u16| {
+                let [a, b] = high.to_be_bytes();
+                let [c, d] = low.to_be_bytes();
+                IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, d))
+            };
+            // NAT64（64:ff9b::/96）と 6to4（2002::/16）は中の IPv4 へ届く。
+            if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return is_inner(embedded(segments[6], segments[7]));
+            }
+            if segments[0] == 0x2002 && is_inner(embedded(segments[1], segments[2])) {
+                return true;
+            }
+            let first = segments[0];
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
@@ -76,6 +91,10 @@ mod tests {
             "fd00::1",
             "fe80::1",
             "::ffff:192.168.0.1",
+            "64:ff9b::7f00:1",
+            "64:ff9b::c0a8:101",
+            "2002:c0a8:101::1",
+            "240.0.0.1",
         ] {
             assert!(is_inner(inner.parse().unwrap()), "{inner}");
         }
@@ -84,6 +103,8 @@ mod tests {
             "203.0.113.1",
             "2001:db8::1",
             "::ffff:198.51.100.1",
+            "64:ff9b::c633:6401",
+            "2002:c633:6401::1",
         ] {
             assert!(!is_inner(outer.parse().unwrap()), "{outer}");
         }

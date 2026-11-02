@@ -106,6 +106,7 @@ impl Mirakurun {
             inner: true,
             patience: PATIENCE,
             roots: Vec::new(),
+            sha1: false,
             agent: Some(concat!("ZeroWave/", env!("CARGO_PKG_VERSION")).to_owned()),
         })
         .map_err(|why| Error::Unreachable(why.to_string()))?;
@@ -329,11 +330,20 @@ impl Mirakurun {
 }
 
 /// `host` は `名前:ポート`（パスワードは入れない）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct Place {
     base: String,
     host: String,
     root: String,
+}
+
+impl std::fmt::Debug for Place {
+    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        out.debug_struct("Place")
+            .field("host", &self.host)
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
 }
 
 fn place(url: &str) -> Result<Place, Error> {
@@ -363,6 +373,9 @@ fn place(url: &str) -> Result<Place, Error> {
         format!("{named}:{}", if secure { 443 } else { 40772 })
     };
     let scheme = if secure { "https" } else { "http" };
+    if credentials.is_some() && !secure {
+        tracing::warn!("{host}: パスワードを暗号化せずに送る（https にすると暗号化される）");
+    }
     let base = match credentials {
         Some(credentials) => format!("{scheme}://{credentials}@{host}"),
         None => format!("{scheme}://{host}"),
