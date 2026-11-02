@@ -24,7 +24,7 @@ pub const MOTION: f32 = 7.0 / 255.0;
 /// 1 フレームについて数えた値（`comb.wgsl` の `combed` の [0]..[4]）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Counts {
-    /// 自分の二つのフィールドでウィーブした（c）、表示するフィールドと前のフレームの反対のフィールドでウィーブした（p）ときの、動いている縞の画素。
+    /// 自分の二つのフィールドで組み合わせた（c）、表示するフィールドと前のフレームの反対のフィールドで組み合わせた（p）ときの、動いている縞の画素。
     pub c: u32,
     pub p: u32,
     pub moving: u32,
@@ -37,9 +37,9 @@ pub struct Counts {
 const MOVING_PART: u32 = 400;
 
 /// 「動くオーバーレイ」のしきい値：直近 [`CYCLE`] フレームの動いた画素の最小が全画素のこれ分の一より多い。
-/// 繰り返しのフレームでも動く物は 60i のオーバーレイで、ウィーブすると崩れる。
+/// 繰り返しのフレームでも動く物は 60i のオーバーレイで、組み合わせると崩れる。
 const OVERLAY_PART: u32 = 400;
-/// 「ウィーブしても残る縞」のしきい値：[`Floor`] の水準が全画素のこれ分の一より多い。
+/// 「組み合わせても残る縞」のしきい値：[`Floor`] の水準が全画素のこれ分の一より多い。
 const OVERLAY_STRIPES: u32 = 1000;
 const CYCLE: usize = 5;
 /// オーバーレイと判定するまで・判定しなくなるまでの数。消えるほうを遅くしてテロップの切れ目で行き来しない。
@@ -141,7 +141,7 @@ impl Judge {
         self.film && self.overlay
     }
 
-    /// 動くオーバーレイがあるとき、ウィーブせずに 60i でレンダリングするか（既定はする）。
+    /// 動くオーバーレイがあるとき、組み合わせずに 60i でレンダリングするか（既定はする）。
     pub fn set_avoid_overlay(&mut self, avoid: bool) {
         self.avoid_overlay = avoid;
     }
@@ -290,7 +290,7 @@ mod tests {
         assert!(judge.drop(93) && !judge.drop(94), "足したフレームを抜く");
     }
 
-    /// 3:2 の film を一周分。`residual` はウィーブしても残る縞、`still` は繰り返しのフレームの動き。
+    /// 3:2 の film を一周分。`residual` は組み合わせても残る縞、`still` は繰り返しのフレームの動き。
     fn pulldown(cycle: u64, residual: u32, still: u32) -> [Counts; 5] {
         let wobble = (cycle % 3) as u32 * 3000;
         let moving = |c: u32, p: u32, m: u32, first: u32, other: u32| Counts {
@@ -320,7 +320,7 @@ mod tests {
             }
         }
         assert!(judge.overlay(), "流れるテロップを見つける");
-        assert!(!judge.matching(), "ウィーブせずに 60i でレンダリングする");
+        assert!(!judge.matching(), "組み合わせずに 60i でレンダリングする");
         for cycle in 40..120 {
             for counts in pulldown(cycle, 50, 300) {
                 judge.push(index, counts);
@@ -357,6 +357,6 @@ mod tests {
             }
         }
         assert!(judge.overlay());
-        assert!(judge.matching(), "切ってあればウィーブする");
+        assert!(judge.matching(), "切ってあれば組み合わせる");
     }
 }

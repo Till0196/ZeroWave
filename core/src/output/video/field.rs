@@ -44,7 +44,7 @@ pub enum Source {
 pub enum Cadence {
     #[default]
     None,
-    /// 二つのフィールドが同じフィルムのコマ。ウィーブするだけでよい。
+    /// 二つのフィールドが同じフィルムのコマ。組み合わせるだけでよい。
     Whole,
     /// この先のフィールドと前のフレームの後のフィールドが同じフィルムのコマ。
     Spanning,
@@ -55,7 +55,7 @@ pub enum Cadence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Output {
     pub field: Option<Parity>,
-    /// ウィーブし直すとき、このパリティの行を `before` のフレームから取る（逆テレシネだけ）。
+    /// 組み合わせ直すとき、このパリティの行を `before` のフレームから取る（逆テレシネだけ）。
     pub weave: Option<Parity>,
     pub before: Source,
     pub after: Source,
@@ -84,7 +84,7 @@ pub fn first_field(about: &About) -> Parity {
     }
 }
 
-/// ウィーブなら 1 回、デインタレースなら 2 回、`repeat_first_field` なら 3 回出力する。
+/// 組み合わせるだけなら 1 回、デインタレースなら 2 回、`repeat_first_field` なら 3 回出力する。
 pub fn plan(about: &About, deinterlace: Deinterlace) -> Plan {
     if deinterlace == Deinterlace::Weave {
         return vec![Output {

@@ -138,7 +138,7 @@ impl Video {
             field::plan(&about, self.settings.deinterlace)
         };
         let outputs = self.plan_outputs(plan.len());
-        // ウィーブしたフレームの出力の位置は、後のフィールドの時刻からフィールドの長さで数える（先のフィールドは -1）。
+        // 組み合わせたフレームの出力の位置は、後のフィールドの時刻からフィールドの長さで数える（先のフィールドは -1）。
         if woven {
             for phase in &mut self.last_phases {
                 *phase = *phase * 2.0 - 1.0;

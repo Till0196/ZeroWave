@@ -7,12 +7,12 @@ use std::collections::VecDeque;
 
 use super::Counts;
 
-/// 「どうウィーブしてもコーミング」の広さ：全画素のこれ分の一。
+/// 「どう組み合わせてもコーミング」の広さ：全画素のこれ分の一。
 const COMBED_PART: u32 = 400;
 /// 狭くても動いた画素のこれ分の一以上がコーミングなら 60i（全画素の [`SMALLEST_PART`] 分の一より多いとき）。
 const MOVING_SHARE: u32 = 8;
 const SMALLEST_PART: u32 = 4000;
-/// 少ないほうが多いほうのこれ分の一以上なら「どうウィーブしても」。
+/// 少ないほうが多いほうのこれ分の一以上なら「どう組み合わせても」。
 const COMPARABLE: u32 = 4;
 
 /// film へ入るウィンドウ（フレーム数）、許すコーミングのフレーム数、要る「動いてコーミングの出ないフレーム」の数。静止画の多いアニメに合わせる。
@@ -25,7 +25,7 @@ const LEAVE_LEAST: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Said {
-    /// 動いていて、どうウィーブしてもコーミングが出る（60i）。
+    /// 動いていて、どう組み合わせてもコーミングが出る（60i）。
     Combed,
     /// 動いていて、正しい組み合わせがはっきり勝つ（film）。
     Clean,

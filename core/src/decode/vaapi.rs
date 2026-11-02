@@ -64,7 +64,7 @@ pub struct Vaapi {
     /// The format the surfaces were made for; a change needs a new pool.
     format: Format,
     said_read_back: bool,
-    /// 指定されたデインターレース（`VAProcDeinterlacingType`）。`None` はウィーブだけ。
+    /// 指定されたデインターレース（`VAProcDeinterlacingType`）。`None` はフィールドを組み合わせるだけ。
     deinterlace: Option<std::ffi::c_int>,
     /// レンダリングと違う GPU でデコードしている。フレームはメモリーで渡す。
     transfer: bool,
