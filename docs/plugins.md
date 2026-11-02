@@ -31,7 +31,8 @@
 - `zwsdk::fonts`：フォントの探し方です。
 - `zwsdk::draw`：canvas 2D の API でレンダリングして画像にします（ホスト側だけ、feature `host`）。
 - `zwsdk::net`：ネットワーク通信。
-- `sdk/ts`・`sdk/javy`：TypeScript でレイヤーを書くための SDK と、それを wasm にする Javy のプラグイン。
+- `sdk/ts`・`sdk/javy`：TypeScript でレイヤーを書くための SDK と、それを動かす QuickJS の wasm（`sdk/ts/zwjs.wasm`）。
+  `zw-stamp` が `zwjs.wasm` にスクリプト（カスタムセクション `zw_script`）とマニフェストを足して、プラグインの wasm にします。要るのは Node だけです。
 
 プラグインは [zerowave_plugins](https://github.com/Till0196/zerowave_plugins) にあります。
 
