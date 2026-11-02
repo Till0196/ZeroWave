@@ -191,6 +191,9 @@ pub(crate) fn listed_asked(
         .collect()
 }
 
+/// ほかのソースの全局の番組表を取り直すまでの間隔。
+const GUIDE_AGAIN: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 impl Stage {
     pub(super) fn rebuild_catalog(&mut self) {
         self.catalog_due = false;
@@ -208,6 +211,19 @@ impl Stage {
         self.roster_seeded = false;
         self.listed_mark = None;
         let now = self.live.as_ref().and_then(|live| live.url.clone());
+        // 局一覧は選局のたびにも作り直すので、全局の番組表は取ったばかりなら取り直さない（数万番組を読んで
+        // まとめる間、映像のフレームが遅れる）。
+        self.guided_at.retain(|_, at| at.elapsed() < GUIDE_AGAIN);
+        let recent: Vec<String> = self.guided_at.keys().cloned().collect();
+        for (_, opening) in &openings {
+            if let Opening::Mirakurun { url, .. } = opening
+                && Some(opening.came()) != now
+            {
+                self.guided_at
+                    .entry(url.clone())
+                    .or_insert_with(std::time::Instant::now);
+            }
+        }
         let (send, back) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name(String::from("catalog"))
@@ -225,7 +241,9 @@ impl Stage {
                     .iter()
                     .filter_map(|offer| match &offer.opening {
                         Opening::Mirakurun { url, .. }
-                            if Some(offer.opening.came()) != now && !offer.channels.is_empty() =>
+                            if Some(offer.opening.came()) != now
+                                && !offer.channels.is_empty()
+                                && !recent.contains(url) =>
                         {
                             Some((offer.label.clone(), url.clone()))
                         }
