@@ -443,6 +443,8 @@ pub struct Stage {
     buffering_told: Option<std::time::Instant>,
     catalog: Vec<catalog::Offer>,
     catalog_back: Option<Receiver<catalog::Built>>,
+    /// ほかの Mirakurun から全局の番組表を最後に取った時刻（URL ごと）。
+    guided_at: std::collections::HashMap<String, std::time::Instant>,
     catalog_due: bool,
     tried: Vec<String>,
     tried_ways: Vec<String>,
