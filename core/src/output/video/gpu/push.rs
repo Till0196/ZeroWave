@@ -154,7 +154,7 @@ impl Video {
         } else {
             (&second, &first)
         };
-        let Some(into) = self.pool.owned(slot) else {
+        let Some(into) = self.pool.woven_into(&self.device, slot) else {
             return;
         };
         let weave = self
