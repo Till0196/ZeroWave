@@ -295,7 +295,7 @@ impl Decoding {
                         if !open.unreadable {
                             open.unreadable = true;
                             tracing::warn!(
-                                "読み戻したフィールドをウィーブできないので捨てる: {why}"
+                                "読み戻したフィールドを組み合わせられないので捨てる: {why}"
                             );
                         }
                         None

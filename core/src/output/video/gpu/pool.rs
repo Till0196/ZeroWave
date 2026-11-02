@@ -203,6 +203,37 @@ pub(super) fn measured(format: Format) -> Frame {
 
 const STAGING_SETS: usize = 3;
 
+/// シェーダーが読むプレーンのテクスチャ一枚。
+fn plane(
+    device: &wgpu::Device,
+    label: &str,
+    (width, height): (u32, u32),
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | usage,
+        view_formats: &[],
+    })
+}
+
+fn views(planes: &[wgpu::Texture]) -> Vec<wgpu::TextureView> {
+    planes
+        .iter()
+        .map(|plane| plane.create_view(&wgpu::TextureViewDescriptor::default()))
+        .collect()
+}
+
 pub(super) fn padded(bytes: u32) -> u32 {
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     bytes.div_ceil(align) * align
@@ -259,7 +290,7 @@ pub(super) struct Slot {
 /// 一つの形式のストリームを見せるテクスチャ。形式が変わったら（選局）作り直す。
 #[derive(Debug)]
 pub struct Pool {
-    /// フィールドのピクチャーを GPU でウィーブすることがある（[`Self::woven_into`]）。
+    /// 二つのフィールドを GPU で一枚のフレームに組み合わせることがある（[`Self::woven_into`]）。
     weaves: bool,
     pub(super) slots: Vec<Slot>,
     /// マップしたままのバッファーの組（三プレーン分ずつ）。スロットごとには持たず、順に使い回す
@@ -316,30 +347,19 @@ impl Pool {
         }
         let slots: Vec<Slot> = (0..slots)
             .map(|_| {
-                let planes: Vec<wgpu::Texture> = (0..3)
-                    .map(|plane| {
-                        let (width, height) = sizes[plane];
-                        device.create_texture(&wgpu::TextureDescriptor {
-                            label: Some("plane"),
-                            size: wgpu::Extent3d {
-                                width,
-                                height,
-                                depth_or_array_layers: 1,
-                            },
-                            mip_level_count: 1,
-                            sample_count: 1,
-                            dimension: wgpu::TextureDimension::D2,
-                            format: texture_format,
-                            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                                | wgpu::TextureUsages::COPY_DST,
-                            view_formats: &[],
-                        })
+                let planes: Vec<wgpu::Texture> = sizes
+                    .into_iter()
+                    .map(|size| {
+                        plane(
+                            device,
+                            "plane",
+                            size,
+                            texture_format,
+                            wgpu::TextureUsages::COPY_DST,
+                        )
                     })
                     .collect();
-                let views = planes
-                    .iter()
-                    .map(|plane| plane.create_view(&wgpu::TextureViewDescriptor::default()))
-                    .collect();
+                let views = views(&planes);
                 Slot {
                     store: Store::Owned { planes },
                     views,
@@ -385,8 +405,8 @@ impl Pool {
         }
     }
 
-    /// ウィーブしたフレームを書くスロットのテクスチャ。初めてウィーブするときに作る：デコーダーがウィーブや
-    /// デインターレースまで済ませて渡すなら、一度も使わない（1080p の 10 ビットで一スロット 12 MB）。
+    /// 二つのフィールドを組み合わせたフレームを書くスロットのテクスチャ。初めて使うときに作る：デコーダーが
+    /// 組み合わせて渡すなら要らない（1080p の 10 ビットで一スロット 12 MB）。
     pub(super) fn woven_into(
         &mut self,
         device: &wgpu::Device,
@@ -395,7 +415,6 @@ impl Pool {
         if !self.weaves {
             return None;
         }
-        let sizes = [self.sizes[0], self.sizes[1]];
         // 16 ビットの正規化形式はレンダーターゲットにできないことがあるので、10 ビットは 32 ビットの浮動小数点で持つ。
         let formats = if self.format.depth > 8 {
             [
@@ -405,27 +424,20 @@ impl Pool {
         } else {
             [wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm]
         };
+        let sizes = [self.sizes[0], self.sizes[1]];
         let slot = self.slots.get_mut(slot)?;
         if let Store::Imported = slot.store {
             let planes = sizes
                 .into_iter()
                 .zip(formats)
-                .map(|((width, height), format)| {
-                    device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some("woven plane"),
-                        size: wgpu::Extent3d {
-                            width,
-                            height,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
+                .map(|(size, format)| {
+                    plane(
+                        device,
+                        "woven plane",
+                        size,
                         format,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING
-                            | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                        view_formats: &[],
-                    })
+                        wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    )
                 })
                 .collect();
             slot.store = Store::Owned { planes };
@@ -433,11 +445,8 @@ impl Pool {
         let Store::Owned { planes } = &slot.store else {
             return None;
         };
-        // 取り込んだフレームを持っていたスロットでも、見せるのはウィーブした物。
-        slot.views = planes
-            .iter()
-            .map(|plane| plane.create_view(&wgpu::TextureViewDescriptor::default()))
-            .collect();
+        // 取り込んだフレームを見せていたスロットでも、以後は組み合わせた物を見せる。
+        slot.views = views(planes);
         slot.keep = None;
         Some(planes)
     }

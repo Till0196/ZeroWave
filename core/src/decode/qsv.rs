@@ -917,18 +917,24 @@ impl Qsv {
         Ok(())
     }
 
+    /// ランタイムが返した同期ポイントに届くまで待つ。
+    fn wait(&self, sync: mfx::SyncPoint) -> Result<(), Error> {
+        // SAFETY: ランタイムが返した同期ポイント。
+        let status =
+            unsafe { (self.session.entries().sync_operation)(self.session.raw, sync, 60_000) };
+        if status < mfx::ERR_NONE {
+            return Err(failed("MFXVideoCORE_SyncOperation", status));
+        }
+        Ok(())
+    }
+
     /// 先へ進めたデコードの出力を、`keep` 枚を残して古い順に同期を待って受け取る。
     fn settle_decode(&mut self, keep: usize) -> Result<(), Error> {
-        let entries = self.session.entries();
         while self.decode_pending.len() > keep {
             let Some((sync, out)) = self.decode_pending.pop_front() else {
                 break;
             };
-            // SAFETY: ランタイムが返した同期ポイント。
-            let status = unsafe { (entries.sync_operation)(self.session.raw, sync, 60_000) };
-            if status < mfx::ERR_NONE {
-                return Err(failed("MFXVideoCORE_SyncOperation", status));
-            }
+            self.wait(sync)?;
             self.receive(out)?;
         }
         Ok(())
@@ -1032,17 +1038,12 @@ impl Qsv {
 
     /// 先へ進めた VPP の出力を、`keep` 枚を残して古い順に同期を待って受け取る。
     fn settle_vpp(&mut self, keep: usize) -> Result<(), Error> {
-        let entries = self.session.entries();
         let latest = self.vpp_time;
         while self.vpp_pending.len() > keep {
             let Some((sync, target, time)) = self.vpp_pending.pop_front() else {
                 break;
             };
-            // SAFETY: ランタイムが返した同期ポイント。
-            let status = unsafe { (entries.sync_operation)(self.session.raw, sync, 60_000) };
-            if status < mfx::ERR_NONE {
-                return Err(failed("MFXVideoCORE_SyncOperation", status));
-            }
+            self.wait(sync)?;
             // SAFETY: 同期を済ませた、VPP の出力の配列の中のサーフェス（ストリームを閉じるまで動かない）。
             let surface = unsafe { &*target };
             self.vpp_time = time;
