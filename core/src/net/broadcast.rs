@@ -7,8 +7,8 @@
 use std::io::Read as _;
 use std::net::{TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, channel, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use zwsdk::net::conn::{Arrived, Open, Outgoing};
@@ -25,8 +25,11 @@ const MOST_ROOTS: usize = 8;
 const CONNECT_PATIENCE: Duration = Duration::from_secs(3);
 /// 待たない HTTP は、この間何も届かなければ失敗にする（ストリームの応答も、ふつうは数十秒で何か来る）。
 const OPEN_PATIENCE: Duration = Duration::from_secs(60);
-/// 読まれないうちに溜める記録の数。溢れたらスレッドが待つ。
+/// 読まれないうちに溜める記録の数と大きさ。どちらかを超えたらスレッドが待つ。
 const QUEUE: usize = 256;
+const QUEUE_BYTES: usize = 32 << 20;
+/// プラグインが送る WebSocket のメッセージを、送り出すまで溜める数。超えたら送れない。
+const OUTGOING: usize = 64;
 const READ_SIZE: usize = 64 << 10;
 /// WebSocket で何も来ないときに、次を見るまでの間。
 const TICK: Duration = Duration::from_millis(10);
@@ -140,6 +143,8 @@ impl Session {
             inner,
             patience,
             roots,
+            // 古い局のサーバーのため。
+            sha1: true,
             agent: None,
         })
         .map_err(failure)?;
@@ -201,18 +206,20 @@ impl zwsdk::net::Session for Session {
     fn open(&self, open: Open) -> Box<dyn zwsdk::net::Conn> {
         let (sent, arrived) = sync_channel(QUEUE);
         let dropped = Arc::new(AtomicBool::new(false));
+        let queued = Arc::new((Mutex::new(0usize), Condvar::new()));
         let out = Sink {
             sent,
             dropped: Arc::clone(&dropped),
+            queued: Arc::clone(&queued),
             generation: generation(),
         };
         let websocket = open.protocols.is_some();
-        let (outgoing, to_send) = channel();
+        let (outgoing, to_send) = sync_channel(OUTGOING);
         let started = if websocket {
-            let roots = self.roots();
+            let tls = tls::config(&self.roots(), true);
             std::thread::Builder::new()
                 .name(String::from("zw-net"))
-                .spawn(move || websocket_run(&open, &roots, &out, &to_send))
+                .spawn(move || websocket_run(&open, tls, &out, &to_send))
         } else {
             let client = self.client(open.inner, OPEN_PATIENCE);
             std::thread::Builder::new()
@@ -223,6 +230,7 @@ impl zwsdk::net::Session for Session {
             arrived,
             outgoing: websocket.then_some(outgoing),
             dropped,
+            queued,
             failed: started.is_err(),
         })
     }
@@ -232,8 +240,10 @@ impl zwsdk::net::Session for Session {
 #[derive(Debug)]
 struct Conn {
     arrived: Receiver<Arrived>,
-    outgoing: Option<Sender<Outgoing>>,
+    outgoing: Option<SyncSender<Outgoing>>,
     dropped: Arc<AtomicBool>,
+    /// 届いて、まだ渡していないバイト数。
+    queued: Arc<(Mutex<usize>, Condvar)>,
     /// スレッドを立てられなかった。
     failed: bool,
 }
@@ -241,6 +251,7 @@ struct Conn {
 impl Drop for Conn {
     fn drop(&mut self) {
         self.dropped.store(true, Ordering::SeqCst);
+        self.queued.1.notify_all();
     }
 }
 
@@ -250,7 +261,13 @@ impl zwsdk::net::Conn for Conn {
             return Some(Arrived::Fail(Failure::Connect.code()));
         }
         match self.arrived.try_recv() {
-            Ok(arrived) => Some(arrived),
+            Ok(arrived) => {
+                let (bytes, room) = &*self.queued;
+                let mut bytes = bytes.lock().unwrap_or_else(|e| e.into_inner());
+                *bytes = bytes.saturating_sub(arrived.len());
+                room.notify_all();
+                Some(arrived)
+            }
             Err(TryRecvError::Empty) => None,
             // 終わりを送らずに止まることは無いが、念のため。
             Err(TryRecvError::Disconnected) => Some(Arrived::Fail(Failure::Disconnected.code())),
@@ -258,9 +275,12 @@ impl zwsdk::net::Conn for Conn {
     }
 
     fn send(&mut self, outgoing: Outgoing) -> bool {
-        self.outgoing
-            .as_ref()
-            .is_some_and(|sender| sender.send(outgoing).is_ok())
+        self.outgoing.as_ref().is_some_and(|sender| {
+            !matches!(
+                sender.try_send(outgoing),
+                Err(TrySendError::Full(_) | TrySendError::Disconnected(_))
+            )
+        })
     }
 }
 
@@ -268,11 +288,28 @@ impl zwsdk::net::Conn for Conn {
 struct Sink {
     sent: SyncSender<Arrived>,
     dropped: Arc<AtomicBool>,
+    queued: Arc<(Mutex<usize>, Condvar)>,
     generation: u64,
 }
 
 impl Sink {
+    /// 溜まりすぎていれば、読まれるか落とされるまで待つ。
     fn put(&self, arrived: Arrived) -> bool {
+        let size = arrived.len();
+        {
+            let (bytes, room) = &*self.queued;
+            let mut bytes = bytes.lock().unwrap_or_else(|e| e.into_inner());
+            while *bytes > 0 && *bytes + size > QUEUE_BYTES {
+                if self.dropped() || self.moved_on() {
+                    return false;
+                }
+                bytes = room
+                    .wait_timeout(bytes, Duration::from_millis(100))
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+            }
+            *bytes += size;
+        }
         !self.dropped() && self.sent.send(arrived).is_ok()
     }
 
@@ -348,8 +385,13 @@ fn read_error(why: std::io::Error) -> Error {
     }
 }
 
-fn websocket_run(open: &Open, roots: &[Vec<u8>], out: &Sink, to_send: &Receiver<Outgoing>) {
-    let last = match websocket(open, roots, out, to_send) {
+fn websocket_run(
+    open: &Open,
+    tls: Arc<rustls::ClientConfig>,
+    out: &Sink,
+    to_send: &Receiver<Outgoing>,
+) {
+    let last = match websocket(open, tls, out, to_send) {
         Ok((code, reason)) => Arrived::End { code, reason },
         Err(failure) => Arrived::Fail(failure.code()),
     };
@@ -358,22 +400,19 @@ fn websocket_run(open: &Open, roots: &[Vec<u8>], out: &Sink, to_send: &Receiver<
 
 fn websocket(
     open: &Open,
-    roots: &[Vec<u8>],
+    tls: Arc<rustls::ClientConfig>,
     out: &Sink,
     to_send: &Receiver<Outgoing>,
 ) -> Result<(u16, String), Failure> {
     if out.moved_on() {
         return Err(Failure::Disconnected);
     }
-    let authority = open
-        .url
-        .strip_prefix("ws://")
-        .or_else(|| open.url.strip_prefix("wss://"))
-        .ok_or(Failure::Argument)?
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default();
-    if authority.contains('@') {
+    // ユーザー情報は送らせない（`request` と同じ）。書き方の揺れ（`\` など）は URL として読んでから確かめる。
+    let url = url::Url::parse(&open.url).map_err(|_| Failure::Argument)?;
+    if !matches!(url.scheme(), "ws" | "wss")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
         return Err(Failure::Argument);
     }
     let mut headers: Vec<(String, String)> = kept(&open.headers, false)
@@ -387,7 +426,9 @@ fn websocket(
     if !protocols.is_empty() {
         headers.push((String::from("Sec-WebSocket-Protocol"), protocols.to_owned()));
     }
-    let mut socket = ws::Socket::open(&open.url, &headers, open.inner, roots).map_err(failure)?;
+    let stop = out.stop();
+    let mut socket =
+        ws::Socket::open(url.as_str(), &headers, open.inner, tls, &*stop).map_err(failure)?;
     let head = Arrived::Head {
         status: 101,
         headers: std::mem::take(&mut socket.headers),
@@ -493,15 +534,29 @@ fn target(method: &str, url: &Url) -> Result<String, Failure> {
     })
 }
 
+/// 接続の仕方を変えるヘッダー（ブラウザーも文書には書かせない物）。
+const OWN_HEADERS: &[&str] = &[
+    "host",
+    "content-length",
+    "transfer-encoding",
+    "connection",
+    "keep-alive",
+    "upgrade",
+    "te",
+    "trailer",
+    "expect",
+    "accept-encoding",
+];
+
 /// 決まっているヘッダーと、要求を壊すヘッダーは捨てる。`Accept` と（本文があれば）`Content-Type` は既定を足す。
 fn kept(headers: &[(String, String)], with_body: bool) -> Vec<(String, String)> {
     let mut kept: Vec<(String, String)> = headers
         .iter()
         .filter(|(name, value)| {
+            let lower = name.to_ascii_lowercase();
             is_token(name)
-                && !["host", "content-length", "transfer-encoding", "connection"]
-                    .iter()
-                    .any(|own| name.eq_ignore_ascii_case(own))
+                && !OWN_HEADERS.contains(&lower.as_str())
+                && !lower.starts_with("proxy-")
                 && !value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
         })
         .cloned()
@@ -581,6 +636,9 @@ mod tests {
             (String::from("Host"), String::from("evil")),
             (String::from("X-Ok"), String::from("1")),
             (String::from("X-Bad"), String::from("1\r\nX-Evil: 1")),
+            (String::from("Transfer-Encoding"), String::from("chunked")),
+            (String::from("Proxy-Authorization"), String::from("x")),
+            (String::from("Expect"), String::from("100-continue")),
         ];
         let kept = kept(&headers, true);
         let names: Vec<&str> = kept.iter().map(|(name, _)| name.as_str()).collect();
@@ -780,6 +838,48 @@ mod tests {
         );
         assert_eq!(echo.join().unwrap().as_deref(), Some("a, b"));
         assert!(!conn.send(Outgoing::Text(Vec::new())), "閉じた後は送れない");
+    }
+
+    #[test]
+    fn a_connection_nobody_reads_holds_no_more_than_its_share() {
+        let _alone = alone();
+        let (sent, arrived) = sync_channel(QUEUE);
+        let dropped = Arc::new(AtomicBool::new(false));
+        let out = Sink {
+            sent,
+            dropped: Arc::clone(&dropped),
+            queued: Arc::new((Mutex::new(0), Condvar::new())),
+            generation: generation(),
+        };
+        let filling = std::thread::spawn(move || {
+            let mut put = 0;
+            while out.put(Arrived::Data(vec![0; 1 << 20])) {
+                put += 1;
+            }
+            put
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        dropped.store(true, Ordering::SeqCst);
+        let put = filling.join().unwrap();
+        assert_eq!(put, QUEUE_BYTES >> 20, "読まれない間は上限で待つ");
+        drop(arrived);
+    }
+
+    #[test]
+    fn a_websocket_sender_that_floods_is_turned_away() {
+        let _alone = alone();
+        let (outgoing, _to_send) = sync_channel(OUTGOING);
+        let mut conn = Conn {
+            arrived: sync_channel(1).1,
+            outgoing: Some(outgoing),
+            dropped: Arc::new(AtomicBool::new(false)),
+            queued: Arc::new((Mutex::new(0), Condvar::new())),
+            failed: false,
+        };
+        let sent = (0..OUTGOING * 2)
+            .filter(|_| zwsdk::net::Conn::send(&mut conn, Outgoing::Text(Vec::new())))
+            .count();
+        assert_eq!(sent, OUTGOING);
     }
 
     #[test]

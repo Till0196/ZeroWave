@@ -3,7 +3,8 @@
 
 //! TLS の設定。証明書は OS のストア（rustls-platform-verifier）で確かめ、通らなければ同梱のルート
 //! （webpki-roots）で確かめ直す。どちらにも、渡されたルートと `ZW_CA_DIR` の PEM を足す。
-//! `sha1WithRSAEncryption` の証明書も受ける。`ZW_TLS_INSECURE=1` は確かめない（テスト用）。
+//! `sha1` のときだけ `sha1WithRSAEncryption` の証明書も受ける（古い局のサーバー）。
+//! デバッグビルドでは `ZW_TLS_INSECURE=1` で確かめない（試すため）。
 
 use std::sync::{Arc, OnceLock};
 
@@ -14,12 +15,12 @@ use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
 
 /// `extra` は DER。無ければ一つを使い回す。
-pub fn config(extra: &[Vec<u8>]) -> Arc<rustls::ClientConfig> {
-    static PLAIN: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+pub fn config(extra: &[Vec<u8>], sha1: bool) -> Arc<rustls::ClientConfig> {
+    static PLAIN: [OnceLock<Arc<rustls::ClientConfig>>; 2] = [OnceLock::new(), OnceLock::new()];
     if extra.is_empty() {
-        return Arc::clone(PLAIN.get_or_init(|| build(&[])));
+        return Arc::clone(PLAIN[usize::from(sha1)].get_or_init(|| build(&[], sha1)));
     }
-    build(extra)
+    build(extra, sha1)
 }
 
 /// ルート証明書として使えるか。
@@ -29,22 +30,23 @@ pub fn is_certificate(der: &[u8]) -> bool {
         .is_ok()
 }
 
-fn build(extra: &[Vec<u8>]) -> Arc<rustls::ClientConfig> {
-    let provider = provider();
+fn build(extra: &[Vec<u8>], sha1: bool) -> Arc<rustls::ClientConfig> {
+    let provider = provider(sha1);
     let builder = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
         .with_safe_default_protocol_versions()
         .expect("rustls の既定のバージョン");
-    let verifier: Arc<dyn ServerCertVerifier> = if std::env::var_os("ZW_TLS_INSECURE").is_some() {
-        tracing::warn!("ZW_TLS_INSECURE が設定されているので、https の証明書を確かめません");
-        Arc::new(Unchecked(provider))
-    } else {
-        let mut roots: Vec<CertificateDer<'static>> = extra
-            .iter()
-            .map(|der| CertificateDer::from(der.clone()))
-            .collect();
-        roots.extend(local_roots().iter().cloned());
-        Arc::new(Either::new(roots, provider))
-    };
+    let verifier: Arc<dyn ServerCertVerifier> =
+        if cfg!(debug_assertions) && std::env::var_os("ZW_TLS_INSECURE").is_some() {
+            tracing::warn!("ZW_TLS_INSECURE が設定されているので、https の証明書を確かめません");
+            Arc::new(Unchecked(provider))
+        } else {
+            let mut roots: Vec<CertificateDer<'static>> = extra
+                .iter()
+                .map(|der| CertificateDer::from(der.clone()))
+                .collect();
+            roots.extend(local_roots().iter().cloned());
+            Arc::new(Either::new(roots, provider))
+        };
     Arc::new(
         builder
             .dangerous()
@@ -53,13 +55,16 @@ fn build(extra: &[Vec<u8>]) -> Arc<rustls::ClientConfig> {
     )
 }
 
-fn provider() -> Arc<CryptoProvider> {
-    static PROVIDER: OnceLock<Arc<CryptoProvider>> = OnceLock::new();
-    Arc::clone(PROVIDER.get_or_init(|| {
+/// `sha1` は証明書の署名にだけ効く（ハンドシェイクの署名の方式には足さない）。
+fn provider(sha1: bool) -> Arc<CryptoProvider> {
+    static PROVIDER: [OnceLock<Arc<CryptoProvider>>; 2] = [OnceLock::new(), OnceLock::new()];
+    Arc::clone(PROVIDER[usize::from(sha1)].get_or_init(|| {
         let mut provider = rustls::crypto::ring::default_provider();
-        let mut all = provider.signature_verification_algorithms.all.to_vec();
-        all.push(&RSA_SHA1);
-        provider.signature_verification_algorithms.all = Box::leak(all.into_boxed_slice());
+        if sha1 {
+            let mut all = provider.signature_verification_algorithms.all.to_vec();
+            all.push(&RSA_SHA1);
+            provider.signature_verification_algorithms.all = Box::leak(all.into_boxed_slice());
+        }
         Arc::new(provider)
     }))
 }
@@ -259,5 +264,25 @@ impl rustls::pki_types::SignatureVerificationAlgorithm for RsaSha1 {
         )
         .verify(message, signature)
         .map_err(|_| rustls::pki_types::InvalidSignature)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rustls::pki_types::SignatureVerificationAlgorithm as _;
+
+    use super::*;
+
+    #[test]
+    fn sha1_is_accepted_only_where_asked() {
+        let has = |sha1: bool| {
+            provider(sha1)
+                .signature_verification_algorithms
+                .all
+                .iter()
+                .any(|alg| alg.signature_alg_id() == RSA_SHA1.signature_alg_id())
+        };
+        assert!(has(true));
+        assert!(!has(false));
     }
 }

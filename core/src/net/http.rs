@@ -28,6 +28,8 @@ pub struct Options {
     pub patience: Duration,
     /// 足すルート証明書（DER）。
     pub roots: Vec<Vec<u8>>,
+    /// `sha1WithRSAEncryption` の証明書も受けるか（[`tls::config`]）。
+    pub sha1: bool,
     pub agent: Option<String>,
 }
 
@@ -37,6 +39,7 @@ impl Default for Options {
             inner: false,
             patience: Duration::from_secs(10),
             roots: Vec::new(),
+            sha1: false,
             agent: None,
         }
     }
@@ -119,7 +122,10 @@ impl Client {
             .pool_idle_timeout(Duration::from_secs(30))
             .dns_resolver(Arc::new(Resolver { inner }))
             .redirect(redirects(inner))
-            .tls_backend_preconfigured(rustls::ClientConfig::clone(&tls::config(&options.roots)));
+            .tls_backend_preconfigured(rustls::ClientConfig::clone(&tls::config(
+                &options.roots,
+                options.sha1,
+            )));
         if let Some(agent) = options.agent.as_deref() {
             builder = builder.user_agent(agent);
         }
@@ -132,8 +138,9 @@ impl Client {
     pub fn send(&self, request: Request<'_>) -> Result<Response, Error> {
         // reqwest は要求を作るときに時計を使う。
         let _inside = runtime()?.enter();
-        let url = reqwest::Url::parse(request.url)
-            .map_err(|why| Error::Argument(format!("{}: {why}", request.url)))?;
+        // URL にはパスワードが入り得るので、失敗の理由には書かない。
+        let url =
+            reqwest::Url::parse(request.url).map_err(|why| Error::Argument(why.to_string()))?;
         if !matches!(url.scheme(), "http" | "https") {
             return Err(Error::Argument(format!(
                 "{}: http でも https でもない",
@@ -315,6 +322,7 @@ fn runtime() -> Result<&'static tokio::runtime::Runtime, Error> {
             tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(1)
                 .thread_name("net")
+                .max_blocking_threads(8)
                 .enable_all()
                 .build()
                 .inspect_err(|why| tracing::warn!("通信のスレッドを作れない: {why}"))
@@ -434,6 +442,8 @@ impl std::fmt::Display for Refusal {
 impl std::error::Error for Refusal {}
 
 fn failure(error: reqwest::Error) -> Error {
+    // URL にはパスワードが入り得る。
+    let error = error.without_url();
     if error.is_timeout() {
         return Error::Timeout;
     }
@@ -519,6 +529,26 @@ mod tests {
             )),
             "{head}"
         );
+    }
+
+    #[test]
+    fn credentials_do_not_show_in_what_went_wrong() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        for url in [
+            format!("http://user:secret@127.0.0.1:{port}/"),
+            String::from("http://user:secret@[::1"),
+        ] {
+            let why = lan().send(Request::get(&url)).err().unwrap();
+            assert!(!why.to_string().contains("secret"), "{why}");
+            assert!(!format!("{why:?}").contains("secret"), "{why:?}");
+        }
+    }
+
+    #[test]
+    fn sha1_is_not_trusted_unless_asked() {
+        assert!(!Options::default().sha1);
     }
 
     #[test]
