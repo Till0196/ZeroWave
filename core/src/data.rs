@@ -62,7 +62,7 @@ pub fn take_tune() -> Option<(u16, u16, u16)> {
 }
 
 pub fn retuned() {
-    zwsdk::net::hold();
+    crate::net::broadcast::hold();
     RETUNES.fetch_add(1, Ordering::SeqCst);
 }
 
@@ -420,7 +420,7 @@ impl Thread {
                 self.application = None;
                 self.caption_streams.clear();
                 self.tell_all(Message::Retuned);
-                zwsdk::net::release();
+                crate::net::broadcast::release();
             }
         }
     }
