@@ -1,8 +1,8 @@
 // Copyright 2026 Till0196
 // SPDX-License-Identifier: Apache-2.0
 
-//! 一枚が一フィールドの HEVC（`field_seq_flag`）を、デコード後に二フィールドずつ一枚のフレームに組み合わせる。
-//! 組み合わせずに縦に伸ばすと半ライン分ずれて揺れる。同じパリティーが続いたら先のフィールドは捨てる。
+//! 一枚が一フィールドの HEVC（`field_seq_flag`）を、デコード後に二フィールドずつ一枚のフレームに合成する。
+//! 合成せずに縦に伸ばすと半ライン分ずれて揺れる。同じパリティーが続いたら先のフィールドは捨てる。
 
 use mediadecoder::es::{Format, Structure};
 use mediadecoder::video::{Frame, Plane};
@@ -15,7 +15,7 @@ pub struct Weaver {
 }
 
 impl Weaver {
-    /// 対がそろえば組み合わせたフレームと、先のフィールドの時刻を返す。
+    /// 対がそろえば合成したフレームと、先のフィールドの時刻を返す。
     pub fn push(
         &mut self,
         frame: Frame,
@@ -75,7 +75,7 @@ pub fn weave(top: &Frame, bottom: &Frame, top_first: bool) -> Option<Frame> {
     })
 }
 
-/// 一フィールドの形式から、二つを組み合わせたフレームの形式にする。
+/// 一フィールドの形式から、二つを合成したフレームの形式にする。
 pub fn woven(field: Format) -> Format {
     let (num, den) = field.rate;
     Format {

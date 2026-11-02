@@ -131,7 +131,7 @@ impl Player {
                             ""
                         };
                         let woven = if format.woven {
-                            "フィールド構造ピクチャーを組み合わせて"
+                            "フィールド構造ピクチャーを合成して"
                         } else {
                             ""
                         };

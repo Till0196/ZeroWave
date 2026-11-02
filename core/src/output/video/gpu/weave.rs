@@ -1,8 +1,8 @@
 // Copyright 2026 Till0196
 // SPDX-License-Identifier: Apache-2.0
 
-//! 一枚が一フィールドのピクチャー（HEVC の `field_seq_flag`）を、二つずつ GPU で一枚のフレームに組み合わせる。
-//! 組み合わせたフレームはほかのインターレースのフレームと同じくデインターレースする。
+//! 一枚が一フィールドのピクチャー（HEVC の `field_seq_flag`）を、二つずつ GPU で一枚のフレームに合成する。
+//! 合成したフレームはほかのインターレースのフレームと同じくデインターレースする。
 
 const SHADER: &str = r#"
 @group(0) @binding(0) var top: texture_2d<f32>;

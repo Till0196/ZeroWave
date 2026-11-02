@@ -110,7 +110,7 @@ impl Video {
         }
         self.spent.upload += began.elapsed();
         self.spent.pushed += 1;
-        // プログレッシブはそのまま。film はフィールドを組み合わせ、周期が分かれば 5 フレームに 1 フレームを抜く。60i は候補の方式から選ぶ。
+        // プログレッシブはそのまま。film は同じコマのフィールドでフレームを作り、周期が分かれば 5 フレームに 1 フレームを抜く。60i は候補の方式から選ぶ。
         let judge = self
             .matcher
             .as_ref()
@@ -138,7 +138,7 @@ impl Video {
             field::plan(&about, self.settings.deinterlace)
         };
         let outputs = self.plan_outputs(plan.len());
-        // 組み合わせたフレームの出力の位置は、後のフィールドの時刻からフィールドの長さで数える（先のフィールドは -1）。
+        // 合成したフレームの出力の位置は、後のフィールドの時刻からフィールドの長さで数える（先のフィールドは -1）。
         if woven {
             for phase in &mut self.last_phases {
                 *phase = *phase * 2.0 - 1.0;

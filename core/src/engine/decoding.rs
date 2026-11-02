@@ -294,9 +294,7 @@ impl Decoding {
                         open.times.remove(&tag);
                         if !open.unreadable {
                             open.unreadable = true;
-                            tracing::warn!(
-                                "読み戻したフィールドを組み合わせられないので捨てる: {why}"
-                            );
+                            tracing::warn!("読み戻したフィールドを合成できないので捨てる: {why}");
                         }
                         None
                     }

@@ -157,7 +157,7 @@ pub struct Video {
     import: Option<super::import::videotoolbox::Import>,
     pushed: u64,
     slot_index: Vec<u64>,
-    /// 組み合わせる相手を待っているフィールド。
+    /// 合成する相手を待っているフィールド。
     waiting: Option<weave::Field>,
     weave: Option<weave::Weave>,
     /// 変換のパスを飛ばし、表示のパスで直に読むフレーム（[`direct`]）。
