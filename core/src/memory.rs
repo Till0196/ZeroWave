@@ -112,20 +112,24 @@ const GIVE_BACK_EVERY: std::time::Duration = std::time::Duration::from_secs(300)
 /// 続けて選局しても、詰めるのはこの間に一度まで。
 const SOURCE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
-static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+type Last = std::sync::Mutex<Option<std::time::Instant>>;
+
+static LAST: Last = std::sync::Mutex::new(None);
+/// 選局は別に数える（番組表の取り込みで返した直後でも、選局したら測って残す）。
+static LAST_SOURCE: Last = std::sync::Mutex::new(None);
 
 /// 解放したメモリーを OS へ返す（大量に使った後、メモリー 1 GB の環境でスワップアウトされないように）。
 /// glibc と Windows のプロセスの heap だけ。詰める間は heap を握るので、ほかのスレッド（映像も）の確保が止まる。
 /// 大きな heap では数十〜数百 ms 掛かるので、[`GIVE_BACK_EVERY`] に一度まで。
 pub fn give_back() {
-    if due(GIVE_BACK_EVERY) {
+    if due(&LAST, GIVE_BACK_EVERY) {
         compact();
     }
 }
 
 /// ソースが変わった（前のソースの物を手放した）。再生を止めないよう別のスレッドで返し、返す前と後をログに出す。
 pub fn source_changed() {
-    if !due(SOURCE_EVERY) {
+    if !due(&LAST_SOURCE, SOURCE_EVERY) {
         return;
     }
     let spawned = std::thread::Builder::new()
@@ -167,8 +171,8 @@ pub fn source_changed() {
     }
 }
 
-fn due(every: std::time::Duration) -> bool {
-    let Ok(mut last) = LAST.lock() else {
+fn due(last: &Last, every: std::time::Duration) -> bool {
+    let Ok(mut last) = last.lock() else {
         return false;
     };
     if last.is_some_and(|at| at.elapsed() < every) {
