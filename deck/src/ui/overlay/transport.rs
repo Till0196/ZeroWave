@@ -189,6 +189,8 @@ fn bar(
     };
     let knob_x = rect.left() + rect.width() * fraction;
     line(rect.left(), rect.right(), skin.seek_back);
+    let read_x = rect.left() + rect.width() * progress.read.clamp(0.0, 1.0);
+    line(rect.left(), read_x, skin.seek_read);
     line(rect.left(), knob_x, skin.seek_done);
     if hot {
         painter.circle_filled(pos2(knob_x, middle), theme::KNOB, skin.seek_done);
@@ -226,6 +228,7 @@ mod tests {
             fraction: 0.25,
             position: 90_000 * 60,
             length: 90_000 * 240,
+            read: 0.5,
             paused: false,
             buffering: false,
             pace: 1.0,

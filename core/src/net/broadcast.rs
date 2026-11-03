@@ -18,7 +18,6 @@ use super::address::addresses_of;
 use super::http::{Client, Options, Request};
 use super::{Error, Stop, tls, ws};
 
-/// 応答の本文の上限。
 const MOST: usize = 16 << 20;
 /// 放送で届くルート証明書の、一つのプラグインあたりの上限。
 const MOST_ROOTS: usize = 8;
@@ -244,7 +243,6 @@ struct Conn {
     dropped: Arc<AtomicBool>,
     /// 届いて、まだ渡していないバイト数。
     queued: Arc<(Mutex<usize>, Condvar)>,
-    /// スレッドを立てられなかった。
     failed: bool,
 }
 
@@ -698,7 +696,6 @@ mod tests {
         }
     }
 
-    /// 終わりまで。
     fn arrivals(conn: &mut dyn zwsdk::net::Conn) -> Vec<Arrived> {
         let began = Instant::now();
         let mut all = Vec::new();

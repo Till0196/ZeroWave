@@ -20,10 +20,19 @@ pub fn few_arenas() {
     }
 }
 
-/// プロセスが確保したメモリー（Windows はタスク マネージャーの「メモリ」と同じコミット、Linux は RSS）。
-pub fn used() -> Option<u64> {
+/// プロセスのメモリー（バイト）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Used {
+    /// タスク マネージャーの「メモリ」（プライベートな作業セット）。Linux は RSS。
+    pub working: u64,
+    /// コミット。Windows では GPU のドライバーが確保した分も入る。
+    pub committed: Option<u64>,
+}
+
+pub fn used() -> Option<Used> {
     #[cfg(windows)]
     {
+        // PROCESS_MEMORY_COUNTERS_EX2（Windows 10 1903 から）。
         #[repr(C)]
         #[derive(Default)]
         struct Counters {
@@ -38,6 +47,8 @@ pub fn used() -> Option<u64> {
             pagefile_usage: usize,
             peak_pagefile_usage: usize,
             private_usage: usize,
+            private_working_set_size: usize,
+            shared_commit_usage: u64,
         }
         #[link(name = "kernel32")]
         unsafe extern "system" {
@@ -51,13 +62,19 @@ pub fn used() -> Option<u64> {
         // SAFETY: 大きさを書いた構造体を渡し、そこへ書かせるだけ。
         let done =
             unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
-        (done != 0).then_some(counters.private_usage as u64)
+        (done != 0).then_some(Used {
+            working: counters.private_working_set_size as u64,
+            committed: Some(counters.private_usage as u64),
+        })
     }
     #[cfg(target_os = "linux")]
     {
         let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
         let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
-        Some(pages * 4096)
+        Some(Used {
+            working: pages * 4096,
+            committed: None,
+        })
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     None

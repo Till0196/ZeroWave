@@ -50,6 +50,7 @@ pub struct Skin {
     pub volume_filled: Color32,
     pub seek_back: Color32,
     pub seek_done: Color32,
+    pub seek_read: Color32,
     pub pushed: Color32,
 }
 
@@ -69,6 +70,7 @@ pub const DARK: Skin = Skin {
     volume_filled: Color32::from_rgb(0xf2, 0xf2, 0xf3),
     seek_back: Color32::from_rgb(0x34, 0x34, 0x3a),
     seek_done: Color32::from_rgb(0xf2, 0xf2, 0xf3),
+    seek_read: Color32::from_rgb(0x74, 0x74, 0x7c),
     pushed: Color32::from_rgb(0x4a, 0x7a, 0xe0),
 };
 
@@ -89,6 +91,7 @@ pub const LIGHT: Skin = Skin {
     volume_filled: Color32::from_rgb(0x50, 0x54, 0x60),
     seek_back: Color32::from_rgb(0xd0, 0xd2, 0xdc),
     seek_done: Color32::from_rgb(0x50, 0x54, 0x60),
+    seek_read: Color32::from_rgb(0xa2, 0xa6, 0xb2),
     pushed: Color32::from_rgb(0xc8, 0xd6, 0xf4),
 };
 

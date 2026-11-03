@@ -383,7 +383,6 @@ pub struct HostState {
     /// 書きかけ（`eprintln!` は一行を何度かに分けて書く）。
     stdio: [Vec<u8>; 2],
     blobs: std::collections::BTreeMap<String, crate::video::Blob>,
-    /// [`abi::SCRIPT`]。
     script: Option<std::sync::Arc<[u8]>>,
     /// 放送で届いたものはこのインスタンスの通信だけに追加する。
     net: Box<dyn crate::net::Session>,

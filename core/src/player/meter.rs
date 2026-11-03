@@ -176,8 +176,17 @@ impl Player {
             said(self.first.sound),
         );
         crate::memory::give_back();
-        if let Some(used) = crate::memory::used() {
-            tracing::info!("メモリー {} MiB", used >> 20);
+        match crate::memory::used() {
+            Some(crate::memory::Used {
+                working,
+                committed: Some(committed),
+            }) => tracing::info!(
+                "メモリー {} MiB（コミット {} MiB）",
+                working >> 20,
+                committed >> 20
+            ),
+            Some(used) => tracing::info!("メモリー {} MiB", used.working >> 20),
+            None => {}
         }
     }
 

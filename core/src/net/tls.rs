@@ -23,7 +23,6 @@ pub fn config(extra: &[Vec<u8>], sha1: bool) -> Arc<rustls::ClientConfig> {
     build(extra, sha1)
 }
 
-/// ルート証明書として使えるか。
 pub fn is_certificate(der: &[u8]) -> bool {
     rustls::RootCertStore::empty()
         .add(CertificateDer::from(der.to_vec()))

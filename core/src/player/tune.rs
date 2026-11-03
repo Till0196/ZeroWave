@@ -397,10 +397,17 @@ impl Player {
                 Container::Tlv => 0,
             });
         let position = span.position(recording.opened_at, now);
+        let read = if self.ring.as_ref().is_some_and(|ring| ring.ended()) {
+            length
+        } else {
+            position + self.reading_lead().unwrap_or(0).max(0)
+        };
+        let fraction = position as f32 / length as f32;
         Some(Progress {
-            fraction: position as f32 / length as f32,
+            fraction,
             position,
             length,
+            read: (read.min(length) as f32 / length as f32).max(fraction),
             paused: self.paused,
             buffering: self.buffering,
             pace: self.pace,
