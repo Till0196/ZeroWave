@@ -445,6 +445,11 @@ pub struct Stage {
     catalog_back: Option<Receiver<catalog::Built>>,
     /// ほかの Mirakurun から全局の番組表を最後に取った時刻（URL ごと）。
     guided_at: std::collections::HashMap<String, std::time::Instant>,
+    /// ほかの Mirakurun の全局の番組表。局一覧を作り直しても途中で切らないよう、局一覧とは別に受ける。
+    guides: (
+        std::sync::mpsc::Sender<catalog::Guided>,
+        Receiver<catalog::Guided>,
+    ),
     catalog_due: bool,
     tried: Vec<String>,
     tried_ways: Vec<String>,
