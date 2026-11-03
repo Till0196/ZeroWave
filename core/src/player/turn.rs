@@ -73,6 +73,10 @@ impl Player {
                 // 測り終えたら、測った設定で作り直す（測る間は軽い既定で表示している）。
                 let settled = self.provisional && painter.settled(format);
                 if self.video.is_none() || self.format != Some(format) || settled {
+                    let pixels = |width: u32, height: u32| u64::from(width) * u64::from(height);
+                    let shrank = self.format.is_some_and(|was| {
+                        pixels(was.width, was.height) > 2 * pixels(format.width, format.height)
+                    });
                     self.format = Some(format);
                     self.provisional = !painter.settled(format);
                     self.tell_speed();
@@ -149,6 +153,9 @@ impl Player {
                     let tune = self.options.deinterlace.is_none() && !deinterlaced;
                     // 古い映像出力を先に破棄する（GLES では古い映像出力の後片付けが新しいコンテキストの物を消す）。
                     self.video = None;
+                    if shrank {
+                        crate::memory::give_back_now();
+                    }
                     match painter.build(format, self.settings, tune) {
                         Ok(video) => {
                             // 要求した処理が組み込まれたとは限らない（GLES 2.0 では外れる）。

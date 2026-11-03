@@ -20,6 +20,23 @@ pub fn few_arenas() {
     }
 }
 
+type GpuReport = Box<dyn Fn() -> Option<Gpu> + Send + Sync>;
+
+static GPU: std::sync::RwLock<Option<GpuReport>> = std::sync::RwLock::new(None);
+
+/// レンダリングの GPU のメモリー（バイト）。VRAM と CPU から見える分を合わせて。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Gpu {
+    pub allocated: u64,
+    /// 使い回すために持っている分も含む。
+    pub reserved: u64,
+}
+
+/// [`used`] に GPU の分も入れる。デバイスを作り直したら呼び直す。
+pub fn report_gpu_with(report: impl Fn() -> Option<Gpu> + Send + Sync + 'static) {
+    *GPU.write().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(report));
+}
+
 /// プロセスのメモリー（バイト）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Used {
@@ -27,9 +44,23 @@ pub struct Used {
     pub working: u64,
     /// コミット。Windows では GPU のドライバーが確保した分も入る。
     pub committed: Option<u64>,
+    pub gpu: Option<Gpu>,
 }
 
 pub fn used() -> Option<Used> {
+    let gpu = GPU
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|report| report());
+    process().map(|(working, committed)| Used {
+        working,
+        committed,
+        gpu,
+    })
+}
+
+fn process() -> Option<(u64, Option<u64>)> {
     #[cfg(windows)]
     {
         // PROCESS_MEMORY_COUNTERS_EX2（Windows 10 1903 から）。
@@ -62,19 +93,16 @@ pub fn used() -> Option<Used> {
         // SAFETY: 大きさを書いた構造体を渡し、そこへ書かせるだけ。
         let done =
             unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
-        (done != 0).then_some(Used {
-            working: counters.private_working_set_size as u64,
-            committed: Some(counters.private_usage as u64),
-        })
+        (done != 0).then_some((
+            counters.private_working_set_size as u64,
+            Some(counters.private_usage as u64),
+        ))
     }
     #[cfg(target_os = "linux")]
     {
         let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
         let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
-        Some(Used {
-            working: pages * 4096,
-            committed: None,
-        })
+        Some((pages * 4096, None))
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     None
@@ -86,11 +114,20 @@ const GIVE_BACK_EVERY: std::time::Duration = std::time::Duration::from_secs(300)
 /// glibc と Windows のプロセスの heap だけ。詰める間は heap を握るので、ほかのスレッド（映像も）の確保が止まる。
 /// 大きな heap では数十〜数百 ms 掛かるので、[`GIVE_BACK_EVERY`] に一度まで。
 pub fn give_back() {
+    give_back_unless(true);
+}
+
+/// 大きな物を手放した直後（8K から 2K へなど）。間隔を待たずに返す。
+pub fn give_back_now() {
+    give_back_unless(false);
+}
+
+fn give_back_unless(recent: bool) {
     static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
     let Ok(mut last) = LAST.lock() else {
         return;
     };
-    if last.is_some_and(|at| at.elapsed() < GIVE_BACK_EVERY) {
+    if recent && last.is_some_and(|at| at.elapsed() < GIVE_BACK_EVERY) {
         return;
     }
     *last = Some(std::time::Instant::now());
