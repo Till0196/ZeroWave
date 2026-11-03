@@ -127,8 +127,25 @@ pub fn give_back() {
     }
 }
 
+/// 1 分ごとに [`used`] をログに出す間隔。
+const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// ソースが変わった（前のソースの物を手放した）。再生を止めないよう別のスレッドで返し、返す前と後をログに出す。
+/// 初めて呼んだときから、1 分ごとにもログに出す（選局の後に番組表や映像フィルターが揃っていく様子を見るため）。
 pub fn source_changed() {
+    static WATCHING: std::sync::Once = std::sync::Once::new();
+    WATCHING.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name(String::from("memory"))
+            .spawn(|| {
+                loop {
+                    std::thread::sleep(WATCH_EVERY);
+                    if let Some(used) = used() {
+                        tracing::info!("メモリー {}", described(&used, None));
+                    }
+                }
+            });
+    });
     if !due(&LAST_SOURCE, SOURCE_EVERY) {
         return;
     }
@@ -139,36 +156,37 @@ pub fn source_changed() {
             let began = std::time::Instant::now();
             compact();
             let took = began.elapsed();
-            let Some(after) = used() else {
-                return;
-            };
-            let mut also = Vec::new();
-            if let Some(before) = before {
-                also.push(format!(
-                    "返す前 {} MiB、{:.0} ms",
-                    before.working >> 20,
-                    took.as_secs_f64() * 1000.0
-                ));
+            if let Some(after) = used() {
+                let before = before.map(|before| (before.working, took));
+                tracing::info!("選局の後のメモリー {}", described(&after, before));
             }
-            if let Some(committed) = after.committed {
-                also.push(format!("コミット {} MiB", committed >> 20));
-            }
-            if let Some(gpu) = after.gpu {
-                also.push(format!(
-                    "GPU {} MiB（使い回し用を含めて {} MiB）",
-                    gpu.allocated >> 20,
-                    gpu.reserved >> 20
-                ));
-            }
-            tracing::info!(
-                "メモリー {} MiB（{}）",
-                after.working >> 20,
-                also.join("、")
-            );
         });
     if let Err(why) = spawned {
         tracing::debug!("メモリーを返すスレッドを起動できない: {why}");
     }
+}
+
+/// `before` は詰める前の作業セットと、詰めるのに掛かった時間。
+fn described(used: &Used, before: Option<(u64, std::time::Duration)>) -> String {
+    let mut also = Vec::new();
+    if let Some((working, took)) = before {
+        also.push(format!(
+            "返す前 {} MiB、{:.0} ms",
+            working >> 20,
+            took.as_secs_f64() * 1000.0
+        ));
+    }
+    if let Some(committed) = used.committed {
+        also.push(format!("コミット {} MiB", committed >> 20));
+    }
+    if let Some(gpu) = used.gpu {
+        also.push(format!(
+            "GPU {} MiB（使い回し用を含めて {} MiB）",
+            gpu.allocated >> 20,
+            gpu.reserved >> 20
+        ));
+    }
+    format!("{} MiB（{}）", used.working >> 20, also.join("、"))
 }
 
 fn due(last: &Last, every: std::time::Duration) -> bool {
