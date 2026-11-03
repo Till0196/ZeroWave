@@ -14,7 +14,18 @@ pub struct Faces {
 pub const MONO_ALIAS: &str = "zerowave-bml";
 
 impl Faces {
+    /// 本体では一度だけ探して使い回す（読むたびに数十 MB のコピーができる。レイヤーを開くたびに呼ばれる）。
     pub fn find() -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            static FOUND: std::sync::OnceLock<Faces> = std::sync::OnceLock::new();
+            FOUND.get_or_init(Self::look).clone()
+        }
+        #[cfg(target_arch = "wasm32")]
+        Self::look()
+    }
+
+    fn look() -> Self {
         let lent = |name: &str| {
             if cfg!(target_arch = "wasm32") {
                 crate::plug::host::font(name)
@@ -88,22 +99,27 @@ pub fn single_face(bytes: &[u8], index: u32) -> Option<Vec<u8>> {
     }
     let start = be32(12 + 4 * index as usize)?;
     let tables = be16(start + 4)?;
-    let mut out = bytes.get(start..start + 12)?.to_vec();
-    let mut body = Vec::new();
+    let record = |n: usize| start + 12 + 16 * n;
+    // 大きさを先に数え、一度で書く（20 MB ほどあるので、伸ばしながら集めるとその倍を確保する）。
+    let mut size = 12 + 16 * tables;
+    for n in 0..tables {
+        size = size.checked_add(be32(record(n) + 12)?.next_multiple_of(4))?;
+    }
+    let mut out = Vec::with_capacity(size);
+    out.extend_from_slice(bytes.get(start..start + 12)?);
     let mut offset = 12 + 16 * tables;
     for n in 0..tables {
-        let record = start + 12 + 16 * n;
-        let (at, len) = (be32(record + 8)?, be32(record + 12)?);
-        let table = bytes.get(at..at.checked_add(len)?)?;
-        out.extend_from_slice(bytes.get(record..record + 8)?);
+        let len = be32(record(n) + 12)?;
+        out.extend_from_slice(bytes.get(record(n)..record(n) + 8)?);
         out.extend_from_slice(&(offset as u32).to_be_bytes());
         out.extend_from_slice(&(len as u32).to_be_bytes());
-        body.extend_from_slice(table);
-        let padded = len.next_multiple_of(4);
-        body.resize(body.len() + padded - len, 0);
-        offset += padded;
+        offset += len.next_multiple_of(4);
     }
-    out.extend_from_slice(&body);
+    for n in 0..tables {
+        let (at, len) = (be32(record(n) + 8)?, be32(record(n) + 12)?);
+        out.extend_from_slice(bytes.get(at..at.checked_add(len)?)?);
+        out.resize(out.len() + len.next_multiple_of(4) - len, 0);
+    }
     Some(out)
 }
 

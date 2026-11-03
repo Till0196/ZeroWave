@@ -526,8 +526,71 @@ pub struct Programme {
     pub details: Details,
 }
 
+/// 番組の付加情報。ほとんどの番組では空なので、空のうちは確保しない（番組表は数万番組を持つ）。
+/// 読むときは空の [`DetailsData`] が見え、書くと確保する。
+#[derive(Debug, Clone, Default)]
+pub struct Details(Option<Box<DetailsData>>);
+
+static NO_DETAILS: DetailsData = DetailsData {
+    ratings: Vec::new(),
+    contracts: Vec::new(),
+    series: None,
+    groups: None,
+    region: None,
+    links: Vec::new(),
+    multimedia: Vec::new(),
+};
+
+impl std::ops::Deref for Details {
+    type Target = DetailsData;
+
+    fn deref(&self) -> &DetailsData {
+        self.0.as_deref().unwrap_or(&NO_DETAILS)
+    }
+}
+
+impl std::ops::DerefMut for Details {
+    fn deref_mut(&mut self) -> &mut DetailsData {
+        self.0.get_or_insert_with(Box::default)
+    }
+}
+
+impl PartialEq for Details {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for Details {}
+
+impl From<DetailsData> for Details {
+    fn from(data: DetailsData) -> Self {
+        let mut details = Self::default();
+        if data != DetailsData::default() {
+            details.0 = Some(Box::new(data));
+        }
+        details
+    }
+}
+
+impl Details {
+    pub fn is_empty(&self) -> bool {
+        **self == NO_DETAILS
+    }
+
+    fn fill_from(&mut self, told: Details) {
+        let Some(told) = told.0 else {
+            return;
+        };
+        match self.0.as_mut() {
+            Some(data) => data.fill_from(*told),
+            None => self.0 = Some(told),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Details {
+pub struct DetailsData {
     pub ratings: Vec<isdb::descriptors::ParentalRating>,
     pub contracts: Vec<isdb::descriptors::CaContract>,
     pub series: Option<isdb::descriptors::Series>,
@@ -537,7 +600,7 @@ pub struct Details {
     pub multimedia: Vec<isdb::descriptors::MultimediaService>,
 }
 
-impl Details {
+impl DetailsData {
     pub fn minimum_age(&self) -> Option<u8> {
         self.rating()
             .and_then(|rating| isdb::descriptors::rating_age(rating.rating))
@@ -550,11 +613,7 @@ impl Details {
             .or_else(|| self.ratings.first())
     }
 
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
-
-    fn fill_from(&mut self, told: Details) {
+    fn fill_from(&mut self, told: DetailsData) {
         if self.ratings.is_empty() {
             self.ratings = told.ratings;
         }

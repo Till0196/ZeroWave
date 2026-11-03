@@ -85,13 +85,16 @@ impl Face {
         self.families.iter().any(|name| name == wanted)
     }
 
+    /// TTC は丸ごと読まず、その書体の分だけを取り出す（CJK の TTC は 20 MB ほどある）。
     pub fn bytes(&self) -> Option<Vec<u8>> {
-        let bytes = std::fs::read(&self.path).ok()?;
-        if bytes.starts_with(b"ttcf") {
-            crate::fonts::single_face(&bytes, self.index)
-        } else {
-            Some(bytes)
-        }
+        with_file(&self.path, |bytes| {
+            if bytes.starts_with(b"ttcf") {
+                crate::fonts::single_face(bytes, self.index)
+            } else {
+                Some(bytes.to_vec())
+            }
+        })
+        .flatten()
     }
 
     pub fn count_covered(&self, letters: &str) -> usize {
