@@ -109,29 +109,76 @@ fn process() -> Option<(u64, Option<u64>)> {
 }
 
 const GIVE_BACK_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
+/// 続けて選局しても、詰めるのはこの間に一度まで。
+const SOURCE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
 
 /// 解放したメモリーを OS へ返す（大量に使った後、メモリー 1 GB の環境でスワップアウトされないように）。
 /// glibc と Windows のプロセスの heap だけ。詰める間は heap を握るので、ほかのスレッド（映像も）の確保が止まる。
 /// 大きな heap では数十〜数百 ms 掛かるので、[`GIVE_BACK_EVERY`] に一度まで。
 pub fn give_back() {
-    give_back_unless(true);
+    if due(GIVE_BACK_EVERY) {
+        compact();
+    }
 }
 
-/// 大きな物を手放した直後（8K から 2K へなど）。間隔を待たずに返す。
-pub fn give_back_now() {
-    give_back_unless(false);
-}
-
-fn give_back_unless(recent: bool) {
-    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
-    let Ok(mut last) = LAST.lock() else {
-        return;
-    };
-    if recent && last.is_some_and(|at| at.elapsed() < GIVE_BACK_EVERY) {
+/// ソースが変わった（前のソースの物を手放した）。再生を止めないよう別のスレッドで返し、返す前と後をログに出す。
+pub fn source_changed() {
+    if !due(SOURCE_EVERY) {
         return;
     }
+    let spawned = std::thread::Builder::new()
+        .name(String::from("give back"))
+        .spawn(|| {
+            let before = used();
+            let began = std::time::Instant::now();
+            compact();
+            let took = began.elapsed();
+            let Some(after) = used() else {
+                return;
+            };
+            let mut also = Vec::new();
+            if let Some(before) = before {
+                also.push(format!(
+                    "返す前 {} MiB、{:.0} ms",
+                    before.working >> 20,
+                    took.as_secs_f64() * 1000.0
+                ));
+            }
+            if let Some(committed) = after.committed {
+                also.push(format!("コミット {} MiB", committed >> 20));
+            }
+            if let Some(gpu) = after.gpu {
+                also.push(format!(
+                    "GPU {} MiB（使い回し用を含めて {} MiB）",
+                    gpu.allocated >> 20,
+                    gpu.reserved >> 20
+                ));
+            }
+            tracing::info!(
+                "メモリー {} MiB（{}）",
+                after.working >> 20,
+                also.join("、")
+            );
+        });
+    if let Err(why) = spawned {
+        tracing::debug!("メモリーを返すスレッドを起動できない: {why}");
+    }
+}
+
+fn due(every: std::time::Duration) -> bool {
+    let Ok(mut last) = LAST.lock() else {
+        return false;
+    };
+    if last.is_some_and(|at| at.elapsed() < every) {
+        return false;
+    }
     *last = Some(std::time::Instant::now());
-    drop(last);
+    true
+}
+
+fn compact() {
     #[cfg(windows)]
     {
         #[link(name = "kernel32")]

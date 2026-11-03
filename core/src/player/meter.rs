@@ -175,25 +175,7 @@ impl Player {
             said(self.first.picture),
             said(self.first.sound),
         );
-        crate::memory::give_back();
-        if let Some(used) = crate::memory::used() {
-            let mut also = Vec::new();
-            if let Some(committed) = used.committed {
-                also.push(format!("コミット {} MiB", committed >> 20));
-            }
-            if let Some(gpu) = used.gpu {
-                also.push(format!(
-                    "GPU {} MiB（使い回し用を含めて {} MiB）",
-                    gpu.allocated >> 20,
-                    gpu.reserved >> 20
-                ));
-            }
-            if also.is_empty() {
-                tracing::info!("メモリー {} MiB", used.working >> 20);
-            } else {
-                tracing::info!("メモリー {} MiB（{}）", used.working >> 20, also.join("、"));
-            }
-        }
+        crate::memory::source_changed();
     }
 
     pub(super) fn measure(&mut self) {
