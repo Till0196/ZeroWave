@@ -748,6 +748,11 @@ impl LayerInstance {
 
     /// プラグインの `now_ms` が返す時刻を固定する（`None` で実時間に戻す）。画面を提示した時刻を渡せば、
     /// 時刻で動かすアニメーションが提示の間隔にきっちり揃う（スレッドが起きる遅れで揺れない）。
+    /// guest のメモリーと、本体の側に預かっているバイト列の大きさ。wasm のメモリーは伸びたら縮まない。
+    pub fn memory(&mut self) -> usize {
+        self.made.memory.data_size(&self.made.store) + self.made.store.data().bufs.bytes
+    }
+
     pub fn set_clock(&mut self, at: Option<Instant>) {
         if let Some(draw) = self.made.store.data_mut().draw.as_mut() {
             draw.clock = at;

@@ -176,6 +176,9 @@ impl Player {
             said(self.first.sound),
         );
         crate::memory::give_back();
+        if let Some(used) = crate::memory::used() {
+            tracing::info!("メモリー {} MiB", used >> 20);
+        }
     }
 
     pub(super) fn measure(&mut self) {

@@ -11,7 +11,12 @@ use zwcore::input::source::Source as _;
 #[derive(Debug)]
 pub(crate) enum Built {
     Offers(Vec<Offer>),
-    Guide(zwcore::guide::Guide),
+}
+
+pub(crate) enum Guided {
+    Part(zwcore::guide::Guide),
+    /// 取れなかった URL（次に局一覧を作るときに取り直す）。
+    Failed(String),
 }
 
 #[derive(Debug)]
@@ -225,6 +230,7 @@ impl Stage {
             }
         }
         let (send, back) = std::sync::mpsc::channel();
+        let guides = self.guides.0.clone();
         let spawned = std::thread::Builder::new()
             .name(String::from("catalog"))
             .spawn(move || {
@@ -254,21 +260,28 @@ impl Stage {
                     return;
                 }
                 for (label, url) in guided {
-                    let mut gone = false;
+                    let began = std::time::Instant::now();
+                    let (mut services, mut programmes) = (0, 0);
                     let fetched = zwcore::input::source::mirakurun::Mirakurun::at(&url)
                         .map_err(|why| why.to_string())
                         .and_then(|mut source| {
                             source
                                 .guide_in_parts(|part| {
-                                    gone |= send.send(Built::Guide(part)).is_err();
+                                    services = services.max(part.services().count());
+                                    programmes += part.programme_count();
+                                    let _ = guides.send(Guided::Part(part));
                                 })
                                 .map_err(|why| why.to_string())
                         });
-                    if gone {
-                        return;
-                    }
-                    if let Err(why) = fetched {
-                        tracing::warn!("{label}: 全局の番組表を取得できない: {why}");
+                    match fetched {
+                        Ok(()) => tracing::info!(
+                            "{label}: 全局の番組表 {services} 局・{programmes} 番組（{:.1} 秒）",
+                            began.elapsed().as_secs_f64()
+                        ),
+                        Err(why) => {
+                            tracing::warn!("{label}: 全局の番組表を取得できない: {why}");
+                            let _ = guides.send(Guided::Failed(url));
+                        }
                     }
                 }
             });
@@ -281,6 +294,17 @@ impl Stage {
     pub(super) fn take_catalog(&mut self) {
         if self.catalog_due {
             self.rebuild_catalog();
+        }
+        while let Ok(guided) = self.guides.1.try_recv() {
+            match guided {
+                Guided::Part(guide) => {
+                    self.learn_stations(&guide);
+                    let _ = self.guide_to.send(ToGuide::Merge(Box::new(guide)));
+                }
+                Guided::Failed(url) => {
+                    self.guided_at.remove(&url);
+                }
+            }
         }
         let Some(back) = self.catalog_back.as_ref() else {
             return;
@@ -298,10 +322,6 @@ impl Stage {
         }
         for built in took {
             match built {
-                Built::Guide(guide) => {
-                    self.learn_stations(&guide);
-                    let _ = self.guide_to.send(ToGuide::Merge(Box::new(guide)));
-                }
                 Built::Offers(offers) => {
                     let counts: Vec<String> = offers
                         .iter()
