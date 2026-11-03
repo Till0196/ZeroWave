@@ -397,10 +397,17 @@ impl Player {
                 Container::Tlv => 0,
             });
         let position = span.position(recording.opened_at, now);
+        // 先読みしたバイト数を、録画の平均の速さで時間に直す。
+        let unread = self.ring.as_ref().map_or(0, |ring| ring.unread()) as i64;
+        let ahead = if recording.bytes > 0 {
+            (i128::from(unread) * i128::from(length) / i128::from(recording.bytes)) as i64
+        } else {
+            0
+        };
         let read = if self.ring.as_ref().is_some_and(|ring| ring.ended()) {
             length
         } else {
-            position + self.reading_lead().unwrap_or(0).max(0)
+            position + self.reading_lead().unwrap_or(0).max(0) + ahead
         };
         let fraction = position as f32 / length as f32;
         Some(Progress {
