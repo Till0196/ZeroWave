@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn details_become_lines() {
-        let details = Details {
+        let details = Details::from(crate::guide::DetailsData {
             ratings: vec![isdb::descriptors::ParentalRating {
                 country: "JPN".into(),
                 rating: 0x04,
@@ -200,8 +200,8 @@ mod tests {
                 name: "連続".into(),
                 ..Default::default()
             }),
-            ..Details::default()
-        };
+            ..crate::guide::DetailsData::default()
+        });
         let lines = details_lines(&details);
         assert_eq!(lines[0], "視聴年齢 : 7 歳以上（JPN, 0x04）");
         assert_eq!(
