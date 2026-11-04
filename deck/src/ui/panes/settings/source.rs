@@ -575,7 +575,7 @@ fn chip(
     rect.width()
 }
 
-/// 方式を返さない（BDA）チューナーの方式は人が選ぶ。LNB 給電と利得は coaxd が返した物だけ。
+/// 方式を返さない（BDA）チューナーの方式は人が選ぶ。LNB 給電・利得・ループスルーは coaxd が返した物だけ。
 fn tuners_under(
     form: &mut Form<'_, '_>,
     file: &File,
@@ -915,6 +915,9 @@ fn tuners_under(
                     gain_row(form, indent, &id, gain, &mut setting.gain);
                 }
             }
+            if let Some(loop_through) = &held.controls.loop_through {
+                loop_through_row(form, indent, &id, loop_through, &mut setting.loop_through);
+            }
             let mut probe = file.clone();
             if let Some(had) = probe
                 .sources
@@ -1044,6 +1047,37 @@ fn lnb_row(
             skin::TEXT_SIZE - 1.0,
         );
     }
+}
+
+/// チューナーが次のチューナーへ渡す出力。
+fn loop_through_row(
+    form: &mut Form<'_, '_>,
+    left: f32,
+    id: &str,
+    control: &zwcore::input::source::coaxd::LoopThroughControl,
+    value: &mut String,
+) {
+    let row = form.line(skin::SELECT_HEIGHT);
+    say(
+        form,
+        pos2(left, row.center().y),
+        "ループスルー",
+        form.look.label,
+        skin::TEXT_SIZE,
+    );
+    let choices: &[(&str, &str)] = if control.switch {
+        &[("", "既定"), ("max", "入"), ("low", "切")]
+    } else {
+        &[
+            ("", "既定"),
+            ("max", "最大"),
+            ("high", "高"),
+            ("mid", "中"),
+            ("low", "低"),
+        ]
+    };
+    let select = Rect::from_min_size(pos2(left + 84.0, row.top()), vec2(180.0, row.height()));
+    form.select_at(select, ("tuner.loop_through", id), value, choices);
 }
 
 /// Mirakurun の要求の仕方。coaxd のチューナーごとの設定と同じく一段下げる。
