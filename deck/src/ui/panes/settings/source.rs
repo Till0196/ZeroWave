@@ -1133,37 +1133,23 @@ fn shared_lnb_row(
     }
 }
 
-/// 一枚の機器にまとめた板。シリアル番号が同じか、USB の場所が機器の中のハブのポート（最後の `.番号`）だけ違う物。
-/// 型番の違う物はまとめない。
+/// 筐体ごとにまとめた板。どの板が同じ筐体かは coaxd が `enclosure` で言う（言わなければ一台で完結する）。
 fn cards_of(
     boards: &[zwcore::input::source::coaxd::Board],
 ) -> Vec<Vec<&zwcore::input::source::coaxd::Board>> {
-    fn card(board: &zwcore::input::source::coaxd::Board) -> String {
-        if !board.serial.is_empty() {
-            return format!("{}|{}|serial:{}", board.backend, board.model, board.serial);
-        }
-        let at = if board.location.contains('.') {
-            board.location.as_str()
-        } else {
-            board.name.as_str()
-        };
-        let stem = match at.rsplit_once('.') {
-            Some((stem, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
-                stem
-            }
-            _ => at,
-        };
-        format!("{}|{}|at:{stem}", board.backend, board.model)
-    }
-    let mut cards: Vec<(String, Vec<&zwcore::input::source::coaxd::Board>)> = Vec::new();
+    let mut cards: Vec<Vec<&zwcore::input::source::coaxd::Board>> = Vec::new();
     for board in boards {
-        let key = card(board);
-        match cards.iter_mut().find(|(had, _)| *had == key) {
-            Some((_, boards)) => boards.push(board),
-            None => cards.push((key, vec![board])),
+        let same = cards.iter_mut().find(|card| {
+            !board.enclosure.is_empty()
+                && card[0].backend == board.backend
+                && card[0].enclosure == board.enclosure
+        });
+        match same {
+            Some(card) => card.push(board),
+            None => cards.push(vec![board]),
         }
     }
-    cards.into_iter().map(|(_, boards)| boards).collect()
+    cards
 }
 
 /// チューナーが次のチューナーへ渡す出力。
@@ -1315,14 +1301,13 @@ mod tests {
     use super::cards_of;
     use zwcore::input::source::coaxd::Board;
 
-    fn board(name: &str, model: &str, location: &str, serial: &str) -> Board {
+    fn board(name: &str, enclosure: &str) -> Board {
         Board {
             name: name.to_owned(),
-            model: model.to_owned(),
+            model: String::from("PX-W3U3"),
             backend: String::from("px3"),
-            location: location.to_owned(),
-            serial: serial.to_owned(),
-            tuners: Vec::new(),
+            enclosure: enclosure.to_owned(),
+            ..Board::default()
         }
     }
 
@@ -1334,11 +1319,11 @@ mod tests {
     }
 
     #[test]
-    fn the_bridges_of_one_device_are_one_card() {
+    fn the_boards_of_one_enclosure_are_one_card() {
         let boards = [
-            board("px3:p1-14.1", "PX-W3U", "", ""),
-            board("px3:p1-14.2", "PX-W3U", "", ""),
-            board("px3:p1-9", "PX-W3U", "", ""),
+            board("px3:p1-14.1", "001:020"),
+            board("px3:p1-9", ""),
+            board("px3:p1-14.2", "001:020"),
         ];
         assert_eq!(
             names(&boards),
@@ -1347,23 +1332,9 @@ mod tests {
     }
 
     #[test]
-    fn cards_in_slots_or_of_other_models_stay_apart() {
-        let boards = [
-            board("pt3:0", "PT3", "PCI", ""),
-            board("pt3:1", "PT3", "PCI", ""),
-            board("px3:p1-14.1", "PX-W3U", "", ""),
-            board("px3:p1-14.2", "PX-Q3U", "", ""),
-        ];
-        assert_eq!(names(&boards).len(), 4);
-    }
-
-    #[test]
-    fn a_serial_number_says_which_card() {
-        let boards = [
-            board("a", "PX-Q3U", "1-2.1", "ABC"),
-            board("b", "PX-Q3U", "1-3.1", "ABC"),
-            board("c", "PX-Q3U", "1-2.2", "XYZ"),
-        ];
-        assert_eq!(names(&boards), [vec!["a", "b"], vec!["c"]]);
+    fn boards_that_say_no_enclosure_stay_apart() {
+        // 外付けのハブに同じ型番を二台挿しても、場所が似ているだけではまとめない。
+        let boards = [board("px3:p1-14.1", ""), board("px3:p1-14.2", "")];
+        assert_eq!(names(&boards).len(), 2);
     }
 }
