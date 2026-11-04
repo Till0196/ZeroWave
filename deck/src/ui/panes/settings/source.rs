@@ -628,250 +628,304 @@ fn tuners_under(
         inner_note(form, "チューナーが見つかりません", form.look.typed);
         return pressed;
     }
-    for board in &listed {
+    for card in cards_of(&listed) {
+        let first = card[0];
         *form.at += 4.0;
         let row = form.line(24.0);
-        let x =
+        let mut x =
             left + say(
                 form,
                 pos2(left, row.center().y),
-                &board.model,
+                &first.model,
                 form.look.text,
                 skin::TEXT_SIZE + 0.5,
             ) + 8.0;
-        if !board.backend.is_empty() {
-            chip(
+        if !first.backend.is_empty() {
+            x += chip(
                 form,
                 pos2(x, row.center().y),
-                &board.backend.to_ascii_uppercase(),
+                &first.backend.to_ascii_uppercase(),
                 form.look.label,
                 form.look.select_fill,
-            );
+            ) + 6.0;
         }
-        let shared = board.tuners.iter().find_map(|held| {
-            held.controls
-                .lnb
-                .as_ref()
-                .filter(|lnb| !lnb.shared.is_empty())
-                .cloned()
-        });
-        if let Some(lnb) = &shared {
-            let ids: Vec<String> = board
-                .tuners
-                .iter()
-                .filter(|held| held.controls.lnb.is_some())
-                .map(|held| held.tuner.id.clone())
-                .collect();
-            let mut value = ids
-                .iter()
-                .find_map(|id| source.tuner_settings.get(id).map(|one| one.lnb.clone()))
-                .unwrap_or_default();
-            let before = value.clone();
-            lnb_row(
-                form,
-                left,
-                ("board.lnb", &board.name),
-                lnb,
-                &mut value,
-                true,
-            );
-            if value != before {
-                for id in &ids {
-                    let mut setting = source.tuner_settings.get(id).cloned().unwrap_or_default();
-                    setting.lnb.clone_from(&value);
-                    store(source, id, setting);
-                }
-            }
-        }
-        for held in &board.tuners {
-            let tuner = &held.tuner;
-            let id = tuner.id.clone();
-            let mut setting: TunerSetting =
-                source.tuner_settings.get(&id).cloned().unwrap_or_default();
-            let top = *form.at;
-            let indent = left + 14.0;
-            let row = form.line(24.0);
-            let name = if tuner.name.is_empty() {
-                "チューナー"
-            } else {
-                tuner.name.as_str()
-            };
-            let mut x = indent
-                + say(
-                    form,
-                    pos2(indent, row.center().y),
-                    name,
-                    form.look.text,
-                    skin::TEXT_SIZE,
-                )
-                + 8.0;
-            x += say(
+        if card.len() > 1 {
+            say(
                 form,
                 pos2(x, row.center().y),
-                &id,
-                form.look.group,
+                &format!("ブリッジ {} 個", card.len()),
+                form.look.label,
                 skin::TEXT_SIZE - 1.0,
-            ) + 8.0;
-            if tuner.leased {
-                chip(
+            );
+        }
+        let card_ids: Vec<String> = card
+            .iter()
+            .flat_map(|board| &board.tuners)
+            .filter(|held| {
+                held.controls
+                    .lnb
+                    .as_ref()
+                    .is_some_and(|lnb| lnb.shared == "card")
+            })
+            .map(|held| held.tuner.id.clone())
+            .collect();
+        if let Some(lnb) = card
+            .iter()
+            .flat_map(|board| &board.tuners)
+            .find_map(|held| {
+                held.controls
+                    .lnb
+                    .as_ref()
+                    .filter(|lnb| lnb.shared == "card")
+            })
+        {
+            shared_lnb_row(
+                form,
+                left,
+                source,
+                ("card.lnb", &first.name),
+                lnb,
+                &card_ids,
+                "機器の全チューナー共通",
+            );
+        }
+        for &board in &card {
+            if card.len() > 1 {
+                let row = form.line(22.0);
+                say(
                     form,
-                    pos2(x, row.center().y),
-                    "使用中",
-                    form.look.typed,
-                    form.look.typed.gamma_multiply(0.18),
-                );
-            } else {
-                chip(
-                    form,
-                    pos2(x, row.center().y),
-                    "空き",
-                    form.look.label,
-                    form.look.select_fill,
+                    pos2(left + 6.0, row.center().y),
+                    &format!("ブリッジ {}", board.name),
+                    form.look.group,
+                    skin::TEXT_SIZE - 1.0,
                 );
             }
-            let named = !tuner.deliveries.is_empty();
-            let told: Vec<String> = {
-                let mut systems: Vec<String> = tuner
-                    .deliveries
-                    .iter()
-                    .map(|one| system_name(one))
-                    .collect();
-                systems.dedup();
-                systems
-            };
-            // ISDB-S だけを返すチューナーに ISDB-S3 を足せる（Linux の DVB は S3 に番号が無い）。
-            // 足した物は選局のとき ISDB-S の名前で要求する。
-            let can_add_s3 = named
-                && told.iter().any(|one| one == "ISDB-S")
-                && !told.iter().any(|one| one == "ISDB-S3");
-            let chosen = |setting: &TunerSetting, system: &str| {
-                setting.systems.iter().any(|one| system_name(one) == system)
-            };
-            let added_s3 = can_add_s3 && chosen(&setting, "ISDB-S3");
-            let offered_systems: Vec<String> = if named {
-                let mut systems = told.clone();
-                if added_s3 {
-                    systems.push(String::from("ISDB-S3"));
-                }
-                systems
-            } else {
-                let mut systems: Vec<String> =
-                    DECLARABLE.iter().map(|one| (*one).to_owned()).collect();
-                for one in &setting.systems {
-                    let shown = system_name(one);
-                    if !systems.contains(&shown) {
-                        systems.push(shown);
-                    }
-                }
-                systems
-            };
-            let label_left = indent;
-            let value_left = indent + 84.0;
-            if named && offered_systems.len() < 2 && !can_add_s3 {
-                let row = form.line(26.0);
-                say(
-                    form,
-                    pos2(label_left, row.center().y),
-                    "受信方式",
-                    form.look.label,
-                    skin::TEXT_SIZE,
-                );
-                say(
-                    form,
-                    pos2(value_left, row.center().y),
-                    &offered_systems.join("・"),
-                    form.look.text,
-                    skin::TEXT_SIZE,
-                );
-            } else {
-                let items: Vec<(String, bool, bool)> = offered_systems
-                    .iter()
-                    .map(|system| {
-                        let on = if named && told.contains(system) {
-                            setting.systems.is_empty() || chosen(&setting, system)
-                        } else {
-                            chosen(&setting, system)
-                        };
-                        (system.clone(), on, on)
-                    })
-                    .collect();
-                let top_row = *form.at;
-                say(
-                    form,
-                    pos2(label_left, top_row + 13.0),
-                    "受信方式",
-                    form.look.label,
-                    skin::TEXT_SIZE,
-                );
-                let right = row.right() - 8.0;
-                let (hit, bottom) = form.chips_at(
-                    pos2(value_left, top_row + 1.0),
-                    right,
-                    ("tuner.system", id.as_str()),
-                    &items,
-                );
-                let mut added = None;
-                let mut end = bottom;
-                let others: Vec<(&str, &str)> = if named {
-                    if can_add_s3 && !added_s3 {
-                        vec![("ISDB-S3", "ISDBS3")]
-                    } else {
-                        Vec::new()
-                    }
+            let board_ids: Vec<String> = board
+                .tuners
+                .iter()
+                .filter(|held| {
+                    held.controls
+                        .lnb
+                        .as_ref()
+                        .is_some_and(|lnb| !lnb.shared.is_empty() && lnb.shared != "card")
+                })
+                .map(|held| held.tuner.id.clone())
+                .collect();
+            if let Some(lnb) = board.tuners.iter().find_map(|held| {
+                held.controls
+                    .lnb
+                    .as_ref()
+                    .filter(|lnb| !lnb.shared.is_empty() && lnb.shared != "card")
+            }) {
+                let note = if card.len() > 1 {
+                    "このブリッジの全チューナー共通"
                 } else {
-                    super::scan::OFFERED
-                        .iter()
-                        .map(|(_, shown, system)| (*shown, *system))
-                        .filter(|(shown, _)| !offered_systems.iter().any(|had| had == shown))
-                        .collect()
+                    "全チューナー共通"
                 };
-                if !others.is_empty() {
-                    let other =
-                        Rect::from_min_size(pos2(value_left, bottom + 6.0), vec2(82.0, 24.0));
-                    let names: Vec<&str> = others.iter().map(|(shown, _)| *shown).collect();
-                    if let Some(picked) =
-                        form.menu_button(other, ("tuner.other", id.as_str()), "＋ その他", &names)
-                    {
-                        added = Some(others[picked].1.to_owned());
-                    }
-                    end = other.bottom();
+                shared_lnb_row(
+                    form,
+                    left,
+                    source,
+                    ("board.lnb", &board.name),
+                    lnb,
+                    &board_ids,
+                    note,
+                );
+            }
+            for held in &board.tuners {
+                let tuner = &held.tuner;
+                let id = tuner.id.clone();
+                let mut setting: TunerSetting =
+                    source.tuner_settings.get(&id).cloned().unwrap_or_default();
+                let top = *form.at;
+                let indent = left + 14.0;
+                let row = form.line(24.0);
+                let name = if tuner.name.is_empty() {
+                    "チューナー"
+                } else {
+                    tuner.name.as_str()
+                };
+                let mut x = indent
+                    + say(
+                        form,
+                        pos2(indent, row.center().y),
+                        name,
+                        form.look.text,
+                        skin::TEXT_SIZE,
+                    )
+                    + 8.0;
+                x += say(
+                    form,
+                    pos2(x, row.center().y),
+                    &id,
+                    form.look.group,
+                    skin::TEXT_SIZE - 1.0,
+                ) + 8.0;
+                if tuner.leased {
+                    chip(
+                        form,
+                        pos2(x, row.center().y),
+                        "使用中",
+                        form.look.typed,
+                        form.look.typed.gamma_multiply(0.18),
+                    );
+                } else {
+                    chip(
+                        form,
+                        pos2(x, row.center().y),
+                        "空き",
+                        form.look.label,
+                        form.look.select_fill,
+                    );
                 }
-                *form.at = end + 6.0;
-                let all_told = |now: &[String]| told.iter().all(|one| now.contains(one));
-                if let Some(hit) = hit {
-                    let system = offered_systems[hit].clone();
-                    let on = !items[hit].1;
-                    let mut now: Vec<String> = items
+                let named = !tuner.deliveries.is_empty();
+                let told: Vec<String> = {
+                    let mut systems: Vec<String> = tuner
+                        .deliveries
                         .iter()
-                        .filter(|(_, on, _)| *on)
-                        .map(|(system, _, _)| system.clone())
+                        .map(|one| system_name(one))
                         .collect();
-                    now.retain(|one| *one != system);
-                    if on {
-                        now.push(system);
+                    systems.dedup();
+                    systems
+                };
+                // ISDB-S だけを返すチューナーに ISDB-S3 を足せる（Linux の DVB は S3 に番号が無い）。
+                // 足した物は選局のとき ISDB-S の名前で要求する。
+                let can_add_s3 = named
+                    && told.iter().any(|one| one == "ISDB-S")
+                    && !told.iter().any(|one| one == "ISDB-S3");
+                let chosen = |setting: &TunerSetting, system: &str| {
+                    setting.systems.iter().any(|one| system_name(one) == system)
+                };
+                let added_s3 = can_add_s3 && chosen(&setting, "ISDB-S3");
+                let offered_systems: Vec<String> = if named {
+                    let mut systems = told.clone();
+                    if added_s3 {
+                        systems.push(String::from("ISDB-S3"));
                     }
-                    now.sort_by_key(|one| offered_systems.iter().position(|known| known == one));
-                    // 返された方式を全部使い何も足さないなら書かない（空は全部）。
-                    let extra = now.iter().any(|one| !told.contains(one));
-                    if !named {
-                        setting.systems = now.iter().map(|one| spelled(one)).collect();
-                    } else if all_told(&now) && !extra {
-                        setting.systems.clear();
-                    } else if now.iter().any(|one| told.contains(one)) {
-                        setting.systems = now.iter().map(|one| spelled(one)).collect();
+                    systems
+                } else {
+                    let mut systems: Vec<String> =
+                        DECLARABLE.iter().map(|one| (*one).to_owned()).collect();
+                    for one in &setting.systems {
+                        let shown = system_name(one);
+                        if !systems.contains(&shown) {
+                            systems.push(shown);
+                        }
                     }
-                }
-                if let Some(system) = added {
-                    if named && setting.systems.is_empty() {
-                        setting.systems = told.iter().map(|one| spelled(one)).collect();
+                    systems
+                };
+                let label_left = indent;
+                let value_left = indent + 84.0;
+                if named && offered_systems.len() < 2 && !can_add_s3 {
+                    let row = form.line(26.0);
+                    say(
+                        form,
+                        pos2(label_left, row.center().y),
+                        "受信方式",
+                        form.look.label,
+                        skin::TEXT_SIZE,
+                    );
+                    say(
+                        form,
+                        pos2(value_left, row.center().y),
+                        &offered_systems.join("・"),
+                        form.look.text,
+                        skin::TEXT_SIZE,
+                    );
+                } else {
+                    let items: Vec<(String, bool, bool)> = offered_systems
+                        .iter()
+                        .map(|system| {
+                            let on = if named && told.contains(system) {
+                                setting.systems.is_empty() || chosen(&setting, system)
+                            } else {
+                                chosen(&setting, system)
+                            };
+                            (system.clone(), on, on)
+                        })
+                        .collect();
+                    let top_row = *form.at;
+                    say(
+                        form,
+                        pos2(label_left, top_row + 13.0),
+                        "受信方式",
+                        form.look.label,
+                        skin::TEXT_SIZE,
+                    );
+                    let right = row.right() - 8.0;
+                    let (hit, bottom) = form.chips_at(
+                        pos2(value_left, top_row + 1.0),
+                        right,
+                        ("tuner.system", id.as_str()),
+                        &items,
+                    );
+                    let mut added = None;
+                    let mut end = bottom;
+                    let others: Vec<(&str, &str)> = if named {
+                        if can_add_s3 && !added_s3 {
+                            vec![("ISDB-S3", "ISDBS3")]
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        super::scan::OFFERED
+                            .iter()
+                            .map(|(_, shown, system)| (*shown, *system))
+                            .filter(|(shown, _)| !offered_systems.iter().any(|had| had == shown))
+                            .collect()
+                    };
+                    if !others.is_empty() {
+                        let other =
+                            Rect::from_min_size(pos2(value_left, bottom + 6.0), vec2(82.0, 24.0));
+                        let names: Vec<&str> = others.iter().map(|(shown, _)| *shown).collect();
+                        if let Some(picked) = form.menu_button(
+                            other,
+                            ("tuner.other", id.as_str()),
+                            "＋ その他",
+                            &names,
+                        ) {
+                            added = Some(others[picked].1.to_owned());
+                        }
+                        end = other.bottom();
                     }
-                    if !setting.systems.contains(&system) {
-                        setting.systems.push(system);
+                    *form.at = end + 6.0;
+                    let all_told = |now: &[String]| told.iter().all(|one| now.contains(one));
+                    if let Some(hit) = hit {
+                        let system = offered_systems[hit].clone();
+                        let on = !items[hit].1;
+                        let mut now: Vec<String> = items
+                            .iter()
+                            .filter(|(_, on, _)| *on)
+                            .map(|(system, _, _)| system.clone())
+                            .collect();
+                        now.retain(|one| *one != system);
+                        if on {
+                            now.push(system);
+                        }
+                        now.sort_by_key(|one| {
+                            offered_systems.iter().position(|known| known == one)
+                        });
+                        // 返された方式を全部使い何も足さないなら書かない（空は全部）。
+                        let extra = now.iter().any(|one| !told.contains(one));
+                        if !named {
+                            setting.systems = now.iter().map(|one| spelled(one)).collect();
+                        } else if all_told(&now) && !extra {
+                            setting.systems.clear();
+                        } else if now.iter().any(|one| told.contains(one)) {
+                            setting.systems = now.iter().map(|one| spelled(one)).collect();
+                        }
                     }
-                }
-                if !named && setting.systems.is_empty() {
-                    let row = form.line(34.0);
-                    let galley = form.ui.painter().layout(
+                    if let Some(system) = added {
+                        if named && setting.systems.is_empty() {
+                            setting.systems = told.iter().map(|one| spelled(one)).collect();
+                        }
+                        if !setting.systems.contains(&system) {
+                            setting.systems.push(system);
+                        }
+                    }
+                    if !named && setting.systems.is_empty() {
+                        let row = form.line(34.0);
+                        let galley = form.ui.painter().layout(
                         String::from(
                             "このチューナーの対応受信方式を確認できません。\n上記ボタンから選択してください。",
                         ),
@@ -879,100 +933,105 @@ fn tuners_under(
                         form.look.label,
                         row.right() - value_left,
                     );
-                    form.ui
-                        .painter()
-                        .galley(pos2(value_left, row.top()), galley, form.look.label);
-                }
-            }
-            let using: Vec<String> =
-                zwcore::input::source::coaxd::systems_used(&tuner.deliveries, &setting.to_core())
-                    .iter()
-                    .map(|one| system_name(one))
-                    .collect();
-            if let Some(lnb) = held
-                .controls
-                .lnb
-                .as_ref()
-                .filter(|lnb| lnb.shared.is_empty())
-                && using.iter().any(|one| satellite(one))
-            {
-                lnb_row(
-                    form,
-                    indent,
-                    ("tuner.lnb", &id),
-                    lnb,
-                    &mut setting.lnb,
-                    false,
-                );
-            }
-            if let Some(gain) = &held.controls.gain {
-                let applies = gain.deliveries.is_empty()
-                    || gain
-                        .deliveries
-                        .iter()
-                        .any(|one| using.contains(&system_name(one)));
-                if applies {
-                    gain_row(form, indent, &id, gain, &mut setting.gain);
-                }
-            }
-            if let Some(loop_through) = &held.controls.loop_through {
-                loop_through_row(form, indent, &id, loop_through, &mut setting.loop_through);
-            }
-            let mut probe = file.clone();
-            if let Some(had) = probe
-                .sources
-                .iter_mut()
-                .find(|one| one.label == source.label)
-            {
-                if setting.is_empty() {
-                    had.tuner_settings.remove(&id);
-                } else {
-                    had.tuner_settings.insert(id.clone(), setting.clone());
-                }
-            }
-            let each: Vec<String> = PLANS
-                .iter()
-                .filter(|plan| {
-                    let (_, system) = offered(plan);
-                    systems_of(&probe, tuner)
-                        .iter()
-                        .any(|one| zwcore::input::source::coaxd::same_system(one, system))
-                })
-                .map(|plan| {
-                    let (shown, _) = offered(plan);
-                    match reach.get(*plan).map(Vec::len) {
-                        Some(count) if count > 0 => format!("{shown} {count} 局"),
-                        _ => format!("{shown} 未実施"),
+                        form.ui.painter().galley(
+                            pos2(value_left, row.top()),
+                            galley,
+                            form.look.label,
+                        );
                     }
-                })
+                }
+                let using: Vec<String> = zwcore::input::source::coaxd::systems_used(
+                    &tuner.deliveries,
+                    &setting.to_core(),
+                )
+                .iter()
+                .map(|one| system_name(one))
                 .collect();
-            let row = form.line(24.0);
-            say(
-                form,
-                pos2(indent, row.center().y),
-                "スキャン結果",
-                form.look.label,
-                skin::TEXT_SIZE,
-            );
-            say(
-                form,
-                pos2(value_left, row.center().y),
-                &if each.is_empty() {
-                    String::from("—")
-                } else {
-                    each.join("・")
-                },
-                form.look.text,
-                skin::TEXT_SIZE,
-            );
-            let bottom = *form.at - 2.0;
-            form.ui.painter().rect_filled(
-                Rect::from_min_max(pos2(left, top + 2.0), pos2(left + 2.0, bottom)),
-                1.0,
-                form.look.edge,
-            );
-            *form.at += 4.0;
-            store(source, &id, setting);
+                if let Some(lnb) = held
+                    .controls
+                    .lnb
+                    .as_ref()
+                    .filter(|lnb| lnb.shared.is_empty())
+                    && using.iter().any(|one| satellite(one))
+                {
+                    lnb_row(
+                        form,
+                        indent,
+                        ("tuner.lnb", &id),
+                        lnb,
+                        &mut setting.lnb,
+                        None,
+                    );
+                }
+                if let Some(gain) = &held.controls.gain {
+                    let applies = gain.deliveries.is_empty()
+                        || gain
+                            .deliveries
+                            .iter()
+                            .any(|one| using.contains(&system_name(one)));
+                    if applies {
+                        gain_row(form, indent, &id, gain, &mut setting.gain);
+                    }
+                }
+                if let Some(loop_through) = &held.controls.loop_through {
+                    loop_through_row(form, indent, &id, loop_through, &mut setting.loop_through);
+                }
+                let mut probe = file.clone();
+                if let Some(had) = probe
+                    .sources
+                    .iter_mut()
+                    .find(|one| one.label == source.label)
+                {
+                    if setting.is_empty() {
+                        had.tuner_settings.remove(&id);
+                    } else {
+                        had.tuner_settings.insert(id.clone(), setting.clone());
+                    }
+                }
+                let each: Vec<String> = PLANS
+                    .iter()
+                    .filter(|plan| {
+                        let (_, system) = offered(plan);
+                        systems_of(&probe, tuner)
+                            .iter()
+                            .any(|one| zwcore::input::source::coaxd::same_system(one, system))
+                    })
+                    .map(|plan| {
+                        let (shown, _) = offered(plan);
+                        match reach.get(*plan).map(Vec::len) {
+                            Some(count) if count > 0 => format!("{shown} {count} 局"),
+                            _ => format!("{shown} 未実施"),
+                        }
+                    })
+                    .collect();
+                let row = form.line(24.0);
+                say(
+                    form,
+                    pos2(indent, row.center().y),
+                    "スキャン結果",
+                    form.look.label,
+                    skin::TEXT_SIZE,
+                );
+                say(
+                    form,
+                    pos2(value_left, row.center().y),
+                    &if each.is_empty() {
+                        String::from("—")
+                    } else {
+                        each.join("・")
+                    },
+                    form.look.text,
+                    skin::TEXT_SIZE,
+                );
+                let bottom = *form.at - 2.0;
+                form.ui.painter().rect_filled(
+                    Rect::from_min_max(pos2(left, top + 2.0), pos2(left + 2.0, bottom)),
+                    1.0,
+                    form.look.edge,
+                );
+                *form.at += 4.0;
+                store(source, &id, setting);
+            }
         }
     }
     pressed
@@ -1010,7 +1069,7 @@ fn lnb_row(
     id: (&str, &str),
     lnb: &zwcore::input::source::coaxd::LnbControl,
     value: &mut String,
-    shared: bool,
+    shared: Option<&str>,
 ) {
     let row = form.line(skin::SELECT_HEIGHT);
     say(
@@ -1038,15 +1097,73 @@ fn lnb_row(
     choices.push(("high", high.as_str()));
     let select = Rect::from_min_size(pos2(left + 84.0, row.top()), vec2(180.0, row.height()));
     form.select_at(select, id, value, &choices);
-    if shared {
+    if let Some(shared) = shared {
         say(
             form,
             pos2(select.right() + 10.0, row.center().y),
-            "全チューナー共通",
+            shared,
             form.look.label,
             skin::TEXT_SIZE - 1.0,
         );
     }
+}
+
+/// 一つの給電が幾つものチューナーに効く（coaxd の `shared` が `board` か `card`）。選んだ値を `ids` の全部に入れる。
+fn shared_lnb_row(
+    form: &mut Form<'_, '_>,
+    left: f32,
+    source: &mut crate::config::file::Source,
+    id: (&str, &str),
+    lnb: &zwcore::input::source::coaxd::LnbControl,
+    ids: &[String],
+    note: &str,
+) {
+    let mut value = ids
+        .iter()
+        .find_map(|id| source.tuner_settings.get(id).map(|one| one.lnb.clone()))
+        .unwrap_or_default();
+    let before = value.clone();
+    lnb_row(form, left, id, lnb, &mut value, Some(note));
+    if value != before {
+        for id in ids {
+            let mut setting = source.tuner_settings.get(id).cloned().unwrap_or_default();
+            setting.lnb.clone_from(&value);
+            store(source, id, setting);
+        }
+    }
+}
+
+/// 一枚の機器にまとめた板。シリアル番号が同じか、USB の場所が機器の中のハブのポート（最後の `.番号`）だけ違う物。
+/// 型番の違う物はまとめない。
+fn cards_of(
+    boards: &[zwcore::input::source::coaxd::Board],
+) -> Vec<Vec<&zwcore::input::source::coaxd::Board>> {
+    fn card(board: &zwcore::input::source::coaxd::Board) -> String {
+        if !board.serial.is_empty() {
+            return format!("{}|{}|serial:{}", board.backend, board.model, board.serial);
+        }
+        let at = if board.location.contains('.') {
+            board.location.as_str()
+        } else {
+            board.name.as_str()
+        };
+        let stem = match at.rsplit_once('.') {
+            Some((stem, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
+                stem
+            }
+            _ => at,
+        };
+        format!("{}|{}|at:{stem}", board.backend, board.model)
+    }
+    let mut cards: Vec<(String, Vec<&zwcore::input::source::coaxd::Board>)> = Vec::new();
+    for board in boards {
+        let key = card(board);
+        match cards.iter_mut().find(|(had, _)| *had == key) {
+            Some((_, boards)) => boards.push(board),
+            None => cards.push((key, vec![board])),
+        }
+    }
+    cards.into_iter().map(|(_, boards)| boards).collect()
 }
 
 /// チューナーが次のチューナーへ渡す出力。
@@ -1190,5 +1307,63 @@ fn gain_row(
             form.look.label,
             skin::TEXT_SIZE - 1.0,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cards_of;
+    use zwcore::input::source::coaxd::Board;
+
+    fn board(name: &str, model: &str, location: &str, serial: &str) -> Board {
+        Board {
+            name: name.to_owned(),
+            model: model.to_owned(),
+            backend: String::from("px3"),
+            location: location.to_owned(),
+            serial: serial.to_owned(),
+            tuners: Vec::new(),
+        }
+    }
+
+    fn names(boards: &[Board]) -> Vec<Vec<&str>> {
+        cards_of(boards)
+            .iter()
+            .map(|card| card.iter().map(|board| board.name.as_str()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn the_bridges_of_one_device_are_one_card() {
+        let boards = [
+            board("px3:p1-14.1", "PX-W3U", "", ""),
+            board("px3:p1-14.2", "PX-W3U", "", ""),
+            board("px3:p1-9", "PX-W3U", "", ""),
+        ];
+        assert_eq!(
+            names(&boards),
+            [vec!["px3:p1-14.1", "px3:p1-14.2"], vec!["px3:p1-9"]]
+        );
+    }
+
+    #[test]
+    fn cards_in_slots_or_of_other_models_stay_apart() {
+        let boards = [
+            board("pt3:0", "PT3", "PCI", ""),
+            board("pt3:1", "PT3", "PCI", ""),
+            board("px3:p1-14.1", "PX-W3U", "", ""),
+            board("px3:p1-14.2", "PX-Q3U", "", ""),
+        ];
+        assert_eq!(names(&boards).len(), 4);
+    }
+
+    #[test]
+    fn a_serial_number_says_which_card() {
+        let boards = [
+            board("a", "PX-Q3U", "1-2.1", "ABC"),
+            board("b", "PX-Q3U", "1-3.1", "ABC"),
+            board("c", "PX-Q3U", "1-2.2", "XYZ"),
+        ];
+        assert_eq!(names(&boards), [vec!["a", "b"], vec!["c"]]);
     }
 }
