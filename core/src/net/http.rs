@@ -484,7 +484,6 @@ fn failure(error: reqwest::Error) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read as _;
 
     use super::*;
     use crate::net::testing::{authority, serve};
