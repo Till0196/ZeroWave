@@ -26,14 +26,12 @@ pub fn never() -> Stop {
 pub enum Error {
     /// URL・メソッド・ヘッダーが正しくない。
     Argument(String),
-    /// 名前を引けない。
     Name,
     /// 内部ネットワーク（LAN など）の宛先で、許していない。
     Inner,
     Connect,
     Tls,
     Timeout,
-    /// [`Stop`] で止めた。
     Stopped,
     /// 応答の途中か、応答の前に切れた。
     Closed(String),
@@ -70,7 +68,6 @@ impl From<Error> for std::io::Error {
     }
 }
 
-/// URL のユーザー情報から `Authorization: Basic …` の値を作る。
 fn basic(user: &str, password: Option<&str>) -> String {
     let decoded = |text: &str| {
         let bytes = text.as_bytes();

@@ -22,7 +22,6 @@ pub(crate) type Conns = Slots<Conn>;
 #[derive(Debug)]
 pub(crate) struct Conn {
     conn: Box<dyn crate::net::Conn>,
-    /// 終わりを渡した。
     ended: bool,
     /// 次の `poll` に回す（上限を超えた分）。
     held: Option<Arrived>,

@@ -20,49 +20,6 @@ pub fn few_arenas() {
     }
 }
 
-/// プロセスが確保したメモリー（Windows はタスク マネージャーの「メモリ」と同じコミット、Linux は RSS）。
-pub fn used() -> Option<u64> {
-    #[cfg(windows)]
-    {
-        #[repr(C)]
-        #[derive(Default)]
-        struct Counters {
-            cb: u32,
-            page_fault_count: u32,
-            peak_working_set_size: usize,
-            working_set_size: usize,
-            quota_peak_paged_pool_usage: usize,
-            quota_paged_pool_usage: usize,
-            quota_peak_non_paged_pool_usage: usize,
-            quota_non_paged_pool_usage: usize,
-            pagefile_usage: usize,
-            peak_pagefile_usage: usize,
-            private_usage: usize,
-        }
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn GetCurrentProcess() -> isize;
-            fn K32GetProcessMemoryInfo(process: isize, counters: *mut Counters, cb: u32) -> i32;
-        }
-        let mut counters = Counters {
-            cb: std::mem::size_of::<Counters>() as u32,
-            ..Counters::default()
-        };
-        // SAFETY: 大きさを書いた構造体を渡し、そこへ書かせるだけ。
-        let done =
-            unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
-        (done != 0).then_some(counters.private_usage as u64)
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
-        let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
-        Some(pages * 4096)
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    None
-}
-
 const GIVE_BACK_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// 解放したメモリーを OS へ返す（大量に使った後、メモリー 1 GB の環境でスワップアウトされないように）。

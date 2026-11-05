@@ -128,9 +128,13 @@ ndk-context = { version = "0.1", optional = true }
 libc = { version = "0.2", optional = true }
 
 [dev-dependencies]
-rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 mediadecoder = { path = "../mediadecoder" }
 naga = { version = "30", features = ["wgsl-in"] }
+
+# ネットワーク通信のテストの認証局。ring は C を含むので、C のツールチェーンを用意しない Android では入れない
+# （Android では `net` を使わない）。
+[target.'cfg(not(target_os = "android"))'.dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 
 [lints]
 workspace = true

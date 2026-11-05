@@ -170,7 +170,6 @@ pub mod conn {
     }
 
     impl Arrived {
-        /// 本文・メッセージの大きさ。
         pub fn len(&self) -> usize {
             match self {
                 Self::Data(bytes) => bytes.len(),
@@ -183,7 +182,6 @@ pub mod conn {
             self.len() == 0
         }
 
-        /// これの後は来ない。
         pub fn is_last(&self) -> bool {
             matches!(self, Self::End { .. } | Self::Fail(_))
         }
@@ -252,7 +250,6 @@ pub mod conn {
         out
     }
 
-    /// WebSocket へ送るもの。
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Outgoing {
         Text(Vec<u8>),
@@ -316,7 +313,6 @@ mod network {
 
     /// 待たない接続。落とすと切る。
     pub trait Conn: Send + std::fmt::Debug {
-        /// 届いているものを一つ。無ければ `None`。
         fn next(&mut self) -> Option<Arrived>;
         /// WebSocket だけ。閉じていれば偽。
         fn send(&mut self, outgoing: Outgoing) -> bool;
