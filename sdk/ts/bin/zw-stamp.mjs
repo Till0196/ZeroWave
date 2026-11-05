@@ -7,7 +7,7 @@
 //   zw-stamp dist/index.js -o dist/name.wasm [package.json]
 //   zw-stamp dist/name.wasm [package.json]   （wasm にマニフェストだけを足す）
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const at = args.indexOf("-o");
@@ -46,6 +46,10 @@ function section(name, content) {
 
 const script = out !== undefined;
 const base = script ? new URL("../zwjs.wasm", import.meta.url) : input;
+if (script && !existsSync(base)) {
+  console.error("zwjs.wasm がありません。node sdk/ts/bin/fetch-runtime.mjs <リリースタグ> で取得してください");
+  process.exit(1);
+}
 const wasm = readFileSync(base);
 if (wasm.subarray(0, 4).toString("binary") !== "\0asm") {
   console.error(`${base}: wasm ではない`);
