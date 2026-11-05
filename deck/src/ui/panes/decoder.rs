@@ -159,7 +159,7 @@ fn video(video: &VideoStats) -> Vec<String> {
                 }
             ));
             if settings.telecine && !progressive {
-                // film と見ればフィールドマッチで組み合わせる。周期を掴めたときだけ 5 枚に 1 枚を抜いて 24 枚に揃える。
+                // film と見ればフィールドマッチで同じコマのフィールドからフレームを作る。周期を掴めたときだけ 5 枚に 1 枚を抜いて 24 枚に揃える。
                 let spent = &video.spent;
                 if spent.soft {
                     lines.push(String::from("検出: プログレッシブ"));

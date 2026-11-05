@@ -7,6 +7,9 @@
 pub mod android;
 #[cfg(all(feature = "d3d12", windows))]
 pub mod d3d12;
+/// Vulkan でレンダリングするとき、Windows のデコーダーのフレームを共有したバッファで受け取る。
+#[cfg(all(feature = "d3d12", windows))]
+pub mod d3d12_vulkan;
 #[cfg(feature = "vaapi")]
 pub mod dmabuf;
 /// `CVMetalTextureCache` でプレーンごとの `MTLTexture` にし、wgpu が包む。

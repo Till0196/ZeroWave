@@ -1506,8 +1506,21 @@ mod on_a_gpu {
             );
         }
         eprintln!("既定は {}", capability.affordable().name());
-        assert_eq!(capability.costs.len(), 4);
+        // 品質の順に測り、間に合う物で止まる。最後の Bob は測らずに選ぶ。
+        let ladder = zwcore::output::video::Deinterlace::LADDER;
+        let measured: Vec<_> = capability.costs.iter().map(|(step, _)| *step).collect();
+        assert!(!measured.is_empty() && measured.len() < ladder.len());
+        assert_eq!(measured, ladder[..measured.len()]);
+        let budget = zwcore::output::video::FIELD_BUDGET_MS * zwcore::output::video::AFFORDABLE;
+        let (last, before) = capability.costs.split_last().expect("one at least");
+        assert!(
+            before.iter().all(|(_, cost)| *cost > budget),
+            "間に合う物があればそこで止まる"
+        );
         assert!(capability.costs.iter().all(|(_, cost)| *cost > 0.0));
+        if last.1 <= budget {
+            assert_eq!(capability.affordable(), last.0);
+        }
     }
 
     /// What `push` says a frame became has to be what the schedule holds, including the

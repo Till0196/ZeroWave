@@ -408,7 +408,7 @@ fn sections(programme: &Programme) -> Vec<(String, String)> {
             crate::ui::text::badges::cleaned(&programme.detail),
         ));
     }
-    for (heading, value) in &programme.extended {
+    for (heading, value) in zwcore::guide::extended_of(programme).iter() {
         out.push((heading.clone(), value.clone()));
     }
 

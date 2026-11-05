@@ -32,6 +32,37 @@ impl Video {
         let pool_slots = slots(format, shape) + if super::hook::wants_frames() { 2 } else { 0 };
         #[cfg(not(feature = "plugins"))]
         let pool_slots = slots(format, shape);
+        Self::with_slots(device, queue, target, format, settings, shape, pool_slots)
+    }
+
+    /// 性能の計測用。数フレームしか入れないので、プールはいちばん浅くする（再生用と並んで確保される）。
+    pub(super) fn for_measure(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: wgpu::TextureFormat,
+        format: Format,
+        settings: Settings,
+    ) -> Result<Self, Error> {
+        Self::with_slots(
+            device,
+            queue,
+            target,
+            format,
+            settings,
+            Shape::Planar,
+            FEWEST_SLOTS,
+        )
+    }
+
+    fn with_slots(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: wgpu::TextureFormat,
+        format: Format,
+        settings: Settings,
+        shape: Shape,
+        pool_slots: usize,
+    ) -> Result<Self, Error> {
         let pool = Pool::new(device, format, pool_slots, shape)?;
         // Only the three plane path at ten bits samples integers; imported planes are normalised.
         let uint = format.depth > 8 && shape == Shape::Planar;

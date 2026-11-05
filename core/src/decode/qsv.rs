@@ -25,6 +25,10 @@ const SEQUENCE: i64 = 1 << 32;
 /// VPP の出力を、同期を待たずに何枚先まで進めるか（一フレームの二フィールド分）。
 const VPP_AHEAD: usize = 2;
 
+/// デコードを、同期を待たずに何枚先まで進めるか。一枚ずつ待つと GPU と CPU が交互に止まり、一枚が一フィールドの
+/// ストリーム（一秒に 60 枚）は非力な GPU で間に合わない。
+const DECODE_AHEAD: usize = 2;
+
 const TIMESTAMP_UNKNOWN: u64 = u64::MAX;
 
 const BUSY_TRIES: u32 = 1000;
@@ -512,6 +516,8 @@ pub struct Qsv {
     /// 同期を待たずに先へ進めた VPP の出力（古い順）。デコードと VPP を重ねて流すため、[`VPP_AHEAD`] 枚まで持つ。
     /// 三つ目は投げたときの [`Qsv::vpp_time`]（二枚目のフィールドに付け直す時刻）。
     vpp_pending: VecDeque<(mfx::SyncPoint, *mut mfx::FrameSurface1, u64)>,
+    /// 同期を待たずに先へ進めたデコードの出力（古い順）。[`DECODE_AHEAD`] 枚まで持つ。
+    decode_pending: VecDeque<(mfx::SyncPoint, *mut mfx::FrameSurface1)>,
     /// サーフェスを GPU のメモリに置いて D3D12 のレンダラーへ渡す（`None` ならメインメモリ）。session より後に drop する。
     #[cfg(all(windows, feature = "d3d12"))]
     gpu: Option<d3d11::Gpu>,
@@ -603,6 +609,7 @@ impl Qsv {
             said: false,
             vpp_time: TIMESTAMP_UNKNOWN,
             vpp_pending: VecDeque::new(),
+            decode_pending: VecDeque::new(),
             #[cfg(all(windows, feature = "d3d12"))]
             gpu,
             #[cfg(all(windows, feature = "d3d12"))]
@@ -654,7 +661,8 @@ impl Qsv {
         } else {
             mfx::IOPATTERN_OUT_SYSTEM_MEMORY
         };
-        param.async_depth = 1;
+        // 同期を待たずに次を投げるので、その分だけ先まで受け付けさせる。
+        param.async_depth = DECODE_AHEAD as u16 + 1;
         {
             let info = &mut param.mfx_mut().frame_info;
             info.fourcc = if wide {
@@ -841,10 +849,15 @@ impl Qsv {
             let Some(stream) = self.stream.as_mut() else {
                 return Ok(());
             };
+            // まだ受け取っていない出力は、ランタイムがロックを外していてもデコード先にしない。
+            let waiting = &self.decode_pending;
             let Some(work) = stream
                 .surfaces
                 .iter_mut()
-                .find(|surface| surface.free())
+                .find(|surface| {
+                    let at = std::ptr::from_ref(&surface.surface).cast_mut();
+                    surface.free() && !waiting.iter().any(|(_, out)| *out == at)
+                })
                 .map(|surface| std::ptr::from_mut(&mut surface.surface))
             else {
                 return Err(Error::Unavailable(String::from(
@@ -871,6 +884,7 @@ impl Qsv {
                     continue;
                 }
                 mfx::ERR_INCOMPATIBLE_VIDEO_PARAM => {
+                    self.settle_decode(0)?;
                     self.close_stream();
                     if end || !self.configure(&mut bitstream)? {
                         break;
@@ -891,17 +905,37 @@ impl Qsv {
                 }
                 break;
             }
-            // SAFETY: ランタイムが返した同期ポイント。
-            let status = unsafe { (entries.sync_operation)(self.session.raw, sync, 60_000) };
-            if status < mfx::ERR_NONE {
-                return Err(failed("MFXVideoCORE_SyncOperation", status));
-            }
-            self.receive(out)?;
+            self.decode_pending.push_back((sync, out));
+            self.settle_decode(DECODE_AHEAD)?;
         }
         let used = (bitstream.data_offset as usize).min(self.pending.len());
         self.pending.drain(..used);
         if end {
+            self.settle_decode(0)?;
             self.drain_vpp()?;
+        }
+        Ok(())
+    }
+
+    /// ランタイムが返した同期ポイントに届くまで待つ。
+    fn wait(&self, sync: mfx::SyncPoint) -> Result<(), Error> {
+        // SAFETY: ランタイムが返した同期ポイント。
+        let status =
+            unsafe { (self.session.entries().sync_operation)(self.session.raw, sync, 60_000) };
+        if status < mfx::ERR_NONE {
+            return Err(failed("MFXVideoCORE_SyncOperation", status));
+        }
+        Ok(())
+    }
+
+    /// 先へ進めたデコードの出力を、`keep` 枚を残して古い順に同期を待って受け取る。
+    fn settle_decode(&mut self, keep: usize) -> Result<(), Error> {
+        while self.decode_pending.len() > keep {
+            let Some((sync, out)) = self.decode_pending.pop_front() else {
+                break;
+            };
+            self.wait(sync)?;
+            self.receive(out)?;
         }
         Ok(())
     }
@@ -1004,17 +1038,12 @@ impl Qsv {
 
     /// 先へ進めた VPP の出力を、`keep` 枚を残して古い順に同期を待って受け取る。
     fn settle_vpp(&mut self, keep: usize) -> Result<(), Error> {
-        let entries = self.session.entries();
         let latest = self.vpp_time;
         while self.vpp_pending.len() > keep {
             let Some((sync, target, time)) = self.vpp_pending.pop_front() else {
                 break;
             };
-            // SAFETY: ランタイムが返した同期ポイント。
-            let status = unsafe { (entries.sync_operation)(self.session.raw, sync, 60_000) };
-            if status < mfx::ERR_NONE {
-                return Err(failed("MFXVideoCORE_SyncOperation", status));
-            }
+            self.wait(sync)?;
             // SAFETY: 同期を済ませた、VPP の出力の配列の中のサーフェス（ストリームを閉じるまで動かない）。
             let surface = unsafe { &*target };
             self.vpp_time = time;
@@ -1164,6 +1193,7 @@ impl Qsv {
         let entries = self.session.entries();
         // 先へ進めた VPP の出力は捨てる（サーフェスはストリームと一緒に消える）。
         self.vpp_pending.clear();
+        self.decode_pending.clear();
         if let Some(stream) = self.stream.take() {
             // SAFETY: 生きた session。閉じてからサーフェスを解放する。
             unsafe {
@@ -1215,6 +1245,10 @@ impl Decode for Qsv {
             && self.format.height == format.height
             && self.format.depth == format.depth;
         if self.stream.is_some() && !fits {
+            // 前の大きさで先へ進めた分は受け取ってから閉じる。
+            if let Err(error) = self.settle_decode(0) {
+                tracing::warn!("QSV {:?}: {error}", self.codec);
+            }
             self.close_stream();
         }
         self.format = format;

@@ -443,15 +443,16 @@ pub fn available(device: &wgpu::Device) -> Vec<String> {
         let vendor = device.adapter_info().vendor;
         let dx12 = device.adapter_info().backend == wgpu::Backend::Dx12;
         // バックエンドの GPU はレンダリングする GPU と別でもよい（[`bridge`] が転送する）。
+        // GPU のメーカーを先に見る：ランタイムは読み込むだけでメモリーを使い、プロセスが終わるまで残る。
         let present = |wanted: u32| vendor == wanted || bridge::has_vendor(wanted);
-        if dx12 && nvofa::supported() && present(NVIDIA) {
+        if dx12 && present(NVIDIA) && nvofa::supported() {
             found.push(format!("{}/nvofa", zv::HOST_FLOW));
         }
-        if dx12 && amf::supported() && present(AMD) {
+        if dx12 && present(AMD) && amf::supported() {
             found.push(format!("{}/amf", zv::HOST_INTERPOLATE));
         }
         #[cfg(feature = "qsv")]
-        if dx12 && vpl::supported() && present(INTEL) {
+        if dx12 && present(INTEL) && vpl::supported() {
             found.push(format!("{}/vpl", zv::HOST_INTERPOLATE));
         }
     }
@@ -466,8 +467,10 @@ pub fn available(device: &wgpu::Device) -> Vec<String> {
     }
     // Intel の VME はメインメモリを通すのでレンダリングする GPU を問わないが、それが Intel でなければ
     // シェーダーの実装の後ろ。
+    // VME は Intel の GPU にしか無い。OpenCL を開くと入っている全部の実装（NVIDIA なら CUDA ごと）が
+    // 読み込まれて残るので、Intel の GPU が無ければ開かない。
     #[cfg(any(windows, target_os = "linux"))]
-    let vme = opencl::supported();
+    let vme = intel_gpu(device) && opencl::supported();
     #[cfg(not(any(windows, target_os = "linux")))]
     let vme = false;
     let on_intel = device.adapter_info().vendor == INTEL;
@@ -479,6 +482,31 @@ pub fn available(device: &wgpu::Device) -> Vec<String> {
         found.push(format!("{}/intel", zv::HOST_FLOW));
     }
     found
+}
+
+/// この PC に Intel の GPU があるか（レンダリングに使っていなくても）。
+#[cfg(any(windows, target_os = "linux"))]
+fn intel_gpu(device: &wgpu::Device) -> bool {
+    if device.adapter_info().vendor == INTEL {
+        return true;
+    }
+    #[cfg(all(feature = "d3d12", windows))]
+    {
+        bridge::has_vendor(INTEL)
+    }
+    #[cfg(all(windows, not(feature = "d3d12")))]
+    {
+        true
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_dir("/sys/class/drm").is_ok_and(|cards| {
+            cards.filter_map(Result::ok).any(|card| {
+                std::fs::read_to_string(card.path().join("device/vendor"))
+                    .is_ok_and(|vendor| vendor.trim() == "0x8086")
+            })
+        })
+    }
 }
 
 pub(crate) struct Convert {

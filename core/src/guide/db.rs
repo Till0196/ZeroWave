@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rusqlite::{Connection, params};
@@ -106,6 +107,96 @@ fn busy(error: &rusqlite::Error) -> bool {
 }
 
 /// ファイルに残さない番組表（検索と過去の番組はこれで引く）。
+/// 拡張説明を読む、番組表のファイルへの読み取り専用の接続と、読んだ物の控え（画面は毎フレーム読む）。
+struct ExtendedReader {
+    path: std::path::PathBuf,
+    connection: Option<Connection>,
+    /// 番組と内容のハッシュごと（内容が変われば別の物）。
+    kept: std::collections::VecDeque<(ReadAt, Extended)>,
+}
+
+/// 番組（局・開始時刻）と拡張説明のハッシュ。
+type ReadAt = (Key, Moment, u64);
+
+type Extended = Arc<[(String, String)]>;
+
+static READER: std::sync::Mutex<Option<ExtendedReader>> = std::sync::Mutex::new(None);
+
+/// 控えておく番組の数（画面に並ぶ詳細は数件）。
+const READ_KEPT: usize = 64;
+
+/// 書いているあいだ読みで待つ長さ。画面のスレッドから読むので短く（読めなければ次のフレームで読み直す）。
+const READ_WAIT: std::time::Duration = std::time::Duration::from_millis(30);
+
+/// 拡張説明の一行（見出しと本文）。
+fn pair(row: &rusqlite::Row<'_>) -> rusqlite::Result<(String, String)> {
+    Ok((row.get(0)?, row.get(1)?))
+}
+
+/// 拡張説明を読むファイル。保存している番組表のファイルを開いたときに決める。
+pub fn set_reader(path: Option<std::path::PathBuf>) {
+    let mut reader = READER.lock().unwrap_or_else(|e| e.into_inner());
+    *reader = path.map(|path| ExtendedReader {
+        path,
+        connection: None,
+        kept: std::collections::VecDeque::new(),
+    });
+}
+
+/// 番組表のファイルから拡張説明を読む。読めなければ空（控えないので、次に頼まれたときに読み直す）。
+pub fn read_extended(key: Key, start: Moment, digest: u64) -> Extended {
+    let mut reader = READER.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(reader) = reader.as_mut() else {
+        return Arc::from([]);
+    };
+    if let Some((_, pairs)) = reader
+        .kept
+        .iter()
+        .find(|(at, _)| *at == (key, start, digest))
+    {
+        return Arc::clone(pairs);
+    }
+    if reader.connection.is_none() {
+        reader.connection = Connection::open_with_flags(
+            &reader.path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .and_then(|connection| {
+            connection.busy_timeout(READ_WAIT)?;
+            Ok(connection)
+        })
+        .ok();
+    }
+    let Some(connection) = reader.connection.as_ref() else {
+        return Arc::from([]);
+    };
+    let read: rusqlite::Result<Vec<(String, String)>> = connection
+        .prepare_cached(
+            "SELECT extended.head, extended.body FROM extended
+             JOIN programmes ON programmes.id = extended.programme
+             WHERE programmes.network = ?1 AND programmes.service = ?2 AND programmes.start = ?3
+             ORDER BY extended.position",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![key.network, key.service, start], pair)?
+                .collect()
+        });
+    match read {
+        Ok(pairs) => {
+            let pairs: Extended = Arc::from(pairs);
+            if reader.kept.len() >= READ_KEPT {
+                reader.kept.pop_front();
+            }
+            reader
+                .kept
+                .push_back(((key, start, digest), Arc::clone(&pairs)));
+            pairs
+        }
+        Err(_) => Arc::from([]),
+    }
+}
+
 pub fn open_in_memory() -> rusqlite::Result<Connection> {
     prepare(Connection::open_in_memory()?)
 }
@@ -280,6 +371,7 @@ struct Children<'c> {
     genres: rusqlite::Statement<'c>,
     search: rusqlite::Statement<'c>,
     clear_extended: rusqlite::Statement<'c>,
+    read_extended: rusqlite::Statement<'c>,
     clear_genres: rusqlite::Statement<'c>,
     clear_search: rusqlite::Statement<'c>,
 }
@@ -295,6 +387,9 @@ impl<'c> Children<'c> {
             )?,
             search: tx.prepare("INSERT INTO search (rowid, title, body) VALUES (?1, ?2, ?3)")?,
             clear_extended: tx.prepare("DELETE FROM extended WHERE programme = ?1")?,
+            read_extended: tx.prepare(
+                "SELECT head, body FROM extended WHERE programme = ?1 ORDER BY position",
+            )?,
             clear_genres: tx.prepare("DELETE FROM genres WHERE programme = ?1")?,
             clear_search: tx.prepare("DELETE FROM search WHERE rowid = ?1")?,
         })
@@ -308,17 +403,33 @@ impl<'c> Children<'c> {
     }
 
     fn write(&mut self, id: i64, programme: &Programme) -> rusqlite::Result<()> {
-        self.clear(id)?;
-        for (position, (head, body)) in programme.extended.iter().enumerate() {
-            self.extended
-                .execute(params![id, position as i64, head, body])?;
-        }
+        // メモリーから外した拡張説明はファイルのまま残し、検索の本文にはファイルの物を使う。
+        let kept: Vec<(String, String)> =
+            if programme.extended.is_empty() && programme.stored_extended.is_some() {
+                self.read_extended
+                    .query_map([id], pair)?
+                    .collect::<rusqlite::Result<_>>()?
+            } else {
+                Vec::new()
+            };
+        let extended: &[(String, String)] = if kept.is_empty() {
+            self.clear_extended.execute([id])?;
+            for (position, (head, body)) in programme.extended.iter().enumerate() {
+                self.extended
+                    .execute(params![id, position as i64, head, body])?;
+            }
+            &programme.extended
+        } else {
+            &kept
+        };
+        self.clear_genres.execute([id])?;
+        self.clear_search.execute([id])?;
         for genre in &programme.genres {
             self.genres
                 .execute(params![id, genre.large, genre.middle, genre.user])?;
         }
         let mut body = programme.detail.clone();
-        for (head, text) in &programme.extended {
+        for (head, text) in extended {
             body.push('\n');
             body.push_str(head);
             body.push('\n');
@@ -349,17 +460,20 @@ fn digest_of(programme: &Programme, rating: Option<u8>, rest: &[u8]) -> i64 {
         rating.unwrap_or(0xff),
     ]);
     eat(rest);
-    for (head, body) in &programme.extended {
-        eat(head.as_bytes());
-        eat(body.as_bytes());
-    }
+    // ファイルにだけ置いた拡張説明も同じ値になるよう、内容ではなくハッシュを入れる。
+    eat(&programme.extended_digest().to_le_bytes());
     for genre in &programme.genres {
         eat(&[genre.large, genre.middle, genre.user]);
     }
     hash as i64
 }
 
-pub fn load_after(connection: &Connection, after: Moment) -> rusqlite::Result<(Guide, Known)> {
+/// `lazy` なら拡張説明はメモリーに読まない（番組表のファイルから読む：[`read_extended`]）。
+pub fn load_after(
+    connection: &Connection,
+    after: Moment,
+    lazy: bool,
+) -> rusqlite::Result<(Guide, Known)> {
     let mut guide = Guide::new();
     let mut services = connection.prepare(
         "SELECT network, service, transport, name, provider, kind, scrambled, remote_key,
@@ -384,11 +498,20 @@ pub fn load_after(connection: &Connection, after: Moment) -> rusqlite::Result<(G
         guide.tell_service(row?);
     }
     let mut known = Known::new();
-    for (programme, digest) in read_programmes(
+    // 前の版が書いた digest（拡張説明を内容のまま入れていた）は、ここで今の作り方に直す。直さないと
+    // 次の保存で全番組を書き直すことになる（検索の本文ごとで、数万番組では数十秒ファイルを塞ぐ）。
+    let mut restamp: Vec<(i64, i64)> = Vec::new();
+    for (programme, written, id) in read_programmes(
         connection,
         "WHERE ends IS NULL OR ends > ?1 ORDER BY network, service, start",
         params![after],
+        lazy,
     )? {
+        let rating = programme.details.rating().map(|rating| rating.rating);
+        let digest = digest_of(&programme, rating, &rest_of(&programme));
+        if digest != written {
+            restamp.push((id, digest));
+        }
         if let Some(start) = programme.start {
             known.insert(
                 (programme.network, programme.service, start),
@@ -397,8 +520,24 @@ pub fn load_after(connection: &Connection, after: Moment) -> rusqlite::Result<(G
         }
         guide.tell(programme);
     }
+    if !restamp.is_empty()
+        && let Err(error) = write_digests(connection, &restamp)
+    {
+        tracing::warn!("番組表の digest を直せない（次に読むときにまた直す）: {error}");
+    }
     guide.forget_before(after);
     Ok((guide, known))
+}
+
+fn write_digests(connection: &Connection, digests: &[(i64, i64)]) -> rusqlite::Result<()> {
+    let tx = connection.unchecked_transaction()?;
+    {
+        let mut write = tx.prepare("UPDATE programmes SET digest = ?1 WHERE id = ?2")?;
+        for (id, digest) in digests {
+            write.execute(params![digest, id])?;
+        }
+    }
+    tx.commit()
 }
 
 pub fn load_range(
@@ -411,9 +550,10 @@ pub fn load_range(
         connection,
         "WHERE start < ?2 AND ends > ?1 AND ends <= ?3 ORDER BY network, service, start",
         params![from, until, before],
+        false,
     )?
     .into_iter()
-    .map(|(programme, _)| programme)
+    .map(|(programme, _, _)| programme)
     .collect())
 }
 
@@ -512,9 +652,10 @@ pub fn search(
         connection,
         &filter,
         rusqlite::params_from_iter(values.iter()),
+        false,
     )?
     .into_iter()
-    .map(|(programme, _)| programme)
+    .map(|(programme, _, _)| programme)
     .collect())
 }
 
@@ -534,11 +675,13 @@ pub fn count_by_network(
     rows.collect()
 }
 
+/// `lazy` なら拡張説明はメモリーに読まず、内容のハッシュだけ持つ（読むときは [`read_extended`]）。
 fn read_programmes(
     connection: &Connection,
     filter: &str,
     values: impl rusqlite::Params,
-) -> rusqlite::Result<Vec<(Programme, i64)>> {
+    lazy: bool,
+) -> rusqlite::Result<Vec<(Programme, i64, i64)>> {
     let mut extended = connection
         .prepare_cached("SELECT head, body FROM extended WHERE programme = ?1 ORDER BY position")?;
     let mut genres =
@@ -570,9 +713,14 @@ fn read_programmes(
     let mut read = Vec::new();
     for row in rows {
         let (id, mut programme, rating, rest, digest) = row?;
-        programme.extended = extended
-            .query_map([id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        let pairs: Vec<(String, String)> = extended
+            .query_map([id], pair)?
             .collect::<rusqlite::Result<_>>()?;
+        if lazy && !pairs.is_empty() {
+            programme.stored_extended = Some(super::extended_hash(&pairs));
+        } else {
+            programme.extended = pairs;
+        }
         programme.genres = genres
             .query_map([id], |row| {
                 Ok(Genre {
@@ -592,7 +740,7 @@ fn read_programmes(
                 });
         }
         let _ = read_rest(&rest, &mut programme);
-        read.push((programme, digest));
+        read.push((programme, digest, id));
     }
     Ok(read)
 }
@@ -807,7 +955,7 @@ mod tests {
         drop(connection);
 
         let connection = open(&dir.join("epg.sqlite")).unwrap();
-        let (back, known) = load_after(&connection, 0).unwrap();
+        let (back, known) = load_after(&connection, 0, false).unwrap();
         assert_eq!(known.len(), 2);
         assert_eq!(back.service(KEY).unwrap().name, "ゼロウェーブ総合");
         assert_eq!(back.service(KEY).unwrap().remote_key, Some(1));
@@ -848,7 +996,7 @@ mod tests {
                 dropped: 2
             }
         );
-        let (back, _) = load_after(&connection, 0).unwrap();
+        let (back, _) = load_after(&connection, 0, false).unwrap();
         assert_eq!(titles(&back), vec!["あと".to_owned()]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -858,7 +1006,7 @@ mod tests {
         let dir = scratch();
         let mut connection = open(&dir.join("epg.sqlite")).unwrap();
         save(&mut connection, &a_guide(KEY), &mut Known::new(), 0, 0).unwrap();
-        let (back, known) = load_after(&connection, 3000).unwrap();
+        let (back, known) = load_after(&connection, 3000, false).unwrap();
         assert_eq!(titles(&back), vec!["つぎ".to_owned()]);
         assert_eq!(known.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
@@ -889,7 +1037,7 @@ mod tests {
                 dropped: 0
             }
         );
-        let (back, _) = load_after(&connection, 0).unwrap();
+        let (back, _) = load_after(&connection, 0, false).unwrap();
         assert_eq!(
             titles(&back),
             vec!["はじめ".to_owned(), "つぎ（改）".to_owned()]
@@ -917,7 +1065,7 @@ mod tests {
         let past_titles: Vec<String> = past.iter().map(|p| p.title.clone()).collect();
         assert_eq!(past_titles, vec!["はじめ".to_owned()]);
         assert_eq!(past[0].extended.len(), 2);
-        let (now, _) = load_after(&connection, 3000).unwrap();
+        let (now, _) = load_after(&connection, 3000, false).unwrap();
         assert_eq!(titles(&now), vec!["あと".to_owned()]);
         let pruned = save(&mut connection, &later, &mut known, 3000, 2800).unwrap();
         assert_eq!(
@@ -940,8 +1088,8 @@ mod tests {
         drop(first);
         let mut a = open(&path).unwrap();
         let mut b = open(&path).unwrap();
-        let (mut guide_a, mut known_a) = load_after(&a, 0).unwrap();
-        let (mut guide_b, mut known_b) = load_after(&b, 0).unwrap();
+        let (mut guide_a, mut known_a) = load_after(&a, 0, false).unwrap();
+        let (mut guide_b, mut known_b) = load_after(&b, 0, false).unwrap();
         guide_b.tell(programme(KEY, 2, 2800, "つぎ（延長）"));
         let other = Key {
             network: 4,
@@ -958,7 +1106,7 @@ mod tests {
                 dropped: 0
             }
         );
-        let (back, _) = load_after(&a, 0).unwrap();
+        let (back, _) = load_after(&a, 0, false).unwrap();
         assert_eq!(
             titles(&back),
             vec!["はじめ（改）".to_owned(), "つぎ（延長）".to_owned()]
@@ -966,6 +1114,140 @@ mod tests {
         let bs: Vec<String> = back.programmes(other).map(|p| p.title.clone()).collect();
         assert_eq!(bs, vec!["BS の番組".to_owned()]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn digests_written_the_old_way_are_fixed_on_load_without_rewriting() {
+        let dir = scratch();
+        let path = dir.join("epg.sqlite");
+        let mut connection = open(&path).unwrap();
+        let mut guide = Guide::new();
+        for event in 0..20u16 {
+            let mut drama = programme(KEY, event, 1000 + i64::from(event) * 1800, "ドラマ");
+            drama.extended = vec![("出演".to_owned(), format!("出演者{event}"))];
+            guide.tell(drama);
+        }
+        let mut known = Known::new();
+        save(&mut connection, &guide, &mut known, 0, 0).unwrap();
+        // 前の版の digest（作り方が違う）の代わり。
+        connection
+            .execute("UPDATE programmes SET digest = digest + 1", [])
+            .unwrap();
+        let (mut loaded, mut known) = load_after(&connection, 0, true).unwrap();
+        let written: Vec<(At, i64)> = {
+            let mut read = connection
+                .prepare("SELECT network, service, start, digest FROM programmes")
+                .unwrap();
+            read.query_map([], |row| {
+                Ok(((row.get(0)?, row.get(1)?, row.get(2)?), row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+        assert_eq!(written.len(), 20);
+        for (at, digest) in &written {
+            assert_eq!(
+                known[at].0, *digest,
+                "読み込んだときにファイルの digest を直す"
+            );
+        }
+        assert_eq!(
+            save(&mut connection, &loaded, &mut known, 0, 0)
+                .unwrap()
+                .written,
+            0,
+            "直したので保存で書き直さない"
+        );
+        loaded.strip_extended();
+        let (again, _) = load_after(&connection, 0, false).unwrap();
+        assert_eq!(again.programme_count(), 20);
+        assert!(
+            again
+                .programmes(KEY)
+                .all(|p| p.extended.len() == 1 && p.extended[0].1.starts_with("出演者")),
+            "拡張説明はそのまま"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn extended_text_left_in_the_file_is_kept_searched_and_read_back() {
+        let dir = scratch();
+        let path = dir.join("epg.sqlite");
+        let mut connection = open(&path).unwrap();
+        let pairs = vec![("出演".to_owned(), "山田太郎".to_owned())];
+        let mut drama = programme(KEY, 2, 2800, "連続ドラマ");
+        drama.extended = pairs.clone();
+        let mut guide = Guide::new();
+        guide.tell(drama.clone());
+        let mut known = Known::new();
+        save(&mut connection, &guide, &mut known, 0, 0).unwrap();
+        assert_eq!(guide.strip_extended(), 1);
+        let held = |guide: &Guide| guide.programmes(KEY).next().unwrap().clone();
+        assert!(
+            held(&guide).extended.is_empty(),
+            "保存した物はメモリーから外す"
+        );
+        assert_eq!(
+            held(&guide).stored_extended,
+            Some(super::super::extended_hash(&pairs))
+        );
+        assert_eq!(
+            save(&mut connection, &guide, &mut known, 0, 0)
+                .unwrap()
+                .written,
+            0,
+            "外しても内容は同じなので書き直さない"
+        );
+        guide.tell(drama.clone());
+        assert!(
+            guide.programmes(KEY).next().unwrap().extended.is_empty(),
+            "同じ内容がまた届いてもメモリーへ戻さない"
+        );
+        // ほかの項目が変わって書き直しても、ファイルの拡張説明と検索の本文は残る。
+        let mut renamed = drama.clone();
+        renamed.extended.clear();
+        renamed.title = "連続ドラマ（再）".to_owned();
+        guide.tell(renamed);
+        assert_eq!(
+            save(&mut connection, &guide, &mut known, 0, 0)
+                .unwrap()
+                .written,
+            1
+        );
+        let filter = Filter {
+            query: "山田".to_owned(),
+            ..Filter::default()
+        };
+        let found: Vec<String> = search(&connection, &filter, 10)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.title)
+            .collect();
+        assert_eq!(found, vec!["連続ドラマ（再）".to_owned()]);
+        let (full, _) = load_after(&connection, 0, false).unwrap();
+        assert_eq!(full.programmes(KEY).next().unwrap().extended, pairs);
+        let (lazy, _) = load_after(&connection, 0, true).unwrap();
+        let lazy = lazy.programmes(KEY).next().unwrap().clone();
+        assert!(lazy.extended.is_empty());
+        set_reader(Some(path.clone()));
+        assert_eq!(&*super::super::extended_of(&lazy), pairs.as_slice());
+        // 違う内容が届けば、メモリーに置いて書き直す。
+        let mut rewritten = drama;
+        rewritten.title = "連続ドラマ（再）".to_owned();
+        rewritten.extended = vec![("出演".to_owned(), "鈴木花子".to_owned())];
+        guide.tell(rewritten.clone());
+        assert_eq!(held(&guide).extended, rewritten.extended);
+        save(&mut connection, &guide, &mut known, 0, 0).unwrap();
+        guide.strip_extended();
+        assert_eq!(
+            &*super::super::extended_of(&held(&guide)),
+            rewritten.extended.as_slice(),
+            "書き直した内容を読む（前の内容の控えは使わない）"
+        );
+        set_reader(None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1170,7 +1452,7 @@ mod tests {
         let mut connection = open(&path).unwrap();
         assert!(dir.join("epg.sqlite.unreadable").exists());
         save(&mut connection, &a_guide(KEY), &mut Known::new(), 0, 0).unwrap();
-        let (back, _) = load_after(&connection, 0).unwrap();
+        let (back, _) = load_after(&connection, 0, false).unwrap();
         assert_eq!(titles(&back).len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }

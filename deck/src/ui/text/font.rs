@@ -208,10 +208,8 @@ impl Face {
     }
 
     fn load(&self) -> Option<Loaded> {
-        let mut bytes = std::fs::read(&self.path).ok()?;
-        close_line_gap(&mut bytes);
         Some(Loaded {
-            bytes: Box::leak(bytes.into_boxed_slice()),
+            bytes: mapped(&self.path)?,
             index: self.index,
         })
     }
@@ -315,6 +313,17 @@ fn symbol_face(catalog: &Catalog) -> Option<(String, &CatalogFace)> {
     Some((face.family.clone(), face))
 }
 
+/// フォントファイルを書き込み時コピーで割り当て、lineGap を零にして手放さない。heap には読まない：ファイルの
+/// ページはほかのプロセスと共有のまま要る所だけ読まれ、書き換えた数ページだけが自分の物になる（TTC は 10〜30 MB）。
+fn mapped(path: &std::path::Path) -> Option<&'static [u8]> {
+    let file = std::fs::File::open(path).ok()?;
+    // SAFETY: 書き換えは自分の写しにだけ効き、ファイルは変えない。OS のフォントは使っている間は書き換えられない。
+    let mut map = unsafe { memmap2::MmapOptions::new().map_copy(&file) }.ok()?;
+    close_line_gap(&mut map);
+    let map: &'static memmap2::MmapMut = Box::leak(Box::new(map));
+    Some(map)
+}
+
 /// lineGap を零にして保持し続ける。ファイルごとに一つで、選び直しても読み直さない（TTC は 10〜30 MB）。
 fn load_face(face: &CatalogFace) -> Option<Loaded> {
     static FILES: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, &'static [u8]>> =
@@ -323,11 +332,9 @@ fn load_face(face: &CatalogFace) -> Option<Loaded> {
     let bytes = match files.get(&face.path) {
         Some(bytes) => *bytes,
         None => {
-            let mut bytes = std::fs::read(&face.path).ok()?;
-            close_line_gap(&mut bytes);
-            let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-            files.insert(face.path.clone(), leaked);
-            leaked
+            let bytes = mapped(&face.path)?;
+            files.insert(face.path.clone(), bytes);
+            bytes
         }
     };
     Some(Loaded {

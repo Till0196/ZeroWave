@@ -77,9 +77,11 @@ impl Capability {
         const GIVE_UP_AFTER: usize = 3;
         const GIVE_UP_OVER: f64 = 3.0;
         let (upload, staged_ms, mapped_ms) = Upload::measure(device, queue);
-        // Weave は候補に無いが基準として計測する（他との差がフィルターそのものの負荷）。
+        // 品質の順に測り、間に合う物が見つかったらやめる（[`Self::affordable`] が選ぶのはその物）。最後の Bob は
+        // 何も間に合わないときに測らずに選ぶ。方式ごとにシェーダーをコンパイルし、ドライバーはそのメモリーを
+        // 手放さないので、使わない方式は測らない。
         let mut costs = Vec::new();
-        let mut video = match Video::new(
+        let mut video = match Video::for_measure(
             device,
             queue,
             wgpu::TextureFormat::Rgba8Unorm,
@@ -97,12 +99,12 @@ impl Capability {
             }
         };
         let frame = measured(format);
-        for quality in [
-            Deinterlace::Weave,
-            Deinterlace::Bwdif,
-            Deinterlace::Yadif,
-            Deinterlace::Bob,
-        ] {
+        let budget = FIELD_BUDGET_MS * AFFORDABLE;
+        let tried = &Deinterlace::LADDER[..Deinterlace::LADDER.len() - 1];
+        for &quality in tried {
+            if costs.iter().any(|(_, cost)| *cost <= budget) {
+                break;
+            }
             video.set_settings(Settings {
                 deinterlace: quality,
                 ..video.settings()
@@ -199,12 +201,45 @@ pub(super) fn measured(format: Format) -> Frame {
     }
 }
 
+const STAGING_SETS: usize = 3;
+
+/// シェーダーが読むプレーンのテクスチャ一枚。
+fn plane(
+    device: &wgpu::Device,
+    label: &str,
+    (width, height): (u32, u32),
+    format: wgpu::TextureFormat,
+    usage: wgpu::TextureUsages,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | usage,
+        view_formats: &[],
+    })
+}
+
+fn views(planes: &[wgpu::Texture]) -> Vec<wgpu::TextureView> {
+    planes
+        .iter()
+        .map(|plane| plane.create_view(&wgpu::TextureViewDescriptor::default()))
+        .collect()
+}
+
 pub(super) fn padded(bytes: u32) -> u32 {
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     bytes.div_ceil(align) * align
 }
 
-/// マップしたままのバッファー。スロットが回ってきてもマップが戻っていなければステージング経由で送る。
+/// マップしたままのバッファー。順番が回ってきてもマップが戻っていなければステージング経由で送る。
 #[derive(Debug)]
 pub(super) struct Staging {
     pub(super) buffer: wgpu::Buffer,
@@ -238,7 +273,6 @@ impl Staging {
 pub(super) enum Store {
     Owned {
         planes: Vec<wgpu::Texture>,
-        staging: Vec<Staging>,
     },
     /// 自前の物は無い。view はデコーダーが書いたメモリにバインドした物で、毎フレーム変わる。
     Imported,
@@ -256,7 +290,13 @@ pub(super) struct Slot {
 /// 一つの形式のストリームを見せるテクスチャ。形式が変わったら（選局）作り直す。
 #[derive(Debug)]
 pub struct Pool {
+    /// 二つのフィールドを GPU で一枚のフレームに合成することがある（[`Self::woven_into`]）。
+    weaves: bool,
     pub(super) slots: Vec<Slot>,
+    /// マップしたままのバッファーの組（三プレーン分ずつ）。スロットごとには持たず、順に使い回す
+    /// （GPU のコピーとマップのし直しが済むまでの数で足りる）。
+    pub(super) staging: Vec<Vec<Staging>>,
+    pub(super) turn: usize,
     pub(super) sizes: [(u32, u32); 3],
     pub(super) bytes: u32,
     pub(super) format: Format,
@@ -287,63 +327,9 @@ impl Pool {
             (format.width.div_ceil(2), format.height.div_ceil(2)),
             (format.width.div_ceil(2), format.height.div_ceil(2)),
         ];
-        // ウィーブするフレーム（[`super::weave`]）は自前のテクスチャに書く。16 ビットの正規化形式はレンダーターゲットに
-        // できないことがあるので、10 ビットは 32 ビットの浮動小数点で持つ。
-        if shape == Shape::Biplanar && format.woven {
-            let (luma, chroma) = if format.depth > 8 {
-                (
-                    wgpu::TextureFormat::R32Float,
-                    wgpu::TextureFormat::Rg32Float,
-                )
-            } else {
-                (wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm)
-            };
-            let slots = (0..slots)
-                .map(|_| {
-                    let planes: Vec<wgpu::Texture> = [(sizes[0], luma), (sizes[1], chroma)]
-                        .into_iter()
-                        .map(|((width, height), format)| {
-                            device.create_texture(&wgpu::TextureDescriptor {
-                                label: Some("woven plane"),
-                                size: wgpu::Extent3d {
-                                    width,
-                                    height,
-                                    depth_or_array_layers: 1,
-                                },
-                                mip_level_count: 1,
-                                sample_count: 1,
-                                dimension: wgpu::TextureDimension::D2,
-                                format,
-                                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                                    | wgpu::TextureUsages::RENDER_ATTACHMENT,
-                                view_formats: &[],
-                            })
-                        })
-                        .collect();
-                    let views = planes
-                        .iter()
-                        .map(|plane| plane.create_view(&wgpu::TextureViewDescriptor::default()))
-                        .collect();
-                    Slot {
-                        store: Store::Owned {
-                            planes,
-                            staging: Vec::new(),
-                        },
-                        views,
-                        keep: None,
-                    }
-                })
-                .collect();
-            return Ok(Self {
-                slots,
-                sizes,
-                bytes,
-                format,
-                shape,
-            });
-        }
         if shape == Shape::Biplanar {
             return Ok(Self {
+                weaves: format.woven,
                 slots: (0..slots)
                     .map(|_| Slot {
                         store: Store::Imported,
@@ -351,53 +337,51 @@ impl Pool {
                         keep: None,
                     })
                     .collect(),
+                staging: Vec::new(),
+                turn: 0,
                 sizes,
                 bytes,
                 format,
                 shape,
             });
         }
-        let slots = (0..slots)
+        let slots: Vec<Slot> = (0..slots)
             .map(|_| {
-                let planes: Vec<wgpu::Texture> = (0..3)
-                    .map(|plane| {
-                        let (width, height) = sizes[plane];
-                        device.create_texture(&wgpu::TextureDescriptor {
-                            label: Some("plane"),
-                            size: wgpu::Extent3d {
-                                width,
-                                height,
-                                depth_or_array_layers: 1,
-                            },
-                            mip_level_count: 1,
-                            sample_count: 1,
-                            dimension: wgpu::TextureDimension::D2,
-                            format: texture_format,
-                            usage: wgpu::TextureUsages::TEXTURE_BINDING
-                                | wgpu::TextureUsages::COPY_DST,
-                            view_formats: &[],
-                        })
+                let planes: Vec<wgpu::Texture> = sizes
+                    .into_iter()
+                    .map(|size| {
+                        plane(
+                            device,
+                            "plane",
+                            size,
+                            texture_format,
+                            wgpu::TextureUsages::COPY_DST,
+                        )
                     })
                     .collect();
-                let views = planes
-                    .iter()
-                    .map(|plane| plane.create_view(&wgpu::TextureViewDescriptor::default()))
-                    .collect();
-                let staging = (0..3)
-                    .map(|plane| {
-                        let (width, height) = sizes[plane];
-                        Staging::new(device, u64::from(padded(width * bytes) * height))
-                    })
-                    .collect();
+                let views = views(&planes);
                 Slot {
-                    store: Store::Owned { planes, staging },
+                    store: Store::Owned { planes },
                     views,
                     keep: None,
                 }
             })
             .collect();
+        let staging = (0..STAGING_SETS.min(slots.len()))
+            .map(|_| {
+                (0..3)
+                    .map(|plane| {
+                        let (width, height) = sizes[plane];
+                        Staging::new(device, u64::from(padded(width * bytes) * height))
+                    })
+                    .collect()
+            })
+            .collect();
         Ok(Self {
+            weaves: false,
             slots,
+            staging,
+            turn: 0,
             sizes,
             bytes,
             format,
@@ -421,11 +405,50 @@ impl Pool {
         }
     }
 
-    pub(super) fn owned(&self, slot: usize) -> Option<&[wgpu::Texture]> {
-        match &self.slots.get(slot)?.store {
-            Store::Owned { planes, .. } => Some(planes),
-            Store::Imported => None,
+    /// 二つのフィールドを合成したフレームを書くスロットのテクスチャ。初めて使うときに作る：デコーダーが
+    /// 合成して渡すなら要らない（1080p の 10 ビットで一スロット 12 MB）。
+    pub(super) fn woven_into(
+        &mut self,
+        device: &wgpu::Device,
+        slot: usize,
+    ) -> Option<&[wgpu::Texture]> {
+        if !self.weaves {
+            return None;
         }
+        // 16 ビットの正規化形式はレンダーターゲットにできないことがあるので、10 ビットは 32 ビットの浮動小数点で持つ。
+        let formats = if self.format.depth > 8 {
+            [
+                wgpu::TextureFormat::R32Float,
+                wgpu::TextureFormat::Rg32Float,
+            ]
+        } else {
+            [wgpu::TextureFormat::R8Unorm, wgpu::TextureFormat::Rg8Unorm]
+        };
+        let sizes = [self.sizes[0], self.sizes[1]];
+        let slot = self.slots.get_mut(slot)?;
+        if let Store::Imported = slot.store {
+            let planes = sizes
+                .into_iter()
+                .zip(formats)
+                .map(|(size, format)| {
+                    plane(
+                        device,
+                        "woven plane",
+                        size,
+                        format,
+                        wgpu::TextureUsages::RENDER_ATTACHMENT,
+                    )
+                })
+                .collect();
+            slot.store = Store::Owned { planes };
+        }
+        let Store::Owned { planes } = &slot.store else {
+            return None;
+        };
+        // 取り込んだフレームを見せていたスロットでも、以後は合成した物を見せる。
+        slot.views = views(planes);
+        slot.keep = None;
+        Some(planes)
     }
 
     pub fn format(&self) -> Format {
@@ -453,18 +476,22 @@ impl Pool {
         let Store::Owned { .. } = self.slots[slot].store else {
             return;
         };
+        let set = (!self.staging.is_empty()).then(|| self.turn % self.staging.len());
+        self.turn = self.turn.wrapping_add(1);
         let mut encoder = None;
         for plane in 0..3 {
             let (width, height) = self.sizes[plane];
             let row = width * self.bytes;
             let stride = padded(row);
             let source = &frame.planes[plane];
-            let Store::Owned { planes, staging } = &self.slots[slot].store else {
+            let Store::Owned { planes } = &self.slots[slot].store else {
                 return;
             };
-            let mapped = upload == Upload::Mapped && staging[plane].ready.load(Ordering::Acquire);
-            if mapped {
-                let staging = &staging[plane];
+            let staging = set.map(|set| &self.staging[set][plane]);
+            let staging = staging.filter(|staging| {
+                upload == Upload::Mapped && staging.ready.load(Ordering::Acquire)
+            });
+            if let Some(staging) = staging {
                 if let Ok(mut view) = staging.buffer.get_mapped_range_mut(..) {
                     rows(source, row, stride, height, |at, bytes| {
                         view.slice(at..at + bytes.len()).copy_from_slice(bytes);
@@ -480,12 +507,9 @@ impl Pool {
                         label: Some("upload"),
                     })
                 });
-                let Store::Owned { planes, staging } = &self.slots[slot].store else {
-                    return;
-                };
                 encoder.copy_buffer_to_texture(
                     wgpu::TexelCopyBufferInfo {
-                        buffer: &staging[plane].buffer,
+                        buffer: &staging.buffer,
                         layout: wgpu::TexelCopyBufferLayout {
                             offset: 0,
                             bytes_per_row: Some(stride),
@@ -533,8 +557,8 @@ impl Pool {
         }
         if let Some(encoder) = encoder {
             queue.submit([encoder.finish()]);
-            if let Store::Owned { staging, .. } = &self.slots[slot].store {
-                for staging in staging {
+            if let Some(set) = set {
+                for staging in &self.staging[set] {
                     if !staging.ready.load(Ordering::Acquire) {
                         staging.remap();
                     }
