@@ -259,6 +259,14 @@ impl Decoding {
                     at + field
                 }),
             };
+            // 欠損で参照ピクチャーが遅れて出たときは、表示済みの時刻へ戻さない。
+            // 大きな差はストリームの時刻の切り替わりとして受ける。
+            if let (Some(at), Some((_, last))) = (at, open.last)
+                && at < last
+                && last - at < crate::engine::clock::HZ
+            {
+                continue;
+            }
             open.last = at.map(|at| (tag, at));
             while open.times.len() > MOST_HELD_TIMES {
                 let Some(oldest) = open.times.keys().next().copied() else {
