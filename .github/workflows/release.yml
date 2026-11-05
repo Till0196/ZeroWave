@@ -173,37 +173,9 @@ jobs:
           path: release/*
           if-no-files-found: error
 
-  sdk:
-    name: Build TypeScript SDK
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - name: Build the JavaScript runtime
-        run: |
-          rustup target add wasm32-wasip1
-          sh sdk/javy/build.sh
-
-      - name: Prepare the runtime
-        run: |
-          mkdir -p release
-          cp sdk/ts/zwjs.wasm release/zwjs.wasm
-          cd release
-          sha256sum zwjs.wasm > zwjs.wasm.sha256
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: release-sdk-ts
-          path: |
-            release/zwjs.wasm
-            release/zwjs.wasm.sha256
-          if-no-files-found: error
-
   release:
     name: Release
-    needs: [build, sdk]
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8

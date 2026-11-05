@@ -14,19 +14,19 @@ test("指定したリリースの wasm を検証し、不一致なら既存の�
   const digest = createHash("sha256").update(wasm).digest("hex");
   let valid = true;
   const server = createServer((request, response) => {
-    if (request.url === "/v1.2.3/zwjs.wasm") response.end(wasm);
-    else if (request.url === "/v1.2.3/zwjs.wasm.sha256") response.end(`${valid ? digest : "0".repeat(64)}  zwjs.wasm\n`);
+    if (request.url === "/sdk-v1.2.3/zwjs.wasm") response.end(wasm);
+    else if (request.url === "/sdk-v1.2.3/zwjs.wasm.sha256") response.end(`${valid ? digest : "0".repeat(64)}  zwjs.wasm\n`);
     else { response.statusCode = 404; response.end(); }
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
   const destination = join(directory, "zwjs.wasm");
-  await fetchRuntime("v1.2.3", base, destination);
+  await fetchRuntime("sdk-v1.2.3", base, destination);
   assert.deepEqual(await readFile(destination), wasm);
   await writeFile(destination, "old");
   valid = false;
-  await assert.rejects(fetchRuntime("v1.2.3", base, destination), /SHA-256/);
+  await assert.rejects(fetchRuntime("sdk-v1.2.3", base, destination), /SHA-256/);
   assert.equal(await readFile(destination, "utf8"), "old");
   await assert.rejects(fetchRuntime("latest", base, destination), /リリースタグ/);
 });

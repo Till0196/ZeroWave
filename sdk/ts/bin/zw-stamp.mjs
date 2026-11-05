@@ -47,7 +47,7 @@ function section(name, content) {
 const script = out !== undefined;
 const base = script ? new URL("../zwjs.wasm", import.meta.url) : input;
 if (script && !existsSync(base)) {
-  console.error("zwjs.wasm がありません。node sdk/ts/bin/fetch-runtime.mjs <リリースタグ> で取得してください");
+  console.error("zwjs.wasm がありません。node sdk/ts/bin/fetch-runtime.mjs <SDKリリースタグ> で取得してください");
   process.exit(1);
 }
 const wasm = readFileSync(base);

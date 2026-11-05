@@ -5,8 +5,8 @@ import { rename, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 export async function fetchRuntime(tag, base, destination) {
-  if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(tag)) {
-    throw new Error("リリースタグを指定してください（例: v0.1.4）");
+  if (!/^sdk-v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(tag)) {
+    throw new Error("リリースタグを指定してください（例: sdk-v0.1.0）");
   }
   const root = `${base}/${tag}`;
   async function get(name) {
