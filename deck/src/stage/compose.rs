@@ -299,6 +299,7 @@ impl Stage {
                 fraction: 0.0,
                 position: 0,
                 length: 0,
+                read: 0.0,
                 paused: true,
                 buffering: false,
                 pace: 1.0,

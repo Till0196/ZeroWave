@@ -198,6 +198,8 @@ pub struct Progress {
     /// 先頭から、90 kHz。
     pub position: i64,
     pub length: i64,
+    /// どこまで読み込んだか（0〜1、`fraction` 以上）。
+    pub read: f32,
     pub paused: bool,
     /// 録画の読み込みが詰まって一時停止しているか（ユーザーが止めたのではない）。
     pub buffering: bool,

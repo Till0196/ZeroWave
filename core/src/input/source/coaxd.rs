@@ -158,7 +158,9 @@ pub(crate) fn endpoint_of(written: &str) -> Endpoint {
     }
 }
 
-pub use coax::daemon::{Board, Controls, GainControl, Held, LnbControl, Tuner as DaemonTuner};
+pub use coax::daemon::{
+    Board, Controls, GainControl, Held, LnbControl, LoopThroughControl, Tuner as DaemonTuner,
+};
 
 /// 応答が無く、この PC のソケットなら起動して待つ。バージョンを返す。
 pub fn reach(daemon: &Daemon) -> Result<String, Error> {
@@ -264,6 +266,9 @@ pub fn explain_apart(text: &str) -> (String, String) {
             }
             ("unsupported", "gain") => {
                 "このチューナーはそのゲインを設定できません（チューナー設定を確かめてください）"
+            }
+            ("unsupported", "loop_through") => {
+                "このチューナーはループスルー出力をそのとおりに設定できません（チューナー設定を確かめてください）"
             }
             // 同期したのに ISDB-S のフレームが無い：ISDB-S3 か、未使用のトランスポンダ。
             ("tune_failed", _) if said.iter().any(|one| one.contains("carries no stream")) => {

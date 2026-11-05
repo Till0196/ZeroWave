@@ -154,6 +154,21 @@ impl Buffer {
         self.lock().bytes
     }
 
+    /// いちばん遅いリーダーがまだ読んでいないバイト数。
+    pub fn unread(&self) -> usize {
+        let inner = self.lock();
+        let Some(&slowest) = inner.readers.values().min() else {
+            return 0;
+        };
+        let skip = slowest.saturating_sub(inner.first) as usize;
+        inner
+            .held
+            .iter()
+            .skip(skip)
+            .map(|block| block.bytes.len())
+            .sum()
+    }
+
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -272,6 +287,20 @@ impl std::io::Read for Reading {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_is_left_to_read_does_not_count_what_was_read() {
+        let buffer = Buffer::new(8, true);
+        let mut reader = buffer.reader();
+        for _ in 0..4 {
+            buffer.push(&[0; 10]);
+        }
+        assert_eq!(buffer.unread(), 40);
+        reader.next();
+        reader.next();
+        assert_eq!(buffer.unread(), 20);
+        assert_eq!(buffer.held(), 40);
+    }
     use std::io::Read;
 
     #[test]

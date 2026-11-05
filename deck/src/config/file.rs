@@ -851,11 +851,18 @@ pub struct TunerSetting {
     /// 前段の利得：空（起動時のまま）、`auto`、`min`、`max`、`+13dB`。
     #[serde(skip_serializing_if = "String::is_empty")]
     pub gain: String,
+    /// チューナーのループスルー出力：空（起動時のまま）、`max`、`high`、`mid`、`low`。入切だけのチューナーは
+    /// `max` が入、`low` が切。
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub loop_through: String,
 }
 
 impl TunerSetting {
     pub fn is_empty(&self) -> bool {
-        self.systems.is_empty() && self.lnb.is_empty() && self.gain.trim().is_empty()
+        self.systems.is_empty()
+            && self.lnb.is_empty()
+            && self.gain.trim().is_empty()
+            && self.loop_through.trim().is_empty()
     }
 
     pub fn to_core(&self) -> zwcore::input::source::coaxd::TunerSetting {
@@ -866,6 +873,7 @@ impl TunerSetting {
                 other => other.to_owned(),
             },
             gain: self.gain.trim().to_owned(),
+            loop_through: self.loop_through.trim().to_owned(),
         }
     }
 }
@@ -955,6 +963,19 @@ impl File {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_loop_through_output_is_kept_and_reaches_coaxd() {
+        let setting: TunerSetting = toml::from_str("loop_through = \"low\"").unwrap();
+        assert!(!setting.is_empty());
+        let core = setting.to_core();
+        assert_eq!(core.words("ISDBT"), [("loop_through", String::from("low"))]);
+        assert_eq!(
+            toml::to_string(&setting).unwrap().trim(),
+            "loop_through = \"low\""
+        );
+        assert!(TunerSetting::default().is_empty());
+    }
 
     #[test]
     fn recording_keeps_everything_by_default() {
