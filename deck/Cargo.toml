@@ -68,6 +68,7 @@ zwsdk = { path = "../sdk", features = ["host"] }
 isdb = { git = "https://github.com/Till0196/coax-rs" }
 png = "0.18"
 flate2 = "1.1"
+memmap2 = "0.9"
 crc32fast = "1.5"
 adler2 = "2"
 # std と parking_lot は egui-wgpu の既定を外したぶん。

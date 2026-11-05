@@ -399,22 +399,8 @@ impl Device {
             return Err(Error::Unavailable(String::from("コピーキューがありません")));
         };
         copy.begin(None)?;
-        for (layout, subresource) in layouts.iter().zip(planes) {
-            let source = D3D12_TEXTURE_COPY_LOCATION {
-                pResource: borrow(&buffer),
-                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                    PlacedFootprint: *layout,
-                },
-            };
-            let destination = D3D12_TEXTURE_COPY_LOCATION {
-                pResource: borrow(texture),
-                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                    SubresourceIndex: *subresource,
-                },
-            };
-            copy.region(&destination, &source);
+        for (layout, plane) in layouts.iter().zip(planes) {
+            copy.region(&subresource(texture, *plane), &placed(&buffer, *layout));
         }
         let value = copy.submit()?;
         // 待たない。フェンスの値を覚え、次の `DecodeFrame` のキューに待たせる（[`Device::decode`]）。

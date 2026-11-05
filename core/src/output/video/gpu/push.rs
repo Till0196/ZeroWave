@@ -110,7 +110,7 @@ impl Video {
         }
         self.spent.upload += began.elapsed();
         self.spent.pushed += 1;
-        // プログレッシブはそのまま。film はフィールドを組み合わせ、周期が分かれば 5 フレームに 1 フレームを抜く。60i は候補の方式から選ぶ。
+        // プログレッシブはそのまま。film は同じコマのフィールドでフレームを作り、周期が分かれば 5 フレームに 1 フレームを抜く。60i は候補の方式から選ぶ。
         let judge = self
             .matcher
             .as_ref()
@@ -138,7 +138,7 @@ impl Video {
             field::plan(&about, self.settings.deinterlace)
         };
         let outputs = self.plan_outputs(plan.len());
-        // ウィーブしたフレームの出力の位置は、後のフィールドの時刻からフィールドの長さで数える（先のフィールドは -1）。
+        // 合成したフレームの出力の位置は、後のフィールドの時刻からフィールドの長さで数える（先のフィールドは -1）。
         if woven {
             for phase in &mut self.last_phases {
                 *phase = *phase * 2.0 - 1.0;
@@ -154,7 +154,7 @@ impl Video {
         } else {
             (&second, &first)
         };
-        let Some(into) = self.pool.owned(slot) else {
+        let Some(into) = self.pool.woven_into(&self.device, slot) else {
             return;
         };
         let weave = self
@@ -269,26 +269,11 @@ impl Video {
             .import
             .as_mut()
             .ok_or(Error::Unsupported("a device that cannot import a frame"))?;
-        let views = import.views(frame)?;
+        let (views, keep) = import.take(frame, &self.queue)?;
         if views.len() != self.shape.textures() as usize {
             return Err(Error::Unsupported("a frame of the wrong number of planes"));
         }
-        // 書き終わるのを、このキューの GPU の上で待つ（後の送信が読むのはそれから）。
-        if let Some((fence, value)) = frame.ready.as_ref() {
-            // SAFETY: キューを借りて、生きているフェンスで待機を投入するだけ。
-            let waited = unsafe {
-                self.queue
-                    .as_hal::<wgpu::hal::api::Dx12>()
-                    .map(|hal| hal.as_raw().Wait(fence, *value))
-            };
-            if !matches!(waited, Some(Ok(()))) {
-                return Err(Error::Unsupported(
-                    "a frame whose fence cannot be waited on",
-                ));
-            }
-        }
-        // スロットがこのフレームを持つ間、デコーダーにそのテクスチャを使わせない（`decode::d3d12::Frame::lease`）。
-        Ok((views, frame.lease.clone()))
+        Ok((views, keep))
     }
 
     #[cfg(all(feature = "android", target_os = "android"))]

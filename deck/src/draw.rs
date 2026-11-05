@@ -16,11 +16,27 @@ pub mod sprites;
 
 /// wgpu のインスタンス。別ウィンドウと共有する（別のインスタンスで作ったサーフェスは使えない）。
 pub fn instance_of(backends: Option<wgpu::Backends>) -> wgpu::Instance {
-    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-    if let Some(backends) = backends {
-        descriptor.backends = backends;
+    let descriptor = || {
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        if let Some(backends) = backends {
+            descriptor.backends = backends;
+        }
+        descriptor
+    };
+    // Windows で指定が無ければ DX12 だけ。Vulkan は初期化するだけで各社のドライバー（ICD）を読み込み、
+    // 使わなくても数十 MB 残る。DX12 で描ける GPU が無いときと、Vulkan を指定したときは従来どおり。
+    #[cfg(windows)]
+    if backends.is_none() && std::env::var_os("WGPU_BACKEND").is_none() {
+        let dx12 = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::DX12,
+            ..descriptor()
+        });
+        if zwcore::output::video::gpu::Gpu::draws_on_hardware(&dx12) {
+            return dx12;
+        }
+        tracing::info!("DX12 で描ける GPU が無いので、ほかのバックエンドも使う");
     }
-    wgpu::Instance::new(descriptor)
+    wgpu::Instance::new(descriptor())
 }
 /// egui-wgpu でレンダリングする。GPU のデバイスを失っていれば何もせず `None`。
 /// egui-wgpu はデバイスを失った後に呼ぶと、ステージングバッファを作れずに panic する（`Queue::write_buffer_with` が

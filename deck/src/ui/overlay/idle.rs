@@ -242,10 +242,11 @@ pub fn show(ui: &mut Ui, frame: Rect, idle: &Idle) {
     }
 
     // 拡張形式は決まった高さの背景の中に。入らない分は背景で切る。
-    if !programme.extended.is_empty() {
+    let extended = zwcore::guide::extended_of(programme);
+    if !extended.is_empty() {
         let inside = ground(&painter, &place);
         let mut y = EXTENDED_TOP + 12.0;
-        for (heading, value) in &programme.extended {
+        for (heading, value) in extended.iter() {
             if y >= EXTENDED_TOP + EXTENDED_HEIGHT - 12.0 {
                 break;
             }
@@ -362,9 +363,13 @@ mod tests {
             assert!(texts.len() >= 10, "{}", texts.len());
             for rect in &texts {
                 assert!(frame.contains_rect(*rect), "{rect:?}");
+                // 文字は画素に揃えて置かれるので、1 画素までは許す。
                 assert!(
-                    rect.left() >= origin.x + LEFT * s - 0.5
-                        && rect.right() <= origin.x + (LEFT + COLUMN) * s + 0.5
+                    rect.left() >= origin.x + LEFT * s - 1.0
+                        && rect.right() <= origin.x + (LEFT + COLUMN) * s + 1.0,
+                    "{width}: {rect:?} が列（{} 〜 {}）の外",
+                    origin.x + LEFT * s,
+                    origin.x + (LEFT + COLUMN) * s
                 );
             }
             for (nth, one) in texts.iter().enumerate() {

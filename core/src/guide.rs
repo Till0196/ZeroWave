@@ -510,7 +510,11 @@ pub struct Programme {
     pub seconds: Option<u32>,
     pub title: String,
     pub detail: String,
+    /// 読むときは [`extended_of`]：番組表のファイルに保存した物はメモリーから外す（[`Self::stored_extended`]）。
     pub extended: Vec<(String, String)>,
+    /// 拡張説明を番組表のファイルにだけ置いている（メモリーの `extended` は空）。値は内容のハッシュ
+    /// （[`extended_hash`]）で、同じ内容がまた届いてもメモリーへ戻さない。
+    pub stored_extended: Option<u64>,
     pub genres: Vec<Genre>,
     pub video: Option<Picture>,
     pub audios: Vec<Component>,
@@ -522,8 +526,71 @@ pub struct Programme {
     pub details: Details,
 }
 
+/// 番組の付加情報。ほとんどの番組では空なので、空のうちは確保しない（番組表は数万番組を持つ）。
+/// 読むときは空の [`DetailsData`] が見え、書くと確保する。
+#[derive(Debug, Clone, Default)]
+pub struct Details(Option<Box<DetailsData>>);
+
+static NO_DETAILS: DetailsData = DetailsData {
+    ratings: Vec::new(),
+    contracts: Vec::new(),
+    series: None,
+    groups: None,
+    region: None,
+    links: Vec::new(),
+    multimedia: Vec::new(),
+};
+
+impl std::ops::Deref for Details {
+    type Target = DetailsData;
+
+    fn deref(&self) -> &DetailsData {
+        self.0.as_deref().unwrap_or(&NO_DETAILS)
+    }
+}
+
+impl std::ops::DerefMut for Details {
+    fn deref_mut(&mut self) -> &mut DetailsData {
+        self.0.get_or_insert_with(Box::default)
+    }
+}
+
+impl PartialEq for Details {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for Details {}
+
+impl From<DetailsData> for Details {
+    fn from(data: DetailsData) -> Self {
+        let mut details = Self::default();
+        if data != DetailsData::default() {
+            details.0 = Some(Box::new(data));
+        }
+        details
+    }
+}
+
+impl Details {
+    pub fn is_empty(&self) -> bool {
+        **self == NO_DETAILS
+    }
+
+    fn fill_from(&mut self, told: Details) {
+        let Some(told) = told.0 else {
+            return;
+        };
+        match self.0.as_mut() {
+            Some(data) => data.fill_from(*told),
+            None => self.0 = Some(told),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct Details {
+pub struct DetailsData {
     pub ratings: Vec<isdb::descriptors::ParentalRating>,
     pub contracts: Vec<isdb::descriptors::CaContract>,
     pub series: Option<isdb::descriptors::Series>,
@@ -533,7 +600,7 @@ pub struct Details {
     pub multimedia: Vec<isdb::descriptors::MultimediaService>,
 }
 
-impl Details {
+impl DetailsData {
     pub fn minimum_age(&self) -> Option<u8> {
         self.rating()
             .and_then(|rating| isdb::descriptors::rating_age(rating.rating))
@@ -546,11 +613,7 @@ impl Details {
             .or_else(|| self.ratings.first())
     }
 
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
-
-    fn fill_from(&mut self, told: Details) {
+    fn fill_from(&mut self, told: DetailsData) {
         if self.ratings.is_empty() {
             self.ratings = told.ratings;
         }
@@ -586,6 +649,7 @@ impl Programme {
             title: String::new(),
             detail: String::new(),
             extended: Vec::new(),
+            stored_extended: None,
             genres: Vec::new(),
             video: None,
             audios: Vec::new(),
@@ -631,9 +695,7 @@ impl Programme {
         if !told.detail.is_empty() {
             self.detail = told.detail;
         }
-        if !told.extended.is_empty() {
-            self.extended = told.extended;
-        }
+        self.take_extended(told.extended, told.stored_extended);
         if !told.genres.is_empty() {
             self.genres = told.genres;
         }
@@ -663,8 +725,8 @@ impl Programme {
         if self.detail.is_empty() {
             self.detail = told.detail;
         }
-        if self.extended.is_empty() {
-            self.extended = told.extended;
+        if self.extended.is_empty() && self.stored_extended.is_none() {
+            self.take_extended(told.extended, told.stored_extended);
         }
         if self.genres.is_empty() {
             self.genres = told.genres;
@@ -682,6 +744,25 @@ impl Programme {
             self.shared = told.shared;
         }
         self.details.fill_from(told.details);
+    }
+
+    /// 届いた拡張説明に替える。ファイルにある物と同じなら替えない（メモリーへ戻して写すことになる）。
+    fn take_extended(&mut self, told: Vec<(String, String)>, stored: Option<u64>) {
+        if !told.is_empty() {
+            if self.stored_extended != Some(extended_hash(&told)) {
+                self.extended = told;
+                self.stored_extended = None;
+            }
+        } else if stored.is_some() && stored != self.stored_extended {
+            self.extended.clear();
+            self.stored_extended = stored;
+        }
+    }
+
+    /// 拡張説明の内容のハッシュ。ファイルにあるかどうかに関わらず同じ値。
+    pub fn extended_digest(&self) -> u64 {
+        self.stored_extended
+            .unwrap_or_else(|| extended_hash(&self.extended))
     }
 
     pub fn at(&self, moment: Moment) -> bool {
@@ -787,8 +868,9 @@ impl Arrival {
 #[derive(Debug, Clone)]
 pub struct Guide {
     services: BTreeMap<Key, Service>,
-    /// 開始時刻をキーにする（イベント ID だと時刻が変わった番組が二重に並ぶ）。
-    programmes: BTreeMap<Key, BTreeMap<Moment, Programme>>,
+    /// 開始時刻をキーにする（イベント ID だと時刻が変わった番組が二重に並ぶ）。サービスごとに共有し、変えるときだけ
+    /// 写す：番組表は更新のたびに写して UI へ渡すので、まるごと写すと一週間分（100 MB を超える）が何組も並ぶ。
+    programmes: BTreeMap<Key, Arc<BTreeMap<Moment, Programme>>>,
     arrivals: BTreeMap<Key, Arrival>,
     logos: BTreeMap<(u16, u8, u16), Arc<Logo>>,
     /// 見える画素が一つも無いロゴ（受け取ったときに調べる）。表示では無いものとして扱う。
@@ -1162,7 +1244,7 @@ impl Guide {
             self.tell_service(service);
         }
         for (_, by_time) in other.programmes {
-            for (_, programme) in by_time {
+            for (_, programme) in Arc::unwrap_or_clone(by_time) {
                 self.tell(programme);
             }
         }
@@ -1175,7 +1257,7 @@ impl Guide {
     }
 
     pub fn programme_count(&self) -> usize {
-        self.programmes.values().map(BTreeMap::len).sum()
+        self.programmes.values().map(|by_time| by_time.len()).sum()
     }
 
     pub fn tell(&mut self, programme: Programme) {
@@ -1183,7 +1265,13 @@ impl Guide {
         let Some(start) = programme.start else {
             return;
         };
-        let by_time = self.programmes.entry(programme.key()).or_default();
+        let key = programme.key();
+        // 先に変わるかを読むだけで決め、変わるときだけそのサービスの番組を写す（同じ内容は何度も届く）。
+        let empty = BTreeMap::new();
+        let by_time = self
+            .programmes
+            .get(&key)
+            .map_or(&empty, |by_time| &**by_time);
         // 現在・次の番組は固定する（古い編成で入れ替わってちらつくため）。
         if programme.told != Told::Now
             && by_time.values().any(|known| {
@@ -1195,25 +1283,25 @@ impl Guide {
             return;
         }
         // 重なる番組を消すのは現在・次だけ（ほかは届く順で正しい番組を消しかねない）。
+        let mut gone: Vec<Moment> = Vec::new();
         if programme.told == Told::Now
             && let Some(ends) = programme.ends()
         {
-            let overlapped: Vec<Moment> = by_time
-                .iter()
-                .filter(|(at, known)| {
-                    known.event != programme.event
-                        && **at < ends
-                        && known.ends().is_none_or(|known_ends| known_ends > start)
-                })
-                .map(|(at, _)| *at)
-                .collect();
-            for at in overlapped {
-                by_time.remove(&at);
-            }
+            gone.extend(
+                by_time
+                    .iter()
+                    .filter(|(at, known)| {
+                        known.event != programme.event
+                            && **at < ends
+                            && known.ends().is_none_or(|known_ends| known_ends > start)
+                    })
+                    .map(|(at, _)| *at),
+            );
         }
-        match by_time.get_mut(&start) {
+        let put = match by_time.get(&start).filter(|_| !gone.contains(&start)) {
             Some(known) => {
                 // 放送からの情報を優先する。Mirakurun は空いた項目だけ足し、スケジュールは Mirakurun を上書きしない。
+                let mut merged = known.clone();
                 match (known.told, programme.told) {
                     (Told::Mirakurun, Told::Broadcast) => return,
                     (Told::Now, Told::Broadcast | Told::Mirakurun)
@@ -1222,25 +1310,30 @@ impl Guide {
                         return;
                     }
                     (Told::Broadcast | Told::Now, Told::Mirakurun)
-                    | (Told::Now, Told::Broadcast) => {
-                        known.fill_from(programme);
-                        return;
-                    }
-                    _ => {}
+                    | (Told::Now, Told::Broadcast) => merged.fill_from(programme),
+                    _ => merged.absorb(programme),
                 }
-                known.absorb(programme);
+                (merged != *known).then_some(merged)
             }
             None => {
-                let moved: Vec<Moment> = by_time
-                    .iter()
-                    .filter(|(_, known)| known.event == programme.event)
-                    .map(|(at, _)| *at)
-                    .collect();
-                for at in moved {
-                    by_time.remove(&at);
-                }
-                by_time.insert(start, programme);
+                gone.extend(
+                    by_time
+                        .iter()
+                        .filter(|(_, known)| known.event == programme.event)
+                        .map(|(at, _)| *at),
+                );
+                Some(programme)
             }
+        };
+        if gone.is_empty() && put.is_none() {
+            return;
+        }
+        let by_time = Arc::make_mut(self.programmes.entry(key).or_default());
+        for at in gone {
+            by_time.remove(&at);
+        }
+        if let Some(programme) = put {
+            by_time.insert(start, programme);
         }
     }
 
@@ -1250,17 +1343,44 @@ impl Guide {
         let Some(start) = programme.start else {
             return;
         };
-        self.programmes
-            .entry(programme.key())
-            .or_default()
-            .entry(start)
-            .or_insert(programme);
+        let by_time = self.programmes.entry(programme.key()).or_default();
+        if !by_time.contains_key(&start) {
+            Arc::make_mut(by_time).insert(start, programme);
+        }
+    }
+
+    /// 拡張説明をメモリーから外し、ファイルにだけ置く（保存し終えた番組表だけ）。外した番組の数。
+    pub fn strip_extended(&mut self) -> usize {
+        let mut stripped = 0;
+        for by_time in self.programmes.values_mut() {
+            let holds =
+                |programme: &Programme| programme.start.is_some() && !programme.extended.is_empty();
+            if !by_time.values().any(holds) {
+                continue;
+            }
+            for programme in Arc::make_mut(by_time).values_mut() {
+                if holds(programme) {
+                    programme.stored_extended = Some(extended_hash(&programme.extended));
+                    programme.extended = Vec::new();
+                    stripped += 1;
+                }
+            }
+        }
+        stripped
     }
 
     pub fn forget_before(&mut self, moment: Moment) {
         let before = self.programme_count();
+        let kept = |start: &Moment, programme: &Programme| {
+            programme.ends().unwrap_or(*start + 86_400) > moment
+        };
         for by_time in self.programmes.values_mut() {
-            by_time.retain(|start, programme| programme.ends().unwrap_or(*start + 86_400) > moment);
+            if !by_time
+                .iter()
+                .all(|(start, programme)| kept(start, programme))
+            {
+                Arc::make_mut(by_time).retain(|start, programme| kept(start, programme));
+            }
         }
         self.programmes.retain(|_, by_time| !by_time.is_empty());
         if self.programme_count() != before {
@@ -1285,6 +1405,32 @@ impl Guide {
             last_table,
         );
     }
+}
+
+/// 拡張説明の内容のハッシュ（FNV-1a）。番組表のファイルの digest に入るので `std` のハッシュは使わない。
+pub fn extended_hash(pairs: &[(String, String)]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for (head, body) in pairs {
+        for bytes in [head.as_bytes(), body.as_bytes()] {
+            for byte in (bytes.len() as u32).to_le_bytes().iter().chain(bytes) {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+    }
+    hash
+}
+
+/// 番組の拡張説明。ファイルにだけ置いている物はファイルから読む（読めなければ空）。
+pub fn extended_of(programme: &Programme) -> std::borrow::Cow<'_, [(String, String)]> {
+    #[cfg(feature = "epg-db")]
+    if programme.extended.is_empty()
+        && let Some(digest) = programme.stored_extended
+        && let Some(start) = programme.start
+    {
+        return std::borrow::Cow::Owned(db::read_extended(programme.key(), start, digest).to_vec());
+    }
+    std::borrow::Cow::Borrowed(&programme.extended)
 }
 
 fn overlaps(a: &Programme, b: &Programme) -> bool {

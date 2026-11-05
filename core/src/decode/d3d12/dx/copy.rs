@@ -24,21 +24,10 @@ impl Device {
         copy.begin(Some((&video, after)))?;
         // プレーンごとにコピーする。`CopyResource` はコピーキューで色差をコピーしないことがある。
         for plane in 0..2u32 {
-            let destination = D3D12_TEXTURE_COPY_LOCATION {
-                pResource: borrow(into),
-                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                    SubresourceIndex: plane,
-                },
-            };
-            let source = D3D12_TEXTURE_COPY_LOCATION {
-                pResource: borrow(from),
-                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                    SubresourceIndex: planes[plane as usize],
-                },
-            };
-            copy.region(&destination, &source);
+            copy.region(
+                &subresource(into, plane),
+                &subresource(from, planes[plane as usize]),
+            );
         }
         let value = copy.submit()?;
         // 次のデコードは、このコピーが読み終わるまでコピー元へ書けない。
@@ -47,10 +36,10 @@ impl Device {
     }
 
     pub fn wait_copy(&mut self, value: u64) -> Result<(), Error> {
-        let Some(copy) = self.copy.as_mut() else {
-            return Ok(());
-        };
-        copy.event.wait_fence(&copy.fence, value)
+        match self.copy.as_ref() {
+            Some(copy) => copy.wait(value),
+            None => Ok(()),
+        }
     }
 
     /// デコードしたフレームをプレーンごとにメインメモリへ読み戻す。
@@ -61,15 +50,7 @@ impl Device {
     ) -> Result<Readback, Error> {
         self.ensure_copy()?;
         let (layouts, rows, total) = footprints(&self.raw, &describe(texture), planes);
-        // 最後の行も RowPitch 分読むので、`total`（最後の行は実際の幅まで）より大きく取る。
-        let total = layouts
-            .iter()
-            .zip(&rows)
-            .take(planes)
-            .map(|(layout, rows)| {
-                layout.Offset + u64::from(layout.Footprint.RowPitch) * u64::from(*rows)
-            })
-            .fold(total, u64::max);
+        let total = whole_rows(&layouts[..planes], &rows[..planes], total);
         let buffer = self.buffer(
             total,
             D3D12_HEAP_TYPE_READBACK,
@@ -79,25 +60,9 @@ impl Device {
             return Err(Error::Unavailable(String::from("コピーキューがありません")));
         };
         copy.begin(None)?;
-        for (plane, layout) in layouts.iter().enumerate().take(planes) {
-            let destination = D3D12_TEXTURE_COPY_LOCATION {
-                pResource: borrow(&buffer),
-                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
-                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                    PlacedFootprint: *layout,
-                },
-            };
-            let source = D3D12_TEXTURE_COPY_LOCATION {
-                pResource: borrow(texture),
-                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-                Anonymous: D3D12_TEXTURE_COPY_LOCATION_0 {
-                    SubresourceIndex: plane as u32,
-                },
-            };
-            copy.region(&destination, &source);
-        }
+        copy.planes_into(texture, &buffer, &layouts[..planes]);
         let value = copy.submit()?;
-        copy.event.wait_fence(&copy.fence, value)?;
+        copy.wait(value)?;
 
         let total = total as usize;
         let mapping = Mapping::new(&buffer, total, 0..total)?;
@@ -117,49 +82,7 @@ impl Device {
         if self.copy.is_some() {
             return Ok(());
         }
-        let description = D3D12_COMMAND_QUEUE_DESC {
-            Type: D3D12_COMMAND_LIST_TYPE_COPY,
-            Priority: 0,
-            Flags: D3D12_COMMAND_QUEUE_FLAG_NONE,
-            NodeMask: 0,
-        };
-        // SAFETY: the description is a live local; the device outlives the objects.
-        let copy = unsafe {
-            let queue: ID3D12CommandQueue = self
-                .raw
-                .CreateCommandQueue(&description)
-                .map_err(|error| failed("CreateCommandQueue", error))?;
-            name(&queue, "zerowave コピーキュー");
-            let allocator: ID3D12CommandAllocator = self
-                .raw
-                .CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY)
-                .map_err(|error| failed("CreateCommandAllocator", error))?;
-            let list: ID3D12GraphicsCommandList = self
-                .raw
-                .CreateCommandList(
-                    0,
-                    D3D12_COMMAND_LIST_TYPE_COPY,
-                    &allocator,
-                    None::<&ID3D12PipelineState>,
-                )
-                .map_err(|error| failed("CreateCommandList", error))?;
-            list.Close().map_err(|error| failed("Close", error))?;
-            let fence: ID3D12Fence = self
-                .raw
-                .CreateFence(0, D3D12_FENCE_FLAG_NONE)
-                .map_err(|error| failed("CreateFence", error))?;
-            let event = Owned::event()?;
-            Copy {
-                queue,
-                allocator,
-                list,
-                fence,
-                value: 0,
-                event,
-                holding: Vec::new(),
-            }
-        };
-        self.copy = Some(copy);
+        self.copy = Some(CopyQueue::new(&self.raw)?);
         Ok(())
     }
 

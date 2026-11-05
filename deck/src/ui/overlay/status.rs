@@ -889,7 +889,9 @@ mod tests {
     fn a_set_width_is_kept() {
         let ctx = egui::Context::default();
         crate::ui::text::font::install(&ctx);
-        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
         let m = Metrics::new(&ctx, text_size(0));
         let status = Status::default();
         let arrange = Arrange {
@@ -907,7 +909,9 @@ mod tests {
     fn a_two_row_bar_is_twice_as_tall() {
         let ctx = egui::Context::default();
         crate::ui::text::font::install(&ctx);
-        let _ = ctx.run_ui(egui::RawInput::default(), |_| {});
+        ctx.run_ui(egui::RawInput::default(), |_| {})
+            .textures_delta
+            .clear();
         let size = text_size(0);
         let status = Status {
             clock: String::from("12:34"),

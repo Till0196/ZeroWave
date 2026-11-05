@@ -20,8 +20,10 @@ use mediadecoder::es::{Codec, Format, Framing, Picture};
 
 use crate::decode::each_front;
 use crate::decode::{About, Decode, Error, Readback};
+#[cfg(any(unix, all(feature = "d3d12", windows)))]
+use crate::decode::{Decoded, Held as Where, Surface};
 #[cfg(unix)]
-use crate::decode::{Decoded, DmaBuf, DmaBufPlane, Held as Where, Surface};
+use crate::decode::{DmaBuf, DmaBufPlane};
 use crate::trace::Trace;
 use pool::Pool;
 
@@ -48,8 +50,9 @@ struct Session {
     next: usize,
     #[cfg(all(feature = "d3d12", windows))]
     bridge: Option<d3d12::Bridge>,
+    /// 共有を作れなかった理由（作れないデバイスで毎フレーム試さない）。
     #[cfg(all(feature = "d3d12", windows))]
-    bridge_refused: bool,
+    bridge_refused: Option<String>,
     /// サーフェスの高さ。色差のプレーンはここから始まる。
     surface_height: usize,
 }
@@ -73,7 +76,7 @@ pub struct Nvdec {
     deinterlace: Option<crate::decode::HwDeinterlace>,
     /// 一枚目のフィールドを出したフレーム。二枚目を出してからスロットを返す。
     second: Option<Held>,
-    #[cfg(unix)]
+    #[cfg(any(unix, all(feature = "d3d12", windows)))]
     said_memory: bool,
 }
 
@@ -132,7 +135,7 @@ impl Nvdec {
             said_read_back: false,
             deinterlace,
             second: None,
-            #[cfg(unix)]
+            #[cfg(any(unix, all(feature = "d3d12", windows)))]
             said_memory: false,
         })
     }
@@ -218,7 +221,7 @@ impl Nvdec {
             #[cfg(all(feature = "d3d12", windows))]
             bridge: None,
             #[cfg(all(feature = "d3d12", windows))]
-            bridge_refused: false,
+            bridge_refused: None,
             surface_height: height as usize,
         });
         self.format = format;
@@ -400,66 +403,40 @@ impl Decode for Nvdec {
         ))
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, all(feature = "d3d12", windows)))]
     fn take(&mut self) -> Option<crate::decode::Decoded> {
         let (held, proc, release, about) = self.next_output()?;
         let format = self.format;
         let session = self.session.as_mut()?;
-        // エクスポートできないデバイスはメモリーへ読み戻す。
-        let made = if session.decoder.context().exports_dma_buf() && !crate::decode::memory_only() {
-            copy_out(session, &held, format, proc).map(|buffer| {
-                Decoded::Surface(Surface {
-                    about,
-                    held: Where::DmaBuf(buffer),
-                })
-            })
+        let shared = if crate::decode::memory_only() {
+            Err(Error::Unavailable(String::from(
+                "メモリーへの読み戻しが指定されています",
+            )))
         } else {
-            if !self.said_memory {
-                self.said_memory = true;
-                tracing::warn!(
-                    "NVDEC: このデバイスは DMA-BUF に対応していないので、メモリーに読み戻す"
-                );
+            share(session, format)
+        };
+        let made = match shared {
+            Ok(()) => hand_over(session, &held, format, proc)
+                .map(|held| Decoded::Surface(Surface { about, held })),
+            Err(why) => {
+                if !self.said_memory {
+                    self.said_memory = true;
+                    tracing::warn!("NVDEC: フレームを共有できないので、メモリーに読み戻す: {why}");
+                }
+                read_into_memory(session, &held, format, proc).and_then(|planes| {
+                    crate::decode::frame_of(&Readback { about, planes })
+                        .map(Decoded::Planes)
+                        .ok_or_else(|| {
+                            Error::Unavailable(String::from("読み戻したフレームが短すぎます"))
+                        })
+                })
             }
-            read_into_memory(session, &held, format, proc).and_then(|planes| {
-                crate::decode::frame_of(&Readback { about, planes })
-                    .map(Decoded::Planes)
-                    .ok_or_else(|| {
-                        Error::Unavailable(String::from("読み戻したフレームが短すぎます"))
-                    })
-            })
         };
         if release {
             session.pool.issued(held.slot);
         }
         match made {
             Ok(decoded) => Some(decoded),
-            Err(error) => {
-                if !self.said_staging {
-                    self.said_staging = true;
-                    tracing::warn!("NVDEC: サーフェスを渡せない: {error:?}");
-                }
-                None
-            }
-        }
-    }
-
-    #[cfg(all(feature = "d3d12", windows))]
-    fn take(&mut self) -> Option<crate::decode::Decoded> {
-        let (held, proc, release, about) = self.next_output()?;
-        let format = self.format;
-        let made = {
-            let session = self.session.as_mut()?;
-            let made = hand_over(session, &held, format, proc);
-            if release {
-                session.pool.issued(held.slot);
-            }
-            made
-        };
-        match made {
-            Ok(frame) => Some(crate::decode::Decoded::Surface(crate::decode::Surface {
-                about,
-                held: crate::decode::Held::D3d12(frame),
-            })),
             Err(error) => {
                 if !self.said_staging {
                     self.said_staging = true;
@@ -528,27 +505,34 @@ impl Decode for Nvdec {
     }
 }
 
+/// CUDA と D3D12 の共有を用意する。作れなかった理由は覚えておき、毎フレーム作り直さない。
+#[cfg(all(feature = "d3d12", windows))]
+fn share(session: &mut Session, format: Format) -> Result<(), Error> {
+    if session.bridge.is_some() {
+        return Ok(());
+    }
+    if let Some(why) = &session.bridge_refused {
+        return Err(Error::Unavailable(why.clone()));
+    }
+    match d3d12::Bridge::open(session.decoder.context(), format) {
+        Ok(bridge) => {
+            session.bridge = Some(bridge);
+            Ok(())
+        }
+        Err(error) => {
+            session.bridge_refused = Some(format!("{error:?}"));
+            Err(error)
+        }
+    }
+}
+
 #[cfg(all(feature = "d3d12", windows))]
 fn hand_over(
     session: &mut Session,
     held: &Held,
-    format: Format,
+    _format: Format,
     mut proc: cu::ProcParams,
-) -> Result<crate::decode::d3d12::Frame, Error> {
-    if session.bridge.is_none() {
-        if session.bridge_refused {
-            return Err(Error::Unavailable(String::from(
-                "CUDA と D3D12 の共有を作れません",
-            )));
-        }
-        match d3d12::Bridge::open(session.decoder.context(), format) {
-            Ok(bridge) => session.bridge = Some(bridge),
-            Err(error) => {
-                session.bridge_refused = true;
-                return Err(error);
-            }
-        }
-    }
+) -> Result<Where, Error> {
     let mapped = session.decoder.map(session.pool.id(held.slot), &mut proc)?;
     let surface_height = session.surface_height;
     let Some(bridge) = session.bridge.as_mut() else {
@@ -556,23 +540,31 @@ fn hand_over(
             "CUDA と D3D12 の共有がありません",
         )));
     };
-    bridge.write(mapped.pointer, mapped.pitch, surface_height)
+    bridge
+        .write(mapped.pointer, mapped.pitch, surface_height)
+        .map(Where::D3d12)
+}
+
+/// 先に問い合わせる。コピーした後だと何が拒んだのか分からない `NOT_SUPPORTED` が返る。
+#[cfg(unix)]
+fn share(session: &mut Session, _format: Format) -> Result<(), Error> {
+    if session.decoder.context().exports_dma_buf() {
+        Ok(())
+    } else {
+        Err(Error::Unavailable(String::from(
+            "このデバイスは割り当てを DMA-BUF としてエクスポートできません\
+             （CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED が偽）",
+        )))
+    }
 }
 
 #[cfg(unix)]
-fn copy_out(
+fn hand_over(
     session: &mut Session,
     held: &Held,
     format: Format,
     mut proc: cu::ProcParams,
-) -> Result<DmaBuf, Error> {
-    // 先に問い合わせる。コピーした後だと何が拒んだのか分からない `NOT_SUPPORTED` が返る。
-    if !session.decoder.context().exports_dma_buf() {
-        return Err(Error::Unavailable(String::from(
-            "このデバイスは割り当てを DMA-BUF としてエクスポートできません\
-             （CU_DEVICE_ATTRIBUTE_DMA_BUF_SUPPORTED が偽）",
-        )));
-    }
+) -> Result<Where, Error> {
     let wide = usize::from(format.depth > 8) + 1;
     let mapped = session.decoder.map(session.pool.id(held.slot), &mut proc)?;
     let pitch = mapped.pitch;
@@ -606,7 +598,7 @@ fn copy_out(
     let chroma = fd
         .try_clone()
         .map_err(|error| Error::Unavailable(format!("ファイル記述子を複製できません: {error}")))?;
-    Ok(DmaBuf {
+    Ok(Where::DmaBuf(DmaBuf {
         width: format.width,
         height: format.height,
         modifier: DRM_FORMAT_MOD_LINEAR,
@@ -633,7 +625,7 @@ fn copy_out(
             },
         ],
         lease: None,
-    })
+    }))
 }
 
 #[cfg(unix)]

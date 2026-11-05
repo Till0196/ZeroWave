@@ -1,7 +1,7 @@
 // Copyright 2026 Till0196
 // SPDX-License-Identifier: Apache-2.0
 
-//! 正しくウィーブしても残る縞（止まったテロップ、アプコン）の下限。
+//! 正しいフィールドでフレームを作っても残る縞（止まったテロップ、アプコン）の下限。
 
 use std::collections::VecDeque;
 

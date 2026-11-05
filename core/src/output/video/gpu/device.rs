@@ -201,6 +201,16 @@ impl Gpu {
         })
     }
 
+    /// 同じデバイスとキューを指す組（作り直さない）。
+    pub fn shared(&self) -> Self {
+        Self {
+            instance: self.instance.clone(),
+            adapter: self.adapter.clone(),
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+        }
+    }
+
     #[cfg(not(any(
         any(feature = "vaapi", all(feature = "nvdec", target_os = "linux")),
         all(feature = "videotoolbox", target_vendor = "apple"),
@@ -212,8 +222,9 @@ impl Gpu {
             label: Some("zerowave video"),
             required_features: (wgpu::Features::TIMESTAMP_QUERY & adapter.features())
                 | compute(adapter),
-            required_limits: adapter.limits(),
+            required_limits: device_limits(adapter),
             experimental_features: experimental(adapter),
+            memory_hints: MEMORY_HINTS,
             ..Default::default()
         }))
         .map_err(|error| Error::NoDevice(error.to_string()))
@@ -233,8 +244,9 @@ impl Gpu {
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("zerowave video"),
             required_features: wanted,
-            required_limits: adapter.limits(),
+            required_limits: device_limits(adapter),
             experimental_features: experimental(adapter),
+            memory_hints: MEMORY_HINTS,
             ..Default::default()
         }))
         .map_err(|error| Error::NoDevice(error.to_string()))
@@ -250,70 +262,37 @@ impl Gpu {
     fn device_on(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), Error> {
         let wanted = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM & adapter.features()
             | ((wgpu::Features::TIMESTAMP_QUERY & adapter.features()) | compute(adapter));
-        let opened = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        let descriptor = wgpu::DeviceDescriptor {
             label: Some("zerowave video"),
             required_features: wanted,
-            required_limits: adapter.limits(),
+            required_limits: device_limits(adapter),
             experimental_features: experimental(adapter),
+            memory_hints: MEMORY_HINTS,
             ..Default::default()
-        }))
-        .map_err(|error| Error::NoDevice(error.to_string()))?;
+        };
+        // Vulkan はデコーダーのフレームを D3D12 から取り込む拡張を足して開く（取り込めなければ普通に開く）。
+        let importing = super::import::d3d12_vulkan::EXTENSIONS;
+        let opened = match open_vulkan_with(adapter, &descriptor, importing) {
+            Some(Ok(opened)) => opened,
+            Some(Err(error)) => {
+                tracing::warn!("Vulkan: 取り込みの拡張を足して開けない: {error}");
+                pollster::block_on(adapter.request_device(&descriptor))
+                    .map_err(|error| Error::NoDevice(error.to_string()))?
+            }
+            None => pollster::block_on(adapter.request_device(&descriptor))
+                .map_err(|error| Error::NoDevice(error.to_string()))?,
+        };
         super::import::d3d12::adopt(&opened.0);
         Ok(opened)
     }
 
     #[cfg(all(feature = "android", target_os = "android"))]
     fn device_on(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), Error> {
-        use wgpu::hal::api::Vulkan;
-
         let wanted = (wgpu::Features::TEXTURE_FORMAT_NV12
             | wgpu::Features::TEXTURE_FORMAT_P010
             | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM)
             & adapter.features();
-        let limits = adapter.limits();
-        // SAFETY: the hal adapter is borrowed only for the call; the callback only appends names.
-        let opened = unsafe {
-            adapter.as_hal::<Vulkan>().map(|hal| {
-                hal.open_with_callback(
-                    wanted,
-                    &limits,
-                    &wgpu::MemoryHints::Performance,
-                    Some(Box::new(
-                        |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
-                            for name in super::import::android::EXTENSIONS {
-                                if !args.extensions.contains(name) {
-                                    args.extensions.push(name);
-                                }
-                            }
-                        },
-                    )),
-                )
-            })
-        };
-        let Some(opened) = opened else {
-            return pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("zerowave video"),
-                required_features: wgpu::Features::empty(),
-                required_limits: adapter.limits(),
-                ..Default::default()
-            }))
-            .map_err(|error| Error::NoDevice(error.to_string()));
-        };
-        let opened = opened.map_err(|error| Error::NoDevice(error.to_string()))?;
-        // SAFETY: `opened` came from this adapter just now and is unused.
-        unsafe {
-            adapter.create_device_from_hal(
-                opened,
-                &wgpu::DeviceDescriptor {
-                    label: Some("zerowave video"),
-                    required_features: wanted,
-                    required_limits: limits,
-                    experimental_features: experimental(adapter),
-                    ..Default::default()
-                },
-            )
-        }
-        .map_err(|error| Error::NoDevice(error.to_string()))
+        Self::device_importing(adapter, wanted, super::import::android::EXTENSIONS)
     }
 
     #[cfg(all(
@@ -321,95 +300,131 @@ impl Gpu {
         not(all(feature = "android", target_os = "android"))
     ))]
     fn device_on(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue), Error> {
-        use wgpu::hal::api::Vulkan;
-
         #[cfg(feature = "vaapi")]
         super::import::dmabuf::adopt_render_node(adapter);
         #[cfg(feature = "vaapi")]
         let importing = super::import::dmabuf::EXTENSIONS;
         #[cfg(not(feature = "vaapi"))]
         let importing: &[&std::ffi::CStr] = &[];
+        let mut extensions = importing.to_vec();
+        for name in crate::output::video::host::vulkan::EXTENSIONS {
+            if !extensions.contains(name) {
+                extensions.push(name);
+            }
+        }
         let wanted = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM & adapter.features()
             | ((wgpu::Features::TIMESTAMP_QUERY & adapter.features()) | compute(adapter));
-        let limits = adapter.limits();
-        // デバイスが持つ拡張だけ足す（知らない名前を渡すと `vkCreateDevice` の前に落ちる）。
-        // SAFETY: hal のアダプターは呼び出しの間だけ借りて読むだけ。
-        let wanted_extensions: Vec<&'static std::ffi::CStr> = unsafe {
-            adapter
-                .as_hal::<Vulkan>()
-                .and_then(|hal| {
-                    let instance = hal.shared_instance().raw_instance();
-                    instance
-                        .enumerate_device_extension_properties(hal.raw_physical_device())
-                        .ok()
-                })
-                .map(|have| {
-                    let mut wanted: Vec<&'static std::ffi::CStr> = importing.to_vec();
-                    for name in crate::output::video::host::vulkan::EXTENSIONS {
-                        if !wanted.contains(name) {
-                            wanted.push(name);
-                        }
-                    }
-                    wanted
-                        .into_iter()
-                        .filter(|name| {
-                            have.iter()
-                                .any(|found| found.extension_name_as_c_str() == Ok(*name))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
+        Self::device_importing(adapter, wanted, &extensions)
+    }
 
-        // SAFETY: the hal adapter is borrowed only for the call; the callback only appends names.
-        let opened = unsafe {
-            adapter.as_hal::<Vulkan>().map(|hal| {
-                hal.open_with_callback(
-                    wanted,
-                    &limits,
-                    &wgpu::MemoryHints::Performance,
-                    Some(Box::new(
-                        |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
-                            for name in &wanted_extensions {
-                                if !args.extensions.contains(name) {
-                                    args.extensions.push(name);
-                                }
-                            }
-                        },
-                    )),
-                )
-            })
+    /// Vulkan なら `extensions` を足して開く。Vulkan でなければ（GL ES）機能を何も求めずに開く。
+    #[cfg(any(
+        all(feature = "android", target_os = "android"),
+        any(feature = "vaapi", all(feature = "nvdec", target_os = "linux"))
+    ))]
+    fn device_importing(
+        adapter: &wgpu::Adapter,
+        wanted: wgpu::Features,
+        extensions: &[&'static std::ffi::CStr],
+    ) -> Result<(wgpu::Device, wgpu::Queue), Error> {
+        let descriptor = wgpu::DeviceDescriptor {
+            label: Some("zerowave video"),
+            required_features: wanted,
+            required_limits: device_limits(adapter),
+            experimental_features: experimental(adapter),
+            memory_hints: MEMORY_HINTS,
+            ..Default::default()
         };
-        let Some(opened) = opened else {
-            return pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+        open_vulkan_with(adapter, &descriptor, extensions).unwrap_or_else(|| {
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("zerowave video"),
                 required_features: wgpu::Features::empty(),
-                required_limits: adapter.limits(),
+                required_limits: device_limits(adapter),
+                memory_hints: MEMORY_HINTS,
                 ..Default::default()
             }))
-            .map_err(|error| Error::NoDevice(error.to_string()));
-        };
-        let opened = opened.map_err(|error| Error::NoDevice(error.to_string()))?;
-        // SAFETY: `opened` came from this adapter just now and is unused.
-        unsafe {
-            adapter.create_device_from_hal(
-                opened,
-                &wgpu::DeviceDescriptor {
-                    label: Some("zerowave video"),
-                    required_features: wanted,
-                    required_limits: limits,
-                    experimental_features: experimental(adapter),
-                    ..Default::default()
-                },
-            )
-        }
-        .map_err(|error| Error::NoDevice(error.to_string()))
+            .map_err(|error| Error::NoDevice(error.to_string()))
+        })
     }
 
     pub fn name(&self) -> String {
         let info = self.adapter.get_info();
         format!("{} ({:?}, {})", info.name, info.backend, info.driver)
     }
+}
+
+/// アロケーターは小さなブロックから確保し、大きくしても 16 MiB まで。既定の `Performance` は種類ごとに 128 MiB（GPU）と
+/// 64 MiB（転送）から確保して空になるまで返さないので、デバイス二つで数百 MiB が使われないまま残る。`MemoryUsage` でも
+/// 64 MiB まで育ったブロックが小さな割り当て一つで残り、GPU のメモリーが主記憶と共有の PC ではそのまま RAM を使う。
+const MEMORY_HINTS: wgpu::MemoryHints = wgpu::MemoryHints::Manual {
+    suballocated_device_memory_block_size: 4 << 20..16 << 20,
+};
+
+/// D3D12 はこの数だけシェーダーから見える descriptor heap を作る（既定の 100 万では一つで 32〜64 MB）。
+/// 同時に生きているバインドグループのテクスチャとバッファーの数で足りる。
+const DESCRIPTORS: u32 = 1 << 16;
+
+fn device_limits(adapter: &wgpu::Adapter) -> wgpu::Limits {
+    let mut limits = adapter.limits();
+    limits.max_non_sampler_bindings = limits.max_non_sampler_bindings.min(DESCRIPTORS);
+    limits
+}
+
+/// Vulkan のアダプターなら、`extensions` のうちデバイスが持つものを足して開く（知らない名前を渡すと
+/// `vkCreateDevice` の前に落ちる）。Vulkan でなければ `None`。
+#[cfg(any(
+    all(feature = "android", target_os = "android"),
+    any(feature = "vaapi", all(feature = "nvdec", target_os = "linux")),
+    all(feature = "d3d12", windows)
+))]
+fn open_vulkan_with(
+    adapter: &wgpu::Adapter,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
+    extensions: &[&'static std::ffi::CStr],
+) -> Option<Result<(wgpu::Device, wgpu::Queue), Error>> {
+    use wgpu::hal::api::Vulkan;
+
+    // SAFETY: the hal adapter is borrowed only for the calls; the callback only appends names.
+    let opened = unsafe {
+        adapter.as_hal::<Vulkan>().map(|hal| {
+            let have = hal
+                .shared_instance()
+                .raw_instance()
+                .enumerate_device_extension_properties(hal.raw_physical_device())
+                .unwrap_or_default();
+            let adding: Vec<&'static std::ffi::CStr> = extensions
+                .iter()
+                .copied()
+                .filter(|name| {
+                    have.iter()
+                        .any(|found| found.extension_name_as_c_str() == Ok(*name))
+                })
+                .collect();
+            hal.open_with_callback(
+                descriptor.required_features,
+                &descriptor.required_limits,
+                &descriptor.memory_hints,
+                Some(Box::new(
+                    move |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
+                        for name in adding {
+                            if !args.extensions.contains(&name) {
+                                args.extensions.push(name);
+                            }
+                        }
+                    },
+                )),
+            )
+        })
+    }?;
+    let opened = match opened {
+        Ok(opened) => opened,
+        Err(error) => return Some(Err(Error::NoDevice(error.to_string()))),
+    };
+    // SAFETY: `opened` came from this adapter just now and is unused.
+    Some(
+        unsafe { adapter.create_device_from_hal(opened, descriptor) }
+            .map_err(|error| Error::NoDevice(error.to_string())),
+    )
 }
 
 /// プラグインの映像フィルター（NN など）のために、あれば有効にするコンピュートの機能。

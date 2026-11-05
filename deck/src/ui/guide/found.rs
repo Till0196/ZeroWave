@@ -560,9 +560,9 @@ fn badge(painter: &egui::Painter, rect: Rect, hit: &Hit) {
 
 fn summary(hit: &Hit) -> String {
     let programme = &hit.programme;
+    let extended = zwcore::guide::extended_of(programme);
     let text = if programme.detail.trim().is_empty() {
-        programme
-            .extended
+        extended
             .first()
             .map(|(_, body)| body.as_str())
             .unwrap_or_default()
@@ -918,7 +918,7 @@ fn side_pane(
                 if !detail.trim().is_empty() {
                     paragraph(ui, &detail, skin.title);
                 }
-                for (head, body) in &programme.extended {
+                for (head, body) in zwcore::guide::extended_of(programme).iter() {
                     ui.add_space(4.0);
                     paragraph(ui, head, skin.day_text);
                     paragraph(ui, body, skin.title);
