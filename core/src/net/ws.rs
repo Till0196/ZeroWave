@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tungstenite::client::IntoClientRequest as _;
 use tungstenite::http::{HeaderName, HeaderValue};
 
-use super::address::addresses_of;
+use super::address::is_inner;
 use super::{Error, basic};
 
 const CONNECT_PATIENCE: Duration = Duration::from_secs(3);
@@ -103,7 +103,7 @@ impl Socket {
         }
 
         let deadline = Instant::now() + HANDSHAKE_PATIENCE;
-        let tcp = connect(&host, port, inner)?;
+        let tcp = connect(&host, port, inner, stop, deadline)?;
         // ハンドシェイクも待たずに進め、止める要求と期限をこちらで確かめる（少しずつ送ってくる相手で止まらない）。
         tcp.set_nonblocking(true).map_err(|_| Error::Connect)?;
         let stream = if secure {
@@ -260,16 +260,56 @@ impl Drop for Socket {
     }
 }
 
-fn connect(host: &str, port: u16, inner: bool) -> Result<TcpStream, Error> {
-    let mut last = Error::Connect;
-    for address in addresses_of(host, port, inner)? {
-        match TcpStream::connect_timeout(&address, CONNECT_PATIENCE) {
-            Ok(tcp) => return Ok(tcp),
-            Err(why) if why.kind() == std::io::ErrorKind::TimedOut => last = Error::Timeout,
-            Err(_) => last = Error::Connect,
-        }
+fn connect(
+    host: &str,
+    port: u16,
+    inner: bool,
+    stop: &dyn Fn() -> bool,
+    deadline: Instant,
+) -> Result<TcpStream, Error> {
+    if stop() {
+        return Err(Error::Stopped);
     }
-    Err(last)
+    super::http::runtime()?.block_on(async {
+        let work = async {
+            let addresses: Vec<_> = tokio::net::lookup_host((host, port))
+                .await
+                .map_err(|_| Error::Name)?
+                .collect();
+            if addresses.is_empty() {
+                return Err(Error::Name);
+            }
+            let mut allowed = false;
+            let mut last = Error::Connect;
+            for address in addresses {
+                if !inner && is_inner(address.ip()) {
+                    continue;
+                }
+                allowed = true;
+                match tokio::time::timeout(
+                    CONNECT_PATIENCE,
+                    tokio::net::TcpStream::connect(address),
+                )
+                .await
+                {
+                    Ok(Ok(tcp)) => return tcp.into_std().map_err(|_| Error::Connect),
+                    Ok(Err(_)) => last = Error::Connect,
+                    Err(_) => last = Error::Timeout,
+                }
+            }
+            Err(if allowed { last } else { Error::Inner })
+        };
+        let stopped = async {
+            while !stop() {
+                tokio::time::sleep(LOOK).await;
+            }
+        };
+        tokio::select! {
+            result = work => result,
+            () = stopped => Err(Error::Stopped),
+            () = tokio::time::sleep_until(deadline.into()) => Err(Error::Timeout),
+        }
+    })
 }
 
 fn failure(error: tungstenite::Error) -> Error {
@@ -332,6 +372,18 @@ mod tests {
     use std::time::Instant;
 
     use super::*;
+
+    #[test]
+    fn a_cancelled_connect_does_not_resolve_or_connect() {
+        let result = connect(
+            "127.0.0.1",
+            9,
+            true,
+            &|| true,
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(matches!(result, Err(Error::Stopped)));
+    }
 
     fn echo(tls: Option<std::sync::Arc<rustls::ServerConfig>>) -> u16 {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

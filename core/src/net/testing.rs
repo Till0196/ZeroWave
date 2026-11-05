@@ -66,6 +66,19 @@ pub fn serve(
                 }
             }
             let head = String::from_utf8_lossy(&head).into_owned();
+            let length = head
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            let mut body = vec![0; length];
+            if stream.read_exact(&mut body).is_err() {
+                break;
+            }
             answer(&head, &mut *stream);
             let _ = stream.flush();
             heads.push(head);

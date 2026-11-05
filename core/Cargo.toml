@@ -52,7 +52,7 @@ coax = { workspace = true, optional = true }
 zwsdk = { path = "../sdk", optional = true }
 # HTTP/2 とシステムのプロキシは使わない。暗号は aws-lc（C と nasm が要り、Windows へのクロスビルドで失敗する）ではなく ring。
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"], optional = true }
-tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time", "macros"], optional = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time", "macros", "net"], optional = true }
 bytes = { version = "1", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 rustls-platform-verifier = { version = "0.7", optional = true }

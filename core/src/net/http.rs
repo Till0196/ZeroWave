@@ -239,7 +239,11 @@ impl Response {
                 break;
             };
             let room = most - out.len();
-            out.extend_from_slice(&chunk[..chunk.len().min(room)]);
+            let read = chunk.len().min(room);
+            out.extend_from_slice(&chunk[..read]);
+            if read < chunk.len() {
+                self.body.lock().unwrap_or_else(|e| e.into_inner()).chunk = chunk.slice(read..);
+            }
         }
         Ok(out)
     }
@@ -315,7 +319,7 @@ impl Closer {
 }
 
 /// 通信だけの tokio。初めて使うときに作る。
-fn runtime() -> Result<&'static tokio::runtime::Runtime, Error> {
+pub(super) fn runtime() -> Result<&'static tokio::runtime::Runtime, Error> {
     static RUNTIME: OnceLock<Option<tokio::runtime::Runtime>> = OnceLock::new();
     RUNTIME
         .get_or_init(|| {
@@ -556,6 +560,7 @@ mod tests {
         let url = format!("http://127.0.0.1:{port}/");
         let mut answer = lan().send(Request::get(&url)).unwrap();
         assert_eq!(answer.read_most(3).unwrap(), b"abc");
+        assert_eq!(answer.read_all().unwrap(), b"defgh");
     }
 
     #[test]
@@ -656,7 +661,7 @@ mod tests {
         let (port, heads) = serve(2, None, |head, stream| {
             if head.starts_with("POST") {
                 let _ = stream.write_all(
-                    b"HTTP/1.1 303 See Other\r\nLocation: /done\r\nContent-Length: 0\r\n\r\n",
+                    b"HTTP/1.1 303 See Other\r\nLocation: /done\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 );
             } else {
                 let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
