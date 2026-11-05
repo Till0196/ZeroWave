@@ -175,7 +175,7 @@ impl Player {
             said(self.first.picture),
             said(self.first.sound),
         );
-        crate::memory::source_changed();
+        crate::memory::give_back();
     }
 
     pub(super) fn measure(&mut self) {

@@ -284,16 +284,6 @@ impl Stage {
             return None;
         };
         tracing::info!("レンダラー {}", painter.name());
-        if let Some(device) = self.device() {
-            zwcore::memory::report_gpu_with(move || {
-                device
-                    .generate_allocator_report()
-                    .map(|report| zwcore::memory::Gpu {
-                        allocated: report.total_allocated_bytes,
-                        reserved: report.total_reserved_bytes,
-                    })
-            });
-        }
         self.recovery.opened();
         // サーフェスはデバイスより先に用意する（重ね合わせのパイプラインはサーフェスの形式でビルドされる）。
         let size = self.size;

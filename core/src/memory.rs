@@ -20,187 +20,21 @@ pub fn few_arenas() {
     }
 }
 
-type GpuReport = Box<dyn Fn() -> Option<Gpu> + Send + Sync>;
-
-static GPU: std::sync::RwLock<Option<GpuReport>> = std::sync::RwLock::new(None);
-
-/// レンダリングの GPU のメモリー（バイト）。VRAM と CPU から見える分を合わせて。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Gpu {
-    pub allocated: u64,
-    /// 使い回すために持っている分も含む。
-    pub reserved: u64,
-}
-
-/// [`used`] に GPU の分も入れる。デバイスを作り直したら呼び直す。
-pub fn report_gpu_with(report: impl Fn() -> Option<Gpu> + Send + Sync + 'static) {
-    *GPU.write().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(report));
-}
-
-/// プロセスのメモリー（バイト）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Used {
-    /// タスク マネージャーの「メモリ」（プライベートな作業セット）。Linux は RSS。
-    pub working: u64,
-    /// コミット。Windows では GPU のドライバーが確保した分も入る。
-    pub committed: Option<u64>,
-    pub gpu: Option<Gpu>,
-}
-
-pub fn used() -> Option<Used> {
-    let gpu = GPU
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .and_then(|report| report());
-    process().map(|(working, committed)| Used {
-        working,
-        committed,
-        gpu,
-    })
-}
-
-fn process() -> Option<(u64, Option<u64>)> {
-    #[cfg(windows)]
-    {
-        // PROCESS_MEMORY_COUNTERS_EX2（Windows 10 1903 から）。
-        #[repr(C)]
-        #[derive(Default)]
-        struct Counters {
-            cb: u32,
-            page_fault_count: u32,
-            peak_working_set_size: usize,
-            working_set_size: usize,
-            quota_peak_paged_pool_usage: usize,
-            quota_paged_pool_usage: usize,
-            quota_peak_non_paged_pool_usage: usize,
-            quota_non_paged_pool_usage: usize,
-            pagefile_usage: usize,
-            peak_pagefile_usage: usize,
-            private_usage: usize,
-            private_working_set_size: usize,
-            shared_commit_usage: u64,
-        }
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn GetCurrentProcess() -> isize;
-            fn K32GetProcessMemoryInfo(process: isize, counters: *mut Counters, cb: u32) -> i32;
-        }
-        let mut counters = Counters {
-            cb: std::mem::size_of::<Counters>() as u32,
-            ..Counters::default()
-        };
-        // SAFETY: 大きさを書いた構造体を渡し、そこへ書かせるだけ。
-        let done =
-            unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) };
-        (done != 0).then_some((
-            counters.private_working_set_size as u64,
-            Some(counters.private_usage as u64),
-        ))
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
-        let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
-        Some((pages * 4096, None))
-    }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    None
-}
-
 const GIVE_BACK_EVERY: std::time::Duration = std::time::Duration::from_secs(300);
-/// 続けて選局しても、詰めるのはこの間に一度まで。
-const SOURCE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
-
-type Last = std::sync::Mutex<Option<std::time::Instant>>;
-
-static LAST: Last = std::sync::Mutex::new(None);
-/// 選局は別に数える（番組表の取り込みで返した直後でも、選局したら測って残す）。
-static LAST_SOURCE: Last = std::sync::Mutex::new(None);
 
 /// 解放したメモリーを OS へ返す（大量に使った後、メモリー 1 GB の環境でスワップアウトされないように）。
 /// glibc と Windows のプロセスの heap だけ。詰める間は heap を握るので、ほかのスレッド（映像も）の確保が止まる。
 /// 大きな heap では数十〜数百 ms 掛かるので、[`GIVE_BACK_EVERY`] に一度まで。
 pub fn give_back() {
-    if due(&LAST, GIVE_BACK_EVERY) {
-        compact();
-    }
-}
-
-/// 1 分ごとに [`used`] をログに出す間隔。
-const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
-
-/// ソースが変わった（前のソースの物を手放した）。再生を止めないよう別のスレッドで返し、返す前と後をログに出す。
-/// 初めて呼んだときから、1 分ごとにもログに出す（選局の後に番組表や映像フィルターが揃っていく様子を見るため）。
-pub fn source_changed() {
-    static WATCHING: std::sync::Once = std::sync::Once::new();
-    WATCHING.call_once(|| {
-        let _ = std::thread::Builder::new()
-            .name(String::from("memory"))
-            .spawn(|| {
-                loop {
-                    std::thread::sleep(WATCH_EVERY);
-                    if let Some(used) = used() {
-                        tracing::info!("メモリー {}", described(&used, None));
-                    }
-                }
-            });
-    });
-    if !due(&LAST_SOURCE, SOURCE_EVERY) {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let Ok(mut last) = LAST.lock() else {
+        return;
+    };
+    if last.is_some_and(|at| at.elapsed() < GIVE_BACK_EVERY) {
         return;
     }
-    let spawned = std::thread::Builder::new()
-        .name(String::from("give back"))
-        .spawn(|| {
-            let before = used();
-            let began = std::time::Instant::now();
-            compact();
-            let took = began.elapsed();
-            if let Some(after) = used() {
-                let before = before.map(|before| (before.working, took));
-                tracing::info!("選局の後のメモリー {}", described(&after, before));
-            }
-        });
-    if let Err(why) = spawned {
-        tracing::debug!("メモリーを返すスレッドを起動できない: {why}");
-    }
-}
-
-/// `before` は詰める前の作業セットと、詰めるのに掛かった時間。
-fn described(used: &Used, before: Option<(u64, std::time::Duration)>) -> String {
-    let mut also = Vec::new();
-    if let Some((working, took)) = before {
-        also.push(format!(
-            "返す前 {} MiB、{:.0} ms",
-            working >> 20,
-            took.as_secs_f64() * 1000.0
-        ));
-    }
-    if let Some(committed) = used.committed {
-        also.push(format!("コミット {} MiB", committed >> 20));
-    }
-    if let Some(gpu) = used.gpu {
-        also.push(format!(
-            "GPU {} MiB（使い回し用を含めて {} MiB）",
-            gpu.allocated >> 20,
-            gpu.reserved >> 20
-        ));
-    }
-    format!("{} MiB（{}）", used.working >> 20, also.join("、"))
-}
-
-fn due(last: &Last, every: std::time::Duration) -> bool {
-    let Ok(mut last) = last.lock() else {
-        return false;
-    };
-    if last.is_some_and(|at| at.elapsed() < every) {
-        return false;
-    }
     *last = Some(std::time::Instant::now());
-    true
-}
-
-fn compact() {
+    drop(last);
     #[cfg(windows)]
     {
         #[link(name = "kernel32")]
