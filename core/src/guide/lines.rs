@@ -58,8 +58,12 @@ pub fn details_lines(details: &Details) -> Vec<String> {
     }
     for service in &details.multimedia {
         lines.push(format!(
-            "マルチメディアサービス : 方式 0x{:04x}{}{}{}",
-            service.data_component_id,
+            "{}{}{}{}",
+            match service.data_component_id {
+                0x0020 => String::from("字幕"),
+                0x0021 => String::from("マルチメディア"),
+                id => format!("マルチメディアサービス : 方式 0x{id:04x}"),
+            },
             service
                 .component_tag
                 .map(|tag| format!(" / component tag 0x{tag:04x}"))
@@ -67,7 +71,7 @@ pub fn details_lines(details: &Details) -> Vec<String> {
             slashed(&service.text),
             match service.associated_contents {
                 Some(true) => " / 番組連動あり",
-                Some(false) => " / 番組連動なし",
+                Some(false) => " / 番組連動フラグなし",
                 None => "",
             }
         ));
