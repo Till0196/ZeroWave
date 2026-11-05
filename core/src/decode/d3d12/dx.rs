@@ -31,9 +31,11 @@ pub use adapter::{
     report_removed,
 };
 pub use copy::profile_name;
+#[cfg(any(feature = "nvdec", feature = "wgpu"))]
+pub(crate) use kit::shared_buffer;
 pub(crate) use kit::{
     Mapping, Owned, adapter_by_luid, buffer, completed, create_device, describe, describe_adapter,
-    device_by_luid, factory, footprints, hardware_adapters, heap, luid, shared_buffer, whole_rows,
+    device_by_luid, factory, footprints, hardware_adapters, heap, luid, whole_rows,
 };
 pub(crate) use open::texture;
 
@@ -242,6 +244,7 @@ impl CopyQueue {
     }
 
     /// フェンスを別の API（CUDA）でも待てるようにした物。
+    #[cfg(feature = "nvdec")]
     pub(crate) fn shared(raw: &ID3D12Device) -> Result<Self, Error> {
         Self::with_fence(raw, D3D12_FENCE_FLAG_SHARED)
     }
@@ -293,11 +296,13 @@ impl CopyQueue {
         self.event.wait_fence(&self.fence, value)
     }
 
+    #[cfg(feature = "nvdec")]
     pub(crate) fn fence(&self) -> &ID3D12Fence {
         &self.fence
     }
 
     /// 最後に積んだコピーが終わると届く値。
+    #[cfg(feature = "nvdec")]
     pub(crate) fn last(&self) -> u64 {
         self.value
     }
@@ -349,6 +354,7 @@ impl CopyQueue {
     }
 
     /// バッファに `layouts` の配置で置いたプレーンを、テクスチャへ。
+    #[cfg(feature = "nvdec")]
     pub(crate) fn planes_from(
         &self,
         buffer: &ID3D12Resource,
