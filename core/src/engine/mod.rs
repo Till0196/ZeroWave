@@ -9,7 +9,7 @@ use crate::decode::Decoded;
 use mediadecoder::audio::Sound;
 use mediadecoder::es::{self, Codec, Format, Framing};
 
-use crate::engine::clock::{Clock, Drift};
+use crate::engine::clock::Clock;
 use crate::filters::analyzer::Analyzer;
 use crate::filters::counter::Counter;
 use crate::filters::logos::Logos;
@@ -166,7 +166,6 @@ pub struct Engine {
     dual_mono: DualMono,
     passthrough: Passthrough,
     clock: Clock,
-    drift: Drift,
     out: VecDeque<Out>,
     guide: Guide,
     si: si::Info,
@@ -194,7 +193,6 @@ struct Work<'a> {
     dual_mono: DualMono,
     passthrough: Passthrough,
     clock: &'a mut Clock,
-    drift: &'a mut Drift,
     out: &'a mut VecDeque<Out>,
     guide: &'a mut Guide,
     si: &'a mut si::Info,
@@ -222,7 +220,7 @@ impl Work<'_> {
         }
         self.units.streams_changed(program);
         let changed = self.selector.follow(self.analyzer.known(), program);
-        restart(self.units, self.out, self.clock, self.drift, changed);
+        restart(self.units, self.out, self.clock, changed);
         if self.selector.wanted() == Some(program.number) {
             data::announce(program, self.out);
         }
@@ -267,7 +265,7 @@ impl PacketSink for Work<'_> {
             }
             if *self.mixing == Mixing::One && self.selector.wanted() == Some(program.number) {
                 let changed = self.selector.lost(self.analyzer.known());
-                restart(self.units, self.out, self.clock, self.drift, changed);
+                restart(self.units, self.out, self.clock, changed);
                 self.out.push_back(Out::Trouble {
                     stream: program.map,
                     what: format!("番組 {} が放送から消えた", program.number),
@@ -379,7 +377,6 @@ impl Engine {
             dual_mono: DualMono::default(),
             passthrough: Passthrough::Off,
             clock: Clock::new(rate),
-            drift: Drift::new(QUEUE),
             out: VecDeque::new(),
             guide: Guide::new(),
             si: si::Info::new(),
@@ -416,7 +413,6 @@ impl Engine {
             dual_mono: self.dual_mono,
             passthrough: self.passthrough,
             clock: &mut self.clock,
-            drift: &mut self.drift,
             out: &mut self.out,
             guide: &mut self.guide,
             si: &mut self.si,
@@ -461,10 +457,6 @@ impl Engine {
 
     pub fn clock(&mut self) -> &mut Clock {
         &mut self.clock
-    }
-
-    pub fn ratio(&mut self) -> f64 {
-        self.drift.update(self.clock.queued())
     }
 
     pub fn streams(&self) -> Vec<(u16, Kind)> {
@@ -714,32 +706,17 @@ impl Engine {
     }
 
     fn restart(&mut self, changed: Changed) {
-        restart(
-            &mut self.units,
-            &mut self.out,
-            &mut self.clock,
-            &mut self.drift,
-            changed,
-        );
+        restart(&mut self.units, &mut self.out, &mut self.clock, changed);
     }
 }
 
 /// A sound change must not restart the picture. Nothing where nothing changed: the tables repeat.
-fn restart(
-    units: &mut Units,
-    out: &mut VecDeque<Out>,
-    clock: &mut Clock,
-    drift: &mut Drift,
-    changed: Changed,
-) {
+fn restart(units: &mut Units, out: &mut VecDeque<Out>, clock: &mut Clock, changed: Changed) {
     if !changed.any() {
         return;
     }
     if changed.video {
         clock.reset();
-    }
-    if changed.sound {
-        drift.reset();
     }
     out.retain(|held| match held {
         Out::Access(_) | Out::Picture { .. } => !changed.video,
