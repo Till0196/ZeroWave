@@ -187,6 +187,7 @@ pub(crate) fn buffer(
 }
 
 /// 別の API（CUDA・Vulkan）が取り込む線形のバッファ。`D3D12_HEAP_FLAG_SHARED` が無いと共有できない。
+#[cfg(any(feature = "nvdec", feature = "wgpu"))]
 pub(crate) fn shared_buffer(raw: &ID3D12Device, size: u64) -> Result<ID3D12Resource, Error> {
     buffer(
         raw,
