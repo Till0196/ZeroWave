@@ -1,14 +1,11 @@
 // Copyright 2026 Till0196
 // SPDX-License-Identifier: Apache-2.0
 
-//! 通信（STD-B24 第二分冊 (2/2) 付属 3 5.6.5、TR-B14 第三分冊 8）。同期で待つ（上限 `TIMEOUT`）。
+//! ネットワーク通信（STD-B24 第二分冊 (2/2) 付属 3 5.6.5、TR-B14 第三分冊 8）。`request` は同期で待つ（上限 `TIMEOUT`）。
 
 use std::time::Duration;
 
 pub const TIMEOUT: Duration = Duration::from_secs(10);
-
-#[cfg(not(target_arch = "wasm32"))]
-pub use client::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reply {
@@ -134,734 +131,252 @@ pub fn escape(bytes: &[u8]) -> String {
     out
 }
 
+/// 待たない通信（`zw_net_v1` の `open`・`ws`・`poll`・`send`・`close`）の記録。
+/// `poll` が返すのは記録の並び：種類（u8）、長さ（u32 BE）、中身。
+pub mod conn {
+    pub mod kind {
+        /// i32 BE の番号（[`super::super::Failure::code`]）。
+        pub const FAIL: u8 = 0;
+        /// u16 BE の status と、`名前: 値` を `\r\n` で並べたもの。
+        pub const HEAD: u8 = 1;
+        /// HTTP の本文、WebSocket のバイナリのメッセージ。
+        pub const DATA: u8 = 2;
+        /// WebSocket のテキストのメッセージ。
+        pub const TEXT: u8 = 3;
+        /// u16 BE の終わり方（WebSocket の close のコード、HTTP は 0）と理由。
+        pub const END: u8 = 4;
+    }
+
+    /// `send` の種類。`CLOSE` の中身は u16 BE のコードと理由。
+    pub mod send {
+        pub const TEXT: u32 = 1;
+        pub const BINARY: u32 = 2;
+        pub const CLOSE: u32 = 8;
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Arrived {
+        Head {
+            status: u16,
+            headers: Vec<(String, String)>,
+        },
+        Data(Vec<u8>),
+        Text(String),
+        End {
+            code: u16,
+            reason: String,
+        },
+        Fail(i32),
+    }
+
+    impl Arrived {
+        pub fn len(&self) -> usize {
+            match self {
+                Self::Data(bytes) => bytes.len(),
+                Self::Text(text) => text.len(),
+                _ => 0,
+            }
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        pub fn is_last(&self) -> bool {
+            matches!(self, Self::End { .. } | Self::Fail(_))
+        }
+
+        pub fn encode(&self, out: &mut Vec<u8>) {
+            let u16_and_text =
+                |n: u16, text: &str| [&n.to_be_bytes()[..], text.as_bytes()].concat();
+            let (kind, body) = match self {
+                Self::Head { status, headers } => {
+                    let text = headers
+                        .iter()
+                        .map(|(name, value)| format!("{name}: {value}"))
+                        .collect::<Vec<_>>()
+                        .join("\r\n");
+                    (kind::HEAD, u16_and_text(*status, &text))
+                }
+                Self::Data(bytes) => (kind::DATA, bytes.clone()),
+                Self::Text(text) => (kind::TEXT, text.as_bytes().to_vec()),
+                Self::End { code, reason } => (kind::END, u16_and_text(*code, reason)),
+                Self::Fail(code) => (kind::FAIL, code.to_be_bytes().to_vec()),
+            };
+            out.push(kind);
+            out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            out.extend_from_slice(&body);
+        }
+    }
+
+    pub fn decode(mut bytes: &[u8]) -> Vec<Arrived> {
+        let mut out = Vec::new();
+        while let Some((&kind, rest)) = bytes.split_first() {
+            let Some((len, rest)) = rest.split_first_chunk::<4>() else {
+                break;
+            };
+            let Some(body) = rest.get(..u32::from_be_bytes(*len) as usize) else {
+                break;
+            };
+            bytes = &rest[body.len()..];
+            let u16_and_text = |body: &[u8]| {
+                let (n, text) = body
+                    .split_first_chunk::<2>()
+                    .map_or((0, &[][..]), |(n, t)| (u16::from_be_bytes(*n), t));
+                (n, String::from_utf8_lossy(text).into_owned())
+            };
+            out.push(match kind {
+                kind::HEAD => {
+                    let (status, text) = u16_and_text(body);
+                    let headers = text
+                        .split("\r\n")
+                        .filter_map(|line| line.split_once(": "))
+                        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                        .collect();
+                    Arrived::Head { status, headers }
+                }
+                kind::DATA => Arrived::Data(body.to_vec()),
+                kind::TEXT => Arrived::Text(String::from_utf8_lossy(body).into_owned()),
+                kind::END => {
+                    let (code, reason) = u16_and_text(body);
+                    Arrived::End { code, reason }
+                }
+                _ => Arrived::Fail(
+                    body.first_chunk::<4>()
+                        .map_or(-2, |n| i32::from_be_bytes(*n)),
+                ),
+            });
+        }
+        out
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum Outgoing {
+        Text(Vec<u8>),
+        Binary(Vec<u8>),
+        Close(u16, Vec<u8>),
+    }
+
+    /// `open`・`ws` で開くもの。`protocols` があれば WebSocket（`Sec-WebSocket-Protocol` に `,` で並べる）。
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Open {
+        pub method: String,
+        pub url: String,
+        pub headers: Vec<(String, String)>,
+        pub body: Option<Vec<u8>>,
+        pub protocols: Option<String>,
+        /// 内部ネットワーク（LAN など）へ繋いでよいか。
+        pub inner: bool,
+    }
+}
+
+/// ネットワーク通信。使う側が [`install`] する。
 #[cfg(not(target_arch = "wasm32"))]
-mod client {
-    use std::io::{BufRead, BufReader, Read, Write};
-    use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
-    use std::sync::{Arc, Mutex, RwLock};
-    use std::time::{Duration, Instant};
+mod network {
+    use std::sync::{Arc, RwLock};
+    use std::time::Duration;
 
-    use super::{Failure, Reply, TIMEOUT, Url, join, parse_url};
+    use super::conn::{Arrived, Open, Outgoing};
+    use super::{Failure, Reply};
 
-    const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-
-    /// 選局で通信を全部止める。文書のスレッドは同期で待つので、止めないと前の局の文書が残る。
-    static HOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-    pub fn hold() {
-        HOLD.store(true, std::sync::atomic::Ordering::SeqCst);
-        GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    pub trait Network: Send + Sync {
+        fn has_ip(&self) -> bool;
+        fn resolve(&self, host: &str) -> Option<String>;
+        /// ICMP は特権が要るので TCP で。返るのは (相手のアドレス, 往復のミリ秒)。
+        fn reach(
+            &self,
+            host: &str,
+            port: u16,
+            timeout: Duration,
+            inner: bool,
+        ) -> Option<(String, u32)>;
+        /// 一つのプラグインの通信。放送で届いたルート証明書はこの中だけで使う。
+        fn session(&self) -> Box<dyn Session>;
     }
 
-    pub fn release() {
-        HOLD.store(false, std::sync::atomic::Ordering::SeqCst);
+    /// `inner` は内部ネットワーク（LAN など）へ繋いでよいか。
+    pub trait Session: Send + std::fmt::Debug {
+        /// 本文があり `Content-Type` が無ければ form。転送は五回まで（POST の 303 は GET に）。
+        fn send(
+            &self,
+            method: &str,
+            uri: &str,
+            headers: &[(String, String)],
+            body: Option<&[u8]>,
+            inner: bool,
+        ) -> Result<Reply, Failure>;
+        /// 放送で届いたものを追加する（TR-B14 第三分冊）。選局で破棄する。
+        fn add_root_certificate(&self, der: &[u8]) -> bool;
+        /// 繋ぐのは後で。繋げなかったことは [`Conn::next`] で [`Arrived::Fail`] として来る。
+        fn open(&self, open: Open) -> Box<dyn Conn>;
     }
 
-    fn held() -> bool {
-        HOLD.load(std::sync::atomic::Ordering::SeqCst)
+    /// 待たない接続。落とすと切る。
+    pub trait Conn: Send + std::fmt::Debug {
+        fn next(&mut self) -> Option<Arrived>;
+        /// WebSocket だけ。閉じていれば偽。
+        fn send(&mut self, outgoing: Outgoing) -> bool;
     }
 
-    fn generation() -> u64 {
-        GENERATION.load(std::sync::atomic::Ordering::SeqCst)
+    static NETWORK: RwLock<Option<Arc<dyn Network>>> = RwLock::new(None);
+
+    pub fn install(network: Arc<dyn Network>) {
+        *NETWORK.write().unwrap_or_else(|e| e.into_inner()) = Some(network);
     }
 
-    /// TCP の読み込みは途中で中断できないので、短い間隔で停止要求かタイムアウトかを確認する。
-    struct Interruptible {
-        inner: TcpStream,
-        generation: u64,
-        deadline: Instant,
+    pub fn network() -> Option<Arc<dyn Network>> {
+        NETWORK.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    impl Interruptible {
-        fn new(inner: TcpStream) -> Self {
-            let _ = inner.set_read_timeout(Some(Duration::from_millis(300)));
-            let _ = inner.set_write_timeout(Some(Duration::from_millis(300)));
-            Self {
-                inner,
-                generation: generation(),
-                deadline: Instant::now() + TIMEOUT,
-            }
-        }
-
-        fn connect(address: &std::net::SocketAddr, timeout: Duration) -> std::io::Result<Self> {
-            TcpStream::connect_timeout(address, timeout.min(CONNECT_TIMEOUT)).map(Self::new)
-        }
-
-        fn check(&self) -> std::io::Result<()> {
-            if held() || generation() != self.generation {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "選局で止めた",
-                ));
-            }
-            if Instant::now() > self.deadline {
-                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "期限"));
-            }
-            Ok(())
-        }
-    }
-
-    fn is_tick(e: &std::io::Error) -> bool {
-        matches!(
-            e.kind(),
-            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    /// 差し込まれていなければ、どこへも繋がらない。
+    pub fn session() -> Box<dyn Session> {
+        network().map_or_else(
+            || Box::new(Unplugged) as Box<dyn Session>,
+            |network| network.session(),
         )
     }
 
-    impl Read for Interruptible {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            loop {
-                self.check()?;
-                match self.inner.read(buf) {
-                    Err(e) if is_tick(&e) => continue,
-                    other => return other,
-                }
-            }
-        }
-    }
+    #[derive(Debug)]
+    struct Unplugged;
 
-    impl Write for Interruptible {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            loop {
-                self.check()?;
-                match self.inner.write(buf) {
-                    Err(e) if is_tick(&e) => continue,
-                    other => return other,
-                }
-            }
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            self.inner.flush()
-        }
-    }
-
-    /// UDP ソケットを外向きに connect して経路があるかを見るだけ。ローカルアドレスは見ない（Windows は未定のまま返す）。
-    pub fn has_ip() -> bool {
-        let Ok(socket) = UdpSocket::bind("0.0.0.0:0") else {
-            return false;
-        };
-        // TEST-NET だけだとその宛先を破棄するマシンで偽になる。
-        ["192.0.2.1:9", "8.8.8.8:53", "1.1.1.1:53"]
-            .iter()
-            .any(|target| {
-                socket.connect(target).is_ok()
-                    && socket
-                        .local_addr()
-                        .is_ok_and(|address| !address.ip().is_loopback())
-            })
-    }
-
-    pub fn resolve(host: &str) -> Option<String> {
-        (host, 0u16)
-            .to_socket_addrs()
-            .ok()?
-            .next()
-            .map(|address| address.ip().to_string())
-    }
-
-    /// 放送の文書が内部ネットワーク（loopback・LAN・CGNAT・マルチキャストなど）へ送れないよう、既定では断る。
-    pub fn is_inner(ip: IpAddr) -> bool {
-        match ip {
-            IpAddr::V4(v4) => {
-                let [a, b, ..] = v4.octets();
-                v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.is_unspecified()
-                    || v4.is_broadcast()
-                    || v4.is_multicast()
-                    || a == 0
-                    // 100.64.0.0/10（CGNAT）
-                    || (a == 100 && (b & 0xc0) == 64)
-                    || (a == 198 && (b & 0xfe) == 18)
-            }
-            IpAddr::V6(v6) => {
-                if let Some(v4) = v6.to_ipv4_mapped() {
-                    return is_inner(IpAddr::V4(v4));
-                }
-                let first = v6.segments()[0];
-                v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_multicast()
-                    || (first & 0xfe00) == 0xfc00
-                    || (first & 0xffc0) == 0xfe80
-                    || (first & 0xffc0) == 0xfec0
-            }
-        }
-    }
-
-    /// 名前解決したアドレスにそのまま接続するので、確かめた後で替えられることは無い。
-    pub(crate) fn address_of(host: &str, port: u16, inner: bool) -> Result<SocketAddr, Failure> {
-        let mut found = false;
-        for address in (host, port).to_socket_addrs().map_err(|_| Failure::Name)? {
-            found = true;
-            if inner || !is_inner(address.ip()) {
-                return Ok(address);
-            }
-        }
-        if found {
-            tracing::debug!("内部ネットワークの宛先なので接続しない: {host}");
-            Err(Failure::Connect)
-        } else {
-            Err(Failure::Name)
-        }
-    }
-
-    /// ICMP は特権が要るので TCP で。返るのは (相手のアドレス, 往復のミリ秒)。
-    pub fn reach(host: &str, port: u16, timeout: Duration) -> Option<(String, u32)> {
-        reach_from(host, port, timeout, false)
-    }
-
-    pub fn reach_from(
-        host: &str,
-        port: u16,
-        timeout: Duration,
-        inner: bool,
-    ) -> Option<(String, u32)> {
-        if held() {
-            return None;
-        }
-        let address = address_of(host, port, inner).ok()?;
-        let began = Instant::now();
-        Interruptible::connect(&address, timeout).ok()?;
-        Some((
-            address.ip().to_string(),
-            began.elapsed().as_millis().min(u128::from(u32::MAX)) as u32,
-        ))
-    }
-
-    /// 本体の中から使う通信。内部ネットワークの宛先は拒否する。
-    static SHARED: Session = Session::new();
-
-    pub fn post(uri: &str, form: &[u8]) -> Result<Reply, Failure> {
-        // TR-B14 は 4096 バイト。それより先は実装依存。
-        SHARED.request("POST", uri, &[], Some(form), 65_536, false)
-    }
-
-    pub fn get(uri: &str) -> Result<Reply, Failure> {
-        send("GET", uri, &[], None)
-    }
-
-    /// 本文があり `Content-Type` が無ければ form。転送は五回まで（POST の 303 は GET に）。
-    pub fn send(
-        method: &str,
-        uri: &str,
-        headers: &[(String, String)],
-        body: Option<&[u8]>,
-    ) -> Result<Reply, Failure> {
-        SHARED.send(method, uri, headers, body, false)
-    }
-
-    pub fn add_root_certificate(der: &[u8]) -> bool {
-        SHARED.add_root_certificate(der)
-    }
-
-    /// 一つのプラグインの通信。放送で届いたものはこの中だけで使い、選局で破棄する。
-    #[derive(Debug, Default)]
-    pub struct Session {
-        roots: Mutex<Vec<(u64, Vec<u8>)>>,
-        config: Mutex<Option<(u64, usize, Arc<rustls::ClientConfig>)>>,
-    }
-
-    const MOST_ROOTS: usize = 8;
-
-    impl Session {
-        pub const fn new() -> Self {
-            Self {
-                roots: Mutex::new(Vec::new()),
-                config: Mutex::new(None),
-            }
-        }
-
-        /// 放送で届いたものを追加する（TR-B14 第三分冊）。この通信だけで使い、選局で破棄する。
-        pub fn add_root_certificate(&self, der: &[u8]) -> bool {
-            let now = generation();
-            let mut roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
-            roots.retain(|(at, _)| *at == now);
-            if roots.iter().any(|(_, had)| had == der) || roots.len() >= MOST_ROOTS {
-                return false;
-            }
-            let parsed = rustls::pki_types::CertificateDer::from(der.to_vec());
-            if rustls::RootCertStore::empty().add(parsed).is_err() {
-                return false;
-            }
-            roots.push((now, der.to_vec()));
-            true
-        }
-
-        fn tls_config(&self) -> Arc<rustls::ClientConfig> {
-            let now = generation();
-            let roots: Vec<Vec<u8>> = {
-                let mut roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
-                roots.retain(|(at, _)| *at == now);
-                roots.iter().map(|(_, der)| der.clone()).collect()
-            };
-            if roots.is_empty() {
-                return base_config();
-            }
-            let mut cached = self.config.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((at, count, config)) = cached.as_ref()
-                && *at == now
-                && *count == roots.len()
-            {
-                return config.clone();
-            }
-            let built = build_config(&roots);
-            *cached = Some((now, roots.len(), built.clone()));
-            built
-        }
-
-        pub fn send(
+    impl Session for Unplugged {
+        fn send(
             &self,
-            method: &str,
-            uri: &str,
-            headers: &[(String, String)],
-            body: Option<&[u8]>,
-            inner: bool,
+            _: &str,
+            _: &str,
+            _: &[(String, String)],
+            _: Option<&[u8]>,
+            _: bool,
         ) -> Result<Reply, Failure> {
-            let mut at = uri.to_owned();
-            let mut method = method.to_owned();
-            let mut body = body;
-            for _ in 0..5 {
-                let reply = self.request(&method, &at, headers, body, 16 << 20, inner)?;
-                let moved = matches!(reply.status, 301 | 302 | 303 | 307 | 308);
-                let Some(location) = reply.location.as_deref().filter(|_| moved) else {
-                    return Ok(reply);
-                };
-                if reply.status == 303 || (matches!(reply.status, 301 | 302) && method == "POST") {
-                    method = String::from("GET");
-                    body = None;
-                }
-                let next = join(&at, location).unwrap_or_else(|| location.to_owned());
-                // https から http へはリダイレクトしない。
-                if at.starts_with("https://") && !next.starts_with("https://") {
-                    return Err(Failure::Tls);
-                }
-                at = next;
-            }
             Err(Failure::Connect)
         }
 
-        fn request(
-            &self,
-            method: &str,
-            uri: &str,
-            headers: &[(String, String)],
-            body: Option<&[u8]>,
-            most: usize,
-            inner: bool,
-        ) -> Result<Reply, Failure> {
-            let url = parse_url(uri).ok_or(Failure::Argument)?;
-            let head = request_head(method, &url, headers, body.map(<[u8]>::len))?;
-            if held() {
-                return Err(Failure::Disconnected);
-            }
-            let address = address_of(&url.host, url.port, inner)?;
-            let tcp = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT).map_err(|e| {
-                if e.kind() == std::io::ErrorKind::TimedOut {
-                    Failure::Timeout
-                } else {
-                    Failure::Connect
-                }
-            })?;
-            let tcp = Interruptible::new(tcp);
-            let mut stream = if url.secure {
-                wrap_tls(tcp, &url.host, self.tls_config())?
-            } else {
-                Stream::Plain(tcp)
-            };
-            stream
-                .write_all(head.as_bytes())
-                .and_then(|()| stream.write_all(body.unwrap_or(&[])))
-                .and_then(|()| stream.flush())
-                .map_err(io_failure)?;
-            read_reply(BufReader::new(stream), most)
+        fn add_root_certificate(&self, _: &[u8]) -> bool {
+            false
+        }
+
+        fn open(&self, _: Open) -> Box<dyn Conn> {
+            Box::new(Refused(true))
         }
     }
 
-    fn is_token(text: &str) -> bool {
-        !text.is_empty()
-            && text
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
-    }
-
-    /// `@` や空白・改行でリクエストヘッダーを壊させない。
-    fn is_host(text: &str) -> bool {
-        !text.is_empty()
-            && text
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-._:".contains(&b))
-    }
-
-    /// リクエスト行を壊させないよう、メソッドは token の文字だけ、パスは空白・制御文字・ASCII 外を `%XX` に。
-    pub(crate) fn request_head(
-        method: &str,
-        url: &Url,
-        headers: &[(String, String)],
-        body: Option<usize>,
-    ) -> Result<String, Failure> {
-        if !is_token(method) || !is_host(&url.host) {
-            return Err(Failure::Argument);
-        }
-        let path = url.path.split('#').next().unwrap_or("/");
-        let mut escaped = String::with_capacity(path.len());
-        for &b in path.as_bytes() {
-            if b <= b' ' || b >= 0x7f {
-                escaped.push_str(&format!("%{b:02X}"));
-            } else {
-                escaped.push(char::from(b));
-            }
-        }
-        if !escaped.starts_with('/') {
-            escaped.insert(0, '/');
-        }
-        let host = url.authority();
-        let has = |name: &str| headers.iter().any(|(n, _)| n.eq_ignore_ascii_case(name));
-        let mut head =
-            format!("{method} {escaped} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
-        if !has("accept") {
-            head.push_str("Accept: */*\r\n");
-        }
-        for (name, value) in headers {
-            if !is_token(name)
-                || name.eq_ignore_ascii_case("host")
-                || name.eq_ignore_ascii_case("content-length")
-                || name.eq_ignore_ascii_case("transfer-encoding")
-                || name.eq_ignore_ascii_case("connection")
-                || value.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
-            {
-                continue;
-            }
-            head.push_str(&format!("{name}: {value}\r\n"));
-        }
-        if let Some(length) = body {
-            if !has("content-type") {
-                head.push_str("Content-Type: application/x-www-form-urlencoded\r\n");
-            }
-            head.push_str(&format!("Content-Length: {length}\r\n"));
-        }
-        head.push_str("\r\n");
-        Ok(head)
-    }
-
-    enum Stream {
-        Plain(Interruptible),
-        Tls(Box<rustls::StreamOwned<rustls::ClientConnection, Interruptible>>),
-    }
-
-    impl Read for Stream {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            match self {
-                Self::Plain(s) => s.read(buf),
-                Self::Tls(s) => s.read(buf),
-            }
-        }
-    }
-
-    impl Write for Stream {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            match self {
-                Self::Plain(s) => s.write(buf),
-                Self::Tls(s) => s.write(buf),
-            }
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            match self {
-                Self::Plain(s) => s.flush(),
-                Self::Tls(s) => s.flush(),
-            }
-        }
-    }
-
-    static BASE: RwLock<Option<Arc<rustls::ClientConfig>>> = RwLock::new(None);
-
-    fn base_config() -> Arc<rustls::ClientConfig> {
-        if let Some(config) = BASE.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            return config.clone();
-        }
-        let built = build_config(&[]);
-        *BASE.write().unwrap_or_else(|e| e.into_inner()) = Some(built.clone());
-        built
-    }
-
-    /// `ZW_CA_DIR` の PEM も足す。`ZW_TLS_INSECURE=1` は証明書を検証しない（テスト用）。
-    fn build_config(broadcast: &[Vec<u8>]) -> Arc<rustls::ClientConfig> {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let certs: Vec<_> = broadcast
-            .iter()
-            .map(|der| rustls::pki_types::CertificateDer::from(der.clone()))
-            .collect();
-        roots.add_parsable_certificates(certs);
-        if let Some(dir) = std::env::var_os("ZW_CA_DIR") {
-            for (name, pem) in std::fs::read_dir(&dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter_map(|e| std::fs::read(e.path()).ok().map(|b| (e.path(), b)))
-            {
-                use rustls::pki_types::pem::PemObject;
-                let certs: Vec<_> = rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
-                    .flatten()
-                    .collect();
-                let (added, _) = roots.add_parsable_certificates(certs);
-                if added == 0 {
-                    tracing::warn!("ルート証明書として読み込めません: {}", name.display());
-                }
-            }
-        }
-        let provider = Arc::new(provider_with_sha1());
-        let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
-            .with_safe_default_protocol_versions()
-            .expect("rustls の既定のバージョン");
-        let config = if std::env::var_os("ZW_TLS_INSECURE").is_some() {
-            tracing::warn!("ZW_TLS_INSECURE が設定されているので、https の証明書を確かめません");
-            builder
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(NoVerify(provider)))
-                .with_no_client_auth()
-        } else {
-            builder.with_root_certificates(roots).with_no_client_auth()
-        };
-        Arc::new(config)
-    }
-
-    /// ring の既定に `sha1WithRSAEncryption` の検証を足したもの（証明書チェーンの検証にだけ使う）。
-    fn provider_with_sha1() -> rustls::crypto::CryptoProvider {
-        let mut provider = rustls::crypto::ring::default_provider();
-        let mut all: Vec<&'static dyn rustls::pki_types::SignatureVerificationAlgorithm> =
-            provider.signature_verification_algorithms.all.to_vec();
-        all.push(&RSA_SHA1);
-        provider.signature_verification_algorithms.all = Box::leak(all.into_boxed_slice());
-        provider
-    }
-
+    /// 繋がらなかったことだけを渡す。
     #[derive(Debug)]
-    struct RsaSha1;
+    struct Refused(bool);
 
-    static RSA_SHA1: RsaSha1 = RsaSha1;
-
-    impl rustls::pki_types::SignatureVerificationAlgorithm for RsaSha1 {
-        fn public_key_alg_id(&self) -> rustls::pki_types::AlgorithmIdentifier {
-            rustls::pki_types::alg_id::RSA_ENCRYPTION
+    impl Conn for Refused {
+        fn next(&mut self) -> Option<Arrived> {
+            std::mem::take(&mut self.0).then(|| Arrived::Fail(Failure::Connect.code()))
         }
 
-        fn signature_alg_id(&self) -> rustls::pki_types::AlgorithmIdentifier {
-            rustls::pki_types::AlgorithmIdentifier::from_slice(&[
-                0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x05, 0x05, 0x00,
-            ])
+        fn send(&mut self, _: Outgoing) -> bool {
+            false
         }
-
-        fn verify_signature(
-            &self,
-            public_key: &[u8],
-            message: &[u8],
-            signature: &[u8],
-        ) -> Result<(), rustls::pki_types::InvalidSignature> {
-            ring::signature::UnparsedPublicKey::new(
-                &ring::signature::RSA_PKCS1_1024_8192_SHA1_FOR_LEGACY_USE_ONLY,
-                public_key,
-            )
-            .verify(message, signature)
-            .map_err(|_| rustls::pki_types::InvalidSignature)
-        }
-    }
-
-    #[derive(Debug)]
-    struct NoVerify(Arc<rustls::crypto::CryptoProvider>);
-
-    impl rustls::client::danger::ServerCertVerifier for NoVerify {
-        fn verify_server_cert(
-            &self,
-            _: &rustls::pki_types::CertificateDer<'_>,
-            _: &[rustls::pki_types::CertificateDer<'_>],
-            _: &rustls::pki_types::ServerName<'_>,
-            _: &[u8],
-            _: rustls::pki_types::UnixTime,
-        ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-            Ok(rustls::client::danger::ServerCertVerified::assertion())
-        }
-
-        fn verify_tls12_signature(
-            &self,
-            message: &[u8],
-            cert: &rustls::pki_types::CertificateDer<'_>,
-            dss: &rustls::DigitallySignedStruct,
-        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-            rustls::crypto::verify_tls12_signature(
-                message,
-                cert,
-                dss,
-                &self.0.signature_verification_algorithms,
-            )
-        }
-
-        fn verify_tls13_signature(
-            &self,
-            message: &[u8],
-            cert: &rustls::pki_types::CertificateDer<'_>,
-            dss: &rustls::DigitallySignedStruct,
-        ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-            rustls::crypto::verify_tls13_signature(
-                message,
-                cert,
-                dss,
-                &self.0.signature_verification_algorithms,
-            )
-        }
-
-        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-            self.0.signature_verification_algorithms.supported_schemes()
-        }
-    }
-
-    fn wrap_tls(
-        stream: Interruptible,
-        host: &str,
-        config: Arc<rustls::ClientConfig>,
-    ) -> Result<Stream, Failure> {
-        let name =
-            rustls::pki_types::ServerName::try_from(host.to_owned()).map_err(|_| Failure::Tls)?;
-        let connection = rustls::ClientConnection::new(config, name).map_err(|_| Failure::Tls)?;
-        let mut tls = rustls::StreamOwned::new(connection, stream);
-        while tls.conn.is_handshaking() {
-            if let Err(e) = tls.conn.complete_io(&mut tls.sock) {
-                return Err(match e.kind() {
-                    std::io::ErrorKind::TimedOut => Failure::Timeout,
-                    std::io::ErrorKind::Interrupted => Failure::Disconnected,
-                    _ => Failure::Tls,
-                });
-            }
-        }
-        Ok(Stream::Tls(Box::new(tls)))
-    }
-
-    fn io_failure(e: std::io::Error) -> Failure {
-        match e.kind() {
-            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock => Failure::Timeout,
-            _ => Failure::Disconnected,
-        }
-    }
-
-    const LINE_MOST: usize = 8 << 10;
-    const HEAD_MOST: usize = 64 << 10;
-
-    fn read_line_within<T: Read>(
-        reader: &mut BufReader<T>,
-        line: &mut String,
-        budget: &mut usize,
-    ) -> Result<(), Failure> {
-        let most = LINE_MOST.min(*budget);
-        let mut bytes = Vec::new();
-        reader
-            .by_ref()
-            .take(most as u64 + 1)
-            .read_until(b'\n', &mut bytes)
-            .map_err(io_failure)?;
-        if bytes.len() > most {
-            return Err(Failure::Disconnected);
-        }
-        *budget -= bytes.len();
-        line.clear();
-        line.push_str(&String::from_utf8_lossy(&bytes));
-        Ok(())
-    }
-
-    pub(crate) fn read_reply<T: Read>(
-        mut reader: BufReader<T>,
-        most: usize,
-    ) -> Result<Reply, Failure> {
-        let mut budget = HEAD_MOST;
-        let mut line = String::new();
-        read_line_within(&mut reader, &mut line, &mut budget)?;
-        let status = line
-            .split_whitespace()
-            .nth(1)
-            .and_then(|code| code.parse::<u16>().ok())
-            .ok_or(Failure::Disconnected)?;
-        let mut length: Option<usize> = None;
-        let mut chunked = false;
-        let mut content_type = None;
-        let mut location = None;
-        let mut headers = Vec::new();
-        loop {
-            read_line_within(&mut reader, &mut line, &mut budget)?;
-            let trimmed = line.trim_end();
-            if trimmed.is_empty() {
-                break;
-            }
-            if let Some((name, value)) = trimmed.split_once(':') {
-                headers.push((name.trim().to_owned(), value.trim().to_owned()));
-                let name = name.trim().to_ascii_lowercase();
-                let value = value.trim();
-                if name == "content-length" {
-                    length = value.parse().ok();
-                } else if name == "content-type" {
-                    content_type = Some(value.to_owned());
-                } else if name == "location" {
-                    location = Some(value.to_owned());
-                } else if name == "transfer-encoding"
-                    && value.to_ascii_lowercase().contains("chunked")
-                {
-                    chunked = true;
-                }
-            }
-        }
-        let mut body = Vec::new();
-        if chunked {
-            loop {
-                // 短いチャンクを際限なく送らせない。
-                let mut size_budget = LINE_MOST;
-                read_line_within(&mut reader, &mut line, &mut size_budget)?;
-                let size = u64::from_str_radix(line.trim().split(';').next().unwrap_or("0"), 16)
-                    .map_err(|_| Failure::Disconnected)?;
-                if size == 0 {
-                    break;
-                }
-                // 相手が示したサイズのまま確保しない。
-                let room = most.saturating_sub(body.len()) as u64;
-                let kept = size.min(room);
-                let before = body.len();
-                (&mut reader)
-                    .take(kept)
-                    .read_to_end(&mut body)
-                    .map_err(io_failure)?;
-                if (body.len() - before) as u64 != kept {
-                    return Err(Failure::Disconnected);
-                }
-                let rest = size - kept;
-                if rest > 0
-                    && std::io::copy(&mut (&mut reader).take(rest), &mut std::io::sink())
-                        .map_err(io_failure)?
-                        != rest
-                {
-                    return Err(Failure::Disconnected);
-                }
-                read_line_within(&mut reader, &mut line, &mut size_budget)?;
-            }
-        } else if let Some(length) = length {
-            body.resize(length.min(most), 0);
-            reader.read_exact(&mut body).map_err(io_failure)?;
-        } else {
-            reader
-                .take(most as u64)
-                .read_to_end(&mut body)
-                .map_err(io_failure)?;
-        }
-        body.truncate(most);
-        Ok(Reply {
-            status,
-            body,
-            content_type,
-            location,
-            headers,
-        })
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use network::*;
 
 #[cfg(test)]
 mod tests {
@@ -911,154 +426,30 @@ mod tests {
     }
 
     #[test]
-    fn holding_fails_requests_at_once() {
-        super::hold();
-        assert_eq!(
-            super::get("http://192.0.2.1/").err(),
-            Some(super::Failure::Disconnected)
-        );
-        super::release();
-    }
-
-    #[test]
     fn the_form_is_escaped_the_rfc_2396_way() {
         assert_eq!(escape(b"a b-1"), "a%20b-1");
         assert_eq!(escape(&[0xa4, 0xa2]), "%A4%A2");
     }
 
     #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn a_reply_is_read_with_a_length_or_in_chunks() {
-        use crate::net::client::read_reply;
-        use std::io::BufReader;
-        let plain = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
-        let reply = read_reply(BufReader::new(&plain[..]), 1 << 20).unwrap();
-        assert_eq!((reply.status, reply.body.as_slice()), (200, &b"hello"[..]));
-        let chunked = b"HTTP/1.1 201 Created\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n";
-        let reply = read_reply(BufReader::new(&chunked[..]), 1 << 20).unwrap();
-        assert_eq!((reply.status, reply.body.as_slice()), (201, &b"abcde"[..]));
-        let until_close = b"HTTP/1.1 404 Not Found\r\n\r\nnope";
-        let reply = read_reply(BufReader::new(&until_close[..]), 1 << 20).unwrap();
-        assert_eq!((reply.status, reply.body.as_slice()), (404, &b"nope"[..]));
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn a_huge_chunk_size_is_not_allocated() {
-        use crate::net::client::read_reply;
-        use std::io::BufReader;
-        let huge = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffff\r\nabc";
-        assert!(read_reply(BufReader::new(&huge[..]), 1 << 20).is_err());
-        let over = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n6\r\nabcdef\r\n2\r\ngh\r\n0\r\n\r\n";
-        let reply = read_reply(BufReader::new(&over[..]), 4).unwrap();
-        assert_eq!(reply.body, b"abcd");
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn the_head_of_a_reply_has_a_limit() {
-        use crate::net::client::read_reply;
-        use std::io::BufReader;
-        let mut long = b"HTTP/1.1 200 OK\r\nX: ".to_vec();
-        long.extend(std::iter::repeat_n(b'a', 9000));
-        long.extend_from_slice(b"\r\n\r\n");
-        assert!(
-            read_reply(BufReader::new(&long[..]), 1 << 20).is_err(),
-            "一行が長すぎる"
-        );
-        let mut many = b"HTTP/1.1 200 OK\r\n".to_vec();
-        for _ in 0..20_000 {
-            many.extend_from_slice(b"X: y\r\n");
-        }
-        many.extend_from_slice(b"\r\n");
-        assert!(
-            read_reply(BufReader::new(&many[..]), 1 << 20).is_err(),
-            "ヘッダーが多すぎる"
-        );
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn the_request_line_cannot_be_broken() {
-        use crate::net::client::request_head;
-        let url = parse_url("http://example.jp/a b\r\nX-Evil: 1#frag").unwrap();
-        let head = request_head("GET", &url, &[], None).unwrap();
-        assert!(
-            head.starts_with("GET /a%20b%0D%0AX-Evil:%201 HTTP/1.1\r\n"),
-            "{head}"
-        );
-        assert!(request_head("GET /x HTTP/1.1\r\nA:", &url, &[], None).is_err());
-        let url = parse_url("http://a.jp\r\nX/").unwrap();
-        assert!(request_head("GET", &url, &[], None).is_err(), "名前に改行");
-        let url = parse_url("http://u@a.jp/").unwrap();
-        assert!(
-            request_head("GET", &url, &[], None).is_err(),
-            "ユーザー情報"
-        );
-        let url = parse_url("http://a.jp/").unwrap();
-        let headers = [
-            (String::from("Content-Length"), String::from("0")),
-            (String::from("X-Ok"), String::from("1")),
+    fn what_arrived_is_carried_as_it_was() {
+        let all = vec![
+            conn::Arrived::Head {
+                status: 200,
+                headers: vec![(String::from("content-type"), String::from("text/plain"))],
+            },
+            conn::Arrived::Data(vec![0, 1, 2]),
+            conn::Arrived::Text(String::from("文字")),
+            conn::Arrived::End {
+                code: 1000,
+                reason: String::from("bye"),
+            },
+            conn::Arrived::Fail(Failure::Tls.code()),
         ];
-        let head = request_head("POST", &url, &headers, Some(3)).unwrap();
-        assert!(head.contains("X-Ok: 1\r\n") && head.contains("Content-Length: 3\r\n"));
-        assert_eq!(head.matches("Content-Length").count(), 1, "{head}");
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn inner_addresses_are_told_apart() {
-        use crate::net::client::is_inner;
-        for inner in [
-            "127.0.0.1",
-            "10.1.2.3",
-            "172.16.0.1",
-            "192.168.1.1",
-            "169.254.1.1",
-            "100.64.0.1",
-            "0.0.0.0",
-            "::1",
-            "fd00::1",
-            "fe80::1",
-            "::ffff:192.168.0.1",
-        ] {
-            assert!(is_inner(inner.parse().unwrap()), "{inner}");
+        let mut bytes = Vec::new();
+        for arrived in &all {
+            arrived.encode(&mut bytes);
         }
-        for outer in [
-            "8.8.8.8",
-            "203.0.113.1",
-            "2001:4860::8888",
-            "::ffff:8.8.8.8",
-        ] {
-            assert!(!is_inner(outer.parse().unwrap()), "{outer}");
-        }
-        use crate::net::client::address_of;
-        assert_eq!(
-            address_of("127.0.0.1", 9, false).err(),
-            Some(Failure::Connect),
-            "既定では内部ネットワークへ接続しない"
-        );
-        assert!(address_of("127.0.0.1", 9, true).is_ok(), "許せば繋ぐ");
-    }
-
-    #[test]
-    #[cfg(not(target_arch = "wasm32"))]
-    fn broadcast_roots_are_kept_per_session_and_bounded() {
-        let session = super::client::Session::new();
-        assert!(!session.add_root_certificate(b"not a certificate"));
-        assert!(!super::client::Session::new().add_root_certificate(&[0x30, 0x82, 0, 0]));
-    }
-}
-
-#[cfg(test)]
-mod live_tests {
-    #[test]
-    fn https_is_reachable_when_asked() {
-        if std::env::var_os("ZW_LIVE_TESTS").is_none() {
-            return;
-        }
-        let reply = super::get("https://example.com/").expect("https で取れる");
-        assert!(reply.status < 500, "{}", reply.status);
-        assert!(!reply.body.is_empty());
+        assert_eq!(conn::decode(&bytes), all);
     }
 }

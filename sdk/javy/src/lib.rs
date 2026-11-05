@@ -1,7 +1,7 @@
 // Copyright 2026 Till0196
 // SPDX-License-Identifier: Apache-2.0
 
-//! ZeroWave のレイヤーを JavaScript で書くための Javy プラグイン。
+//! ZeroWave のレイヤーを JavaScript で書くための、QuickJS の wasm。
 //!
 //! 本体（`zwsdk::host`）が提供する `zw_draw_v1`（canvas 2D）と `zw_layer_v1`（レイヤーの
 //! 大きさと時計）を、JS の `globalThis.__zw` に定義する。canvas 2D の
@@ -12,26 +12,22 @@
 //! Rust のプラグインと同じで、それぞれ JS の `__zwNew`／`__zwMessage`／
 //! `__zwTick`／`__zwFrame`／`__zwEvents`（`zwsdk` が置く）を呼ぶ。フレームは
 //! 番号 1 の canvas にレンダリングし、`frame` は「canvas にレンダリングした」と返す。
-//! Javy の生の `invoke` はスクリプトを呼ぶたびに評価し直す（状態が
-//! 残らない）ので、`_start` で一度だけ評価し、あとは残った runtime を
-//! ここから直接呼ぶ。
+//! スクリプトは本体が `zw_layer_v1` の `script` で渡す（wasm のカスタムセクション `zw_script`。
+//! `zw-stamp` が書き込む）。`_start` で一度だけ評価し、あとは残った runtime をここから直接呼ぶ。
 //!
-//! ビルドは `sdk/javy/build.sh`（`cargo build --release --target wasm32-wasip1` のあと
-//! `javy init-plugin` を通す）。
+//! ビルドは `sdk/javy/build.sh`。
 
 use std::cell::RefCell;
 
 use javy_plugin_api::javy::quickjs::{
     prelude::Func, prelude::Rest, Context, Ctx, Function, Object, TypedArray, Value,
 };
-use javy_plugin_api::{import_namespace, javy::Runtime, Config};
+use javy_plugin_api::{javy::Runtime, Config};
 
 thread_local! {
     /// `modify_runtime` で受け取った context。
     static CONTEXT: RefCell<Option<Context>> = const { RefCell::new(None) };
 }
-
-import_namespace!("zwjavy");
 
 // 本体は渡されたアドレスと長さを確かめてコピーするだけで、guest のメモリーへ書くのは
 // `get_transform`・`measure_text`・`buf_read` だけ。ほかはどんな引数で呼んでも壊れない。
@@ -95,6 +91,8 @@ unsafe extern "C" {
     safe fn height() -> f64;
     safe fn now_ms() -> f64;
     safe fn unix_ms() -> f64;
+    /// 評価するスクリプト（buf の番号）。無ければ 0。
+    safe fn script() -> u32;
 }
 
 #[link(wasm_import_module = "zw_buf_v1")]
@@ -172,18 +170,24 @@ fn modify_runtime(runtime: Runtime) -> Runtime {
         });
         put!("scale", |id: u32, x: f64, y: f64| scale(id, x, y));
         put!("rotate", |id: u32, a: f64| rotate(id, a));
-        put!(
-            "transform",
-            |id: u32, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64| {
-                transform(id, a, b, c, d, e, f)
-            }
-        );
-        put!(
-            "setTransform",
-            |id: u32, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64| {
-                set_transform(id, a, b, c, d, e, f)
-            }
-        );
+        put!("transform", |id: u32,
+                           a: f64,
+                           b: f64,
+                           c: f64,
+                           d: f64,
+                           e: f64,
+                           f: f64| {
+            transform(id, a, b, c, d, e, f)
+        });
+        put!("setTransform", |id: u32,
+                              a: f64,
+                              b: f64,
+                              c: f64,
+                              d: f64,
+                              e: f64,
+                              f: f64| {
+            set_transform(id, a, b, c, d, e, f)
+        });
         put!("getTransform", |id: u32| -> Vec<f64> {
             let mut m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
             // SAFETY: 本体が書くのは `m` の 6 個の f64 だけ。
@@ -193,14 +197,12 @@ fn modify_runtime(runtime: Runtime) -> Runtime {
         put!("fillRect", |id: u32, x: f64, y: f64, w: f64, h: f64| {
             fill_rect(id, x, y, w, h)
         });
-        put!(
-            "strokeRect",
-            |id: u32, x: f64, y: f64, w: f64, h: f64| stroke_rect(id, x, y, w, h)
-        );
-        put!(
-            "clearRect",
-            |id: u32, x: f64, y: f64, w: f64, h: f64| clear_rect(id, x, y, w, h)
-        );
+        put!("strokeRect", |id: u32, x: f64, y: f64, w: f64, h: f64| {
+            stroke_rect(id, x, y, w, h)
+        });
+        put!("clearRect", |id: u32, x: f64, y: f64, w: f64, h: f64| {
+            clear_rect(id, x, y, w, h)
+        });
         put!("beginPath", |id: u32| begin_path(id));
         put!("closePath", |id: u32| close_path(id));
         put!("moveTo", |id: u32, x: f64, y: f64| move_to(id, x, y));
@@ -209,21 +211,27 @@ fn modify_runtime(runtime: Runtime) -> Runtime {
             "quadraticCurveTo",
             |id: u32, cx: f64, cy: f64, x: f64, y: f64| quad_to(id, cx, cy, x, y)
         );
-        put!(
-            "bezierCurveTo",
-            |id: u32, c1x: f64, c1y: f64, c2x: f64, c2y: f64, x: f64, y: f64| {
-                bezier_to(id, c1x, c1y, c2x, c2y, x, y)
-            }
-        );
+        put!("bezierCurveTo", |id: u32,
+                               c1x: f64,
+                               c1y: f64,
+                               c2x: f64,
+                               c2y: f64,
+                               x: f64,
+                               y: f64| {
+            bezier_to(id, c1x, c1y, c2x, c2y, x, y)
+        });
         put!("rect", |id: u32, x: f64, y: f64, w: f64, h: f64| {
             rect(id, x, y, w, h)
         });
-        put!(
-            "arc",
-            |id: u32, x: f64, y: f64, r: f64, start: f64, end: f64, anticlockwise: bool| {
-                arc(id, x, y, r, start, end, u32::from(anticlockwise))
-            }
-        );
+        put!("arc", |id: u32,
+                     x: f64,
+                     y: f64,
+                     r: f64,
+                     start: f64,
+                     end: f64,
+                     anticlockwise: bool| {
+            arc(id, x, y, r, start, end, u32::from(anticlockwise))
+        });
         put!("fill", |id: u32| fill(id));
         put!("stroke", |id: u32| stroke(id));
         put!("clip", |id: u32| clip(id));
@@ -257,7 +265,11 @@ fn modify_runtime(runtime: Runtime) -> Runtime {
 }
 
 /// JS の関数を一つ呼び、例外は stderr（本体のログ）へ。無ければ `None`。
-fn call<'js>(ctx: &Ctx<'js>, name: &str, args: impl javy_plugin_api::javy::quickjs::function::IntoArgs<'js>) -> Option<Value<'js>> {
+fn call<'js>(
+    ctx: &Ctx<'js>,
+    name: &str,
+    args: impl javy_plugin_api::javy::quickjs::function::IntoArgs<'js>,
+) -> Option<Value<'js>> {
     let function: Result<Function, _> = ctx.globals().get(name);
     let Ok(function) = function else {
         eprintln!("zwjavy: {name} が無い");
@@ -357,7 +369,17 @@ extern "C" fn zw_layer_events(_handle: u32) -> u32 {
 #[export_name = "zw_layer_drop"]
 extern "C" fn zw_layer_drop(_handle: u32) {}
 
-#[export_name = "initialize-runtime"]
-fn initialize_runtime() {
-    javy_plugin_api::initialize_runtime(config, modify_runtime).unwrap()
+#[export_name = "_start"]
+extern "C" fn start() {
+    let source = bytes_of(script());
+    if source.is_empty() {
+        eprintln!("zwjavy: スクリプトが無い（zw-stamp で書き込む）");
+        return;
+    }
+    let ran = javy_plugin_api::initialize_runtime(config, modify_runtime)
+        .and_then(|()| javy_plugin_api::compile_src(&source))
+        .and_then(|bytecode| javy_plugin_api::invoke(&bytecode, None));
+    if let Err(error) = ran {
+        eprintln!("zwjavy: {error}");
+    }
 }

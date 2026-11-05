@@ -54,6 +54,12 @@ jobs:
       - name: Add the wasm target
         run: rustup target add wasm32-wasip1
 
+      - name: Test the runtime downloader
+        run: node --test sdk/ts/tests/fetch-runtime.test.mjs
+
+      - name: Build the JavaScript runtime for SDK tests
+        run: sh sdk/javy/build.sh
+
       - name: Clippy
         run: cargo clippy -p zerowave-core -p mediadecoder -p zwsdk --features "$LINUX_FEATURES" --all-targets -- -D warnings
 

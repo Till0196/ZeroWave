@@ -147,6 +147,7 @@ impl Stage {
             catalog: Vec::new(),
             catalog_back: None,
             guided_at: std::collections::HashMap::new(),
+            guides: std::sync::mpsc::channel(),
             catalog_due: true,
             tried: Vec::new(),
             tried_ways: Vec::new(),

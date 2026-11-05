@@ -30,8 +30,11 @@
 - `zwsdk::config`：一覧とマップの設定（`kind = "list"`・`"map"`）。
 - `zwsdk::fonts`：フォントの探し方です。
 - `zwsdk::draw`：canvas 2D の API でレンダリングして画像にします（ホスト側だけ、feature `host`）。
-- `zwsdk::net`：データ放送の通信など。本体がプラグインの代わりに通信します。
-- `sdk/ts`・`sdk/javy`：TypeScript でレイヤーを書くための SDK と、それを wasm にする Javy のプラグイン。
+- `zwsdk::net`：ネットワーク通信。
+- `sdk/ts`・`sdk/javy`：TypeScript でレイヤーを書くための SDK と、それを動かす QuickJS の wasm（`sdk/ts/zwjs.wasm`）。
+  `zw-stamp` が `zwjs.wasm` にスクリプト（カスタムセクション `zw_script`）とマニフェストを足して、プラグインの wasm にします。
+  リリースから実行環境を取得するには `node sdk/ts/bin/fetch-runtime.mjs v0.1.4` のようにタグを指定します（そのタグに `zwjs.wasm` が必要です）。SHA-256 を確認して `sdk/ts/zwjs.wasm` に置きます。プラグインのビルドには Node.js 18 以降だけで使えます。
+  実行環境をソースから作る場合は、Rust の `wasm32-wasip1` ターゲットを入れ、`sh sdk/javy/build.sh` を実行してください。
 
 プラグインは [zerowave_plugins](https://github.com/Till0196/zerowave_plugins) にあります。
 

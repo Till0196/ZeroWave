@@ -20,6 +20,9 @@ use crate::wake::Waker;
 
 const REOPEN_FIRST: Duration = Duration::from_secs(1);
 const REOPEN_MOST: Duration = Duration::from_secs(30);
+/// ほかのレイヤーは、選局したときにこれより大きければ作り直す（データ放送は毎回）。wasm のメモリーは伸びたら
+/// 縮まないので、一度伸びるとその後ずっとそのまま。
+const REBUILD_OVER: usize = 192 << 20;
 
 /// 提示の合図がこれだけ来なければ、レイヤーは自分の時計で回る。
 const BEAT_LOST: Duration = Duration::from_millis(100);
@@ -498,6 +501,8 @@ impl Worker {
             return;
         };
         let mut area = self.setup.size;
+        // 作り直したら渡し直す（局が変わっても送り直されない）。
+        let mut captions: Option<Message> = None;
         let mut ticked = Instant::now() - self.interval;
         // 再起動は重いので、間隔を延ばしていく。
         let mut reopen_after: Option<Instant> = None;
@@ -526,6 +531,12 @@ impl Worker {
                     continue;
                 }
                 hurry |= is_key(&message);
+                if let ToLayer::Message(shown @ Message::CaptionShown(_), _) = &message {
+                    captions = Some(shown.clone());
+                }
+                if let ToLayer::Message(Message::Retuned, _) = &message {
+                    self.rebuild(&mut layer, area, captions.as_ref());
+                }
                 if !self.take(&mut layer, &mut area, message) {
                     return;
                 }
@@ -564,6 +575,32 @@ impl Worker {
                 reopen_wait = REOPEN_FIRST;
             }
         }
+    }
+
+    /// 前の局の文書（通信のアプリも）と、それが使ったメモリーを残さない。
+    fn rebuild(&self, layer: &mut LayerInstance, area: (u32, u32), captions: Option<&Message>) {
+        let grown = layer.memory();
+        if self.place != Place::At(Slot::Databroadcast) && grown <= REBUILD_OVER {
+            return;
+        }
+        let Some(mut fresh) = self.open() else {
+            return;
+        };
+        let (width, height) = area;
+        let replayed = std::iter::once(Message::Area { width, height }).chain(captions.cloned());
+        for message in replayed {
+            if let Err(error) = fresh.message(&message, &[]) {
+                self.fell(error);
+                return;
+            }
+        }
+        tracing::debug!(
+            "レイヤー {} を作り直した（{} MiB → {} MiB）",
+            self.name,
+            grown >> 20,
+            fresh.memory() >> 20
+        );
+        *layer = fresh;
     }
 
     fn take(&self, layer: &mut LayerInstance, area: &mut (u32, u32), message: ToLayer) -> bool {

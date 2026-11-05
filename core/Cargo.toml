@@ -25,8 +25,19 @@ passthrough = ["dep:windows", "dep:ndk-context"]
 android = ["dep:ndk", "dep:ndk-sys", "dep:ash", "dep:libc"]
 videotoolbox = ["dep:objc2", "dep:objc2-metal"]
 coaxd = ["dep:coax"]
-mirakurun = ["dep:coax"]
-plugins = ["dep:zwsdk", "zwsdk/host"]
+mirakurun = ["dep:coax", "net"]
+plugins = ["dep:zwsdk", "zwsdk/host", "net"]
+net = [
+    "dep:reqwest",
+    "dep:tokio",
+    "dep:bytes",
+    "dep:rustls",
+    "dep:rustls-platform-verifier",
+    "dep:webpki-roots",
+    "dep:ring",
+    "dep:tungstenite",
+    "dep:url",
+]
 h264-decoder = ["mediadecoder/h264-decoder"]
 hevc-decoder = ["mediadecoder/hevc-decoder"]
 
@@ -39,6 +50,17 @@ mmttlv.workspace = true
 isdb.workspace = true
 coax = { workspace = true, optional = true }
 zwsdk = { path = "../sdk", optional = true }
+# HTTP/2 とシステムのプロキシは使わない。暗号は aws-lc（C と nasm が要り、Windows へのクロスビルドで失敗する）ではなく ring。
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"], optional = true }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time", "macros", "net"], optional = true }
+bytes = { version = "1", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-platform-verifier = { version = "0.7", optional = true }
+webpki-roots = { version = "1", optional = true }
+# SHA-1 の署名の検証に使う（webpki に無い）。
+ring = { version = "0.17", optional = true }
+url = { version = "2", optional = true }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"], optional = true }
 png = "0.18"
 wgpu = { version = "30", default-features = false, features = [
     "wgsl",
@@ -108,6 +130,11 @@ libc = { version = "0.2", optional = true }
 [dev-dependencies]
 mediadecoder = { path = "../mediadecoder" }
 naga = { version = "30", features = ["wgsl-in"] }
+
+# ネットワーク通信のテストの認証局。ring は C を含むので、C のツールチェーンを用意しない Android では入れない
+# （Android では `net` を使わない）。
+[target.'cfg(not(target_os = "android"))'.dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
 
 [lints]
 workspace = true

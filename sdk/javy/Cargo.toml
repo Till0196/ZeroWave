@@ -3,7 +3,7 @@ name = "zwjavy"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "ZeroWave のレイヤーを JavaScript（TypeScript）で書くための Javy プラグイン"
+description = "ZeroWave のレイヤーを JavaScript（TypeScript）で書くための、QuickJS の wasm"
 
 [lib]
 crate-type = ["cdylib"]
