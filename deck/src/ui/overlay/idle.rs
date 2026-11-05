@@ -363,9 +363,13 @@ mod tests {
             assert!(texts.len() >= 10, "{}", texts.len());
             for rect in &texts {
                 assert!(frame.contains_rect(*rect), "{rect:?}");
+                // 文字は画素に揃えて置かれるので、1 画素までは許す。
                 assert!(
-                    rect.left() >= origin.x + LEFT * s - 0.5
-                        && rect.right() <= origin.x + (LEFT + COLUMN) * s + 0.5
+                    rect.left() >= origin.x + LEFT * s - 1.0
+                        && rect.right() <= origin.x + (LEFT + COLUMN) * s + 1.0,
+                    "{width}: {rect:?} が列（{} 〜 {}）の外",
+                    origin.x + LEFT * s,
+                    origin.x + (LEFT + COLUMN) * s
                 );
             }
             for (nth, one) in texts.iter().enumerate() {

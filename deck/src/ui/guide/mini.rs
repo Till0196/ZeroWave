@@ -615,9 +615,11 @@ mod tests {
         let ctx = egui::Context::default();
         let mut said = Vec::new();
         let run = |strip: &Strip<'_>, said: &mut Vec<Option<f32>>| {
-            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ctx.run_ui(egui::RawInput::default(), |ui| {
                 said.push(follow_watching(ui, strip));
-            });
+            })
+            .textures_delta
+            .clear();
         };
         run(&strip, &mut said);
         run(&strip, &mut said);
@@ -639,7 +641,7 @@ mod tests {
         };
         let mut said = Vec::new();
         for offset in [None, None, Some(240.0), Some(240.0)] {
-            let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ctx.run_ui(egui::RawInput::default(), |ui| {
                 said.push(follow(
                     ui,
                     ui.scope_id().with("試し"),
@@ -647,7 +649,9 @@ mod tests {
                     Band(0),
                     offset,
                 ));
-            });
+            })
+            .textures_delta
+            .clear();
         }
         assert_eq!(said, [None, None, Some(240.0), None]);
     }
