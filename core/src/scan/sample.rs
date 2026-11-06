@@ -299,7 +299,7 @@ pub fn serving_tuner(
         .map(|tuner| tuner.id.clone())
 }
 
-/// TSMF の分離はプラグインが行うので、TS ごとにプラグインチェーンを作り `zwsdk::abi::PART` の予約値で指定する。
+/// TSMF の分離はプラグインが行うので、TS ごとにプラグインチェーンを作り、相対ストリーム専用の入口で指定する。
 #[cfg(feature = "plugins")]
 struct Slots<'a> {
     open: std::collections::BTreeMap<u8, (zwsdk::host::Chain, Reading, bool)>,
@@ -333,7 +333,7 @@ impl<'a> Slots<'a> {
             } else {
                 zwsdk::host::Container::Ts
             };
-            let failed = chain.start(container, Some(zwsdk::abi::PART | u16::from(number)));
+            let failed = chain.start_relative(container, number);
             if !failed.is_empty() {
                 continue;
             }

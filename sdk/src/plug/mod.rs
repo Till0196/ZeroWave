@@ -41,6 +41,8 @@ impl Container {
 pub struct StreamInfo {
     pub container: Container,
     pub service: Option<u16>,
+    /// Explicit relative stream selection for multiplex scanning.
+    pub relative_stream: Option<u8>,
 }
 
 /// 一つのスレッドからしか触られず、選局のたびに作られる。
@@ -133,11 +135,27 @@ macro_rules! export_stream {
             }
 
             #[unsafe(no_mangle)]
+            pub extern "C" fn zw_stream_start_relative(handle: u32, container: u32, relative: u32) -> i32 {
+                let Ok(relative) = u8::try_from(relative) else { return -1; };
+                $crate::plug::abi::slab::with::<$stream, i32>(handle, |it| {
+                    match <$stream as $crate::plug::Stream>::start(it, $crate::plug::StreamInfo {
+                        container: $crate::plug::Container::of(container),
+                        service: None,
+                        relative_stream: Some(relative),
+                    }) {
+                        Ok(()) => 0,
+                        Err(why) => { $crate::plug::warn(&why); 1 }
+                    }
+                }).unwrap_or(-1)
+            }
+
+            #[unsafe(no_mangle)]
             pub extern "C" fn zw_stream_start(handle: u32, container: u32, service: u32) -> i32 {
                 $crate::plug::abi::slab::with::<$stream, i32>(handle, |it| {
                     let info = $crate::plug::StreamInfo {
                         container: $crate::plug::Container::of(container),
                         service: (service != 0).then_some(service as u16),
+                        relative_stream: None,
                     };
                     match <$stream as $crate::plug::Stream>::start(it, info) {
                         Ok(()) => 0,

@@ -314,6 +314,7 @@ impl Plugin {
         let mut made = Made::new(&self.engine, module, Limits::STREAM, logger, None, io)?;
         let new: TypedFunc<(), u32> = made.func(abi::export::STREAM_NEW)?;
         let start: TypedFunc<(u32, u32, u32), i32> = made.func(abi::export::STREAM_START)?;
+        let start_relative = made.func(abi::export::STREAM_START_RELATIVE).ok();
         let input: TypedFunc<(u32, u32), i32> = made.func(abi::export::STREAM_INPUT)?;
         let stop: TypedFunc<u32, ()> = made.func(abi::export::STREAM_STOP)?;
         let drop: TypedFunc<u32, ()> = made.func(abi::export::STREAM_DROP)?;
@@ -328,6 +329,7 @@ impl Plugin {
             made,
             handle,
             start,
+            start_relative,
             input,
             stop,
             drop,
@@ -945,6 +947,7 @@ pub struct StreamInstance {
     made: Made,
     handle: u32,
     start: TypedFunc<(u32, u32, u32), i32>,
+    start_relative: Option<TypedFunc<(u32, u32, u32), i32>>,
     input: TypedFunc<(u32, u32), i32>,
     stop: TypedFunc<u32, ()>,
     drop: TypedFunc<u32, ()>,
@@ -983,6 +986,26 @@ impl StreamInstance {
                 ),
             )
             .map_err(|error| format!("{}: start: {error}", self.name))?;
+        if code != 0 {
+            return Err(format!("{} が始められない（{code}）", self.name));
+        }
+        self.started = true;
+        Ok(())
+    }
+
+    /// Starts a scan of an explicitly selected relative stream.
+    /// Older guests without this entry point return an error.
+    pub fn start_relative(&mut self, container: Container, relative: u8) -> Result<(), String> {
+        let start = self
+            .start_relative
+            .as_ref()
+            .ok_or_else(|| format!("{}: relative stream selection is unsupported", self.name))?;
+        let code = start
+            .call(
+                self.made.armed(),
+                (self.handle, container as u32, u32::from(relative)),
+            )
+            .map_err(|error| format!("{}: start_relative: {error}", self.name))?;
         if code != 0 {
             return Err(format!("{} が始められない（{code}）", self.name));
         }
@@ -1056,6 +1079,21 @@ impl Chain {
                     false
                 }
             });
+        refused
+    }
+
+    /// Starts relative stream selection without encoding a service identifier.
+    pub fn start_relative(&mut self, container: Container, relative: u8) -> Vec<String> {
+        let mut refused = Vec::new();
+        self.instances.retain_mut(
+            |instance| match instance.start_relative(container, relative) {
+                Ok(()) => true,
+                Err(why) => {
+                    refused.push(why);
+                    false
+                }
+            },
+        );
         refused
     }
 
@@ -1147,6 +1185,10 @@ mod tests {
 
     /// `zw_stream_input` の中身だけを差し替えた stream のモジュール。
     fn stream_module(input: &[u8]) -> Vec<u8> {
+        stream_module_with_relative(input, false)
+    }
+
+    fn stream_module_with_relative(input: &[u8], relative: bool) -> Vec<u8> {
         let mut wasm = b"\0asm\x01\0\0\0".to_vec();
         let types = [
             &[0x04, 0x60, 0x00, 0x01, 0x7f][..],
@@ -1158,7 +1200,7 @@ mod tests {
         section(1, &types, &mut wasm);
         section(3, &[0x05, 0x00, 0x01, 0x02, 0x03, 0x03], &mut wasm);
         section(5, &[0x01, 0x00, 0x01], &mut wasm);
-        let mut exports = vec![0x06];
+        let mut exports = vec![if relative { 0x07 } else { 0x06 }];
         name("memory", &mut exports);
         exports.extend_from_slice(&[0x02, 0x00]);
         for (n, export) in [
@@ -1174,11 +1216,19 @@ mod tests {
             name(export, &mut exports);
             exports.extend_from_slice(&[0x00, n as u8]);
         }
+        if relative {
+            name(abi::export::STREAM_START_RELATIVE, &mut exports);
+            exports.extend_from_slice(&[0x00, 0x01]);
+        }
         section(7, &exports, &mut wasm);
         let mut code = vec![0x05];
         for body in [
             &[0x00, 0x41, 0x01, 0x0b][..],
-            &[0x00, 0x41, 0x00, 0x0b],
+            if relative {
+                &[0x00, 0x20, 0x02, 0x41, 0x03, 0x47, 0x0b]
+            } else {
+                &[0x00, 0x41, 0x00, 0x0b]
+            },
             input,
             &[0x00, 0x0b],
             &[0x00, 0x0b],
@@ -1194,6 +1244,46 @@ mod tests {
         );
         section(0, &custom, &mut wasm);
         wasm
+    }
+
+    #[test]
+    fn relative_selection_crosses_the_wasm_boundary() {
+        let engine = engine().expect("engine");
+        let place = std::env::temp_dir().join("zw-explicit-relative.wasm");
+        let plugin = Plugin::from_bytes(
+            &engine,
+            &stream_module_with_relative(&[0x00, 0x41, 0x00, 0x0b], true),
+            &place,
+        )
+        .expect("plugin");
+        let mut stream = plugin
+            .stream(Box::new(|_, _| {}), Io::default())
+            .expect("stream");
+        stream
+            .start_relative(Container::Ts, 3)
+            .expect("relative argument reaches guest");
+        assert!(stream.start_relative(Container::Ts, 4).is_err());
+        if let Some(cache) = plugin.cache() {
+            let _ = std::fs::remove_file(cache);
+        }
+    }
+
+    #[test]
+    fn legacy_stream_start_is_supported_but_relative_selection_is_not_guessed() {
+        let engine = engine().expect("engine");
+        let place = std::env::temp_dir().join("zw-legacy-relative.wasm");
+        let plugin = Plugin::from_bytes(&engine, &stream_module(&[0x00, 0x41, 0x00, 0x0b]), &place)
+            .expect("plugin");
+        let mut stream = plugin
+            .stream(Box::new(|_, _| {}), Io::default())
+            .expect("stream");
+        stream
+            .start(Container::Ts, Some(u16::MAX))
+            .expect("legacy start");
+        assert!(stream.start_relative(Container::Ts, 3).is_err());
+        if let Some(cache) = plugin.cache() {
+            let _ = std::fs::remove_file(cache);
+        }
     }
 
     fn run_stream(input: &[u8]) -> (Result<(), String>, Vec<String>) {
