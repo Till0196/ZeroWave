@@ -260,10 +260,7 @@ impl Stage {
     }
 
     fn volume_opacity(&self) -> Option<f32> {
-        let (at, refused) = self.volume_shown?;
-        if self.player.muted() && !refused {
-            return Some(1.0);
-        }
+        let (at, _) = self.volume_shown?;
         let age = at.elapsed().as_secs_f32();
         if age < self.volume_hold {
             Some(1.0)
