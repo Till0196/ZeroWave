@@ -33,13 +33,6 @@ pub mod import {
     pub const VIDEO: &str = "zw_video_v1";
 }
 
-/// 多重化フレームの一つのスロットだけを要求するサービス識別子（`0xF000 | スロット番号`）。放送では使われない範囲。
-pub const PART: u16 = 0xf000;
-
-pub fn part_of(service: u16) -> Option<u8> {
-    (service & 0xff00 == PART).then_some((service & 0x00ff) as u8)
-}
-
 /// 名前に `.` を含むのでソースには渡らない。
 pub mod word {
     pub const PART: &str = "multiplex.part";
@@ -56,6 +49,7 @@ pub fn truthy(value: &str) -> bool {
 
 pub mod export {
     pub const STREAM_NEW: &str = "zw_stream_new";
+    pub const STREAM_START_RELATIVE: &str = "zw_stream_start_relative";
     pub const STREAM_START: &str = "zw_stream_start";
     pub const STREAM_INPUT: &str = "zw_stream_input";
     pub const STREAM_STOP: &str = "zw_stream_stop";
@@ -75,18 +69,4 @@ pub mod export {
     pub const UI_PICK: &str = "zw_ui_pick";
     pub const UI_PAGE: &str = "zw_ui_page";
     pub const UI_EVENT: &str = "zw_ui_event";
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_reserved_service_says_which_part() {
-        assert_eq!(part_of(PART | 3), Some(3));
-        assert_eq!(part_of(PART), Some(0));
-        assert_eq!(part_of(0x0400), None);
-        assert_eq!(part_of(101), None);
-        assert_eq!(part_of(0xffff), None, "範囲外");
-    }
 }

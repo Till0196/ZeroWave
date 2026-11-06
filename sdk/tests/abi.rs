@@ -106,6 +106,7 @@ fn export_stream_names_match() {
     for name in [
         abi::export::STREAM_NEW,
         abi::export::STREAM_START,
+        abi::export::STREAM_START_RELATIVE,
         abi::export::STREAM_INPUT,
         abi::export::STREAM_STOP,
         abi::export::STREAM_DROP,
