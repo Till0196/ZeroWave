@@ -870,7 +870,8 @@ fn run(mut player: Player, choices: Choices, live: Option<Live>, keep: sound::Ke
     } else {
         (choices, instance)
     };
-    let event_loop = match EventLoop::<Wake>::with_user_event().build() {
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    let mut event_loop = match EventLoop::<Wake>::with_user_event().build() {
         Ok(loop_) => loop_,
         Err(error) => {
             tracing::warn!("ウィンドウを開けない: {error}");
@@ -980,7 +981,16 @@ fn run(mut player: Player, choices: Choices, live: Option<Live>, keep: sound::Ke
     window::mac_open::accept(to_stage.clone());
     let mut shell =
         window::shell::Shell::new(boot, deck, to_stage, to_panes, from_panes, keep, guide);
-    if let Err(error) = event_loop.run_app(&mut shell) {
+    // Linux はイベントループを後始末の後まで残す（Wayland の接続はイベントループが持つ）。
+    // egui-winit のクリップボードはその接続を借りるので、接続が先に閉じるとクリップボードのスレッドが落ちる。
+    #[cfg(target_os = "linux")]
+    let ran = {
+        use winit::platform::run_on_demand::EventLoopExtRunOnDemand;
+        event_loop.run_app_on_demand(&mut shell)
+    };
+    #[cfg(not(target_os = "linux"))]
+    let ran = event_loop.run_app(&mut shell);
+    if let Err(error) = ran {
         tracing::warn!("{error}");
         leave(1);
     }
