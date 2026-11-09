@@ -955,6 +955,19 @@ impl Form<'_, '_> {
         )
     }
 
+    /// 状態の印（丸）と文字。
+    pub(super) fn status(&mut self, at: egui::Pos2, said: &str, colour: Color32) {
+        let painter = self.ui.painter();
+        painter.circle_filled(pos2(at.x + 3.0, at.y), 3.0, colour);
+        painter.text(
+            pos2(at.x + 12.0, at.y),
+            egui::Align2::LEFT_CENTER,
+            said,
+            FontId::proportional(skin::TEXT_SIZE - 0.5),
+            colour,
+        );
+    }
+
     pub(super) fn note(&mut self, text: impl ToString) {
         let left = self.inset() + skin::DOT;
         self.wrapped(left, text.to_string());

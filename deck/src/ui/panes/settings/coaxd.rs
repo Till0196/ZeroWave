@@ -113,8 +113,7 @@ pub(super) fn section(
     let look = form.look;
     let Some(seen) = seen else {
         let value = form.told_row("状態");
-        status(
-            form,
+        form.status(
             pos2(value.left(), value.center().y),
             "確認しています…",
             look.label,
@@ -129,7 +128,7 @@ pub(super) fn section(
     };
     {
         let value = form.told_row("状態");
-        status(form, pos2(value.left(), value.center().y), said, colour);
+        form.status(pos2(value.left(), value.center().y), said, colour);
     }
     if let Some(running) = &seen.running {
         // インストール先の物でなければ、どこで動いているかを出す（止めも替えもしない）。
@@ -244,18 +243,6 @@ fn joined(parts: &[&str]) -> String {
         .copied()
         .collect::<Vec<_>>()
         .join("・")
-}
-
-fn status(form: &mut Form<'_, '_>, at: egui::Pos2, said: &str, colour: egui::Color32) {
-    let painter = form.ui.painter();
-    painter.circle_filled(pos2(at.x + 3.0, at.y), 3.0, colour);
-    painter.text(
-        pos2(at.x + 12.0, at.y),
-        egui::Align2::LEFT_CENTER,
-        said,
-        FontId::proportional(skin::TEXT_SIZE - 0.5),
-        colour,
-    );
 }
 
 pub fn show(root: &mut egui::Ui, state: &State, look: &Look) -> Option<Pressed> {

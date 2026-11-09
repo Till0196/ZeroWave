@@ -97,15 +97,29 @@ fn rows(written: &[String], offers: &[Offer]) -> Vec<Row> {
     rows
 }
 
-fn spell(rows: &[Row]) -> Vec<String> {
+/// 並びの一行の綴りと、使うか。
+trait Spelled {
+    fn spelled(&self) -> (String, bool);
+}
+
+impl Spelled for Row {
+    fn spelled(&self) -> (String, bool) {
+        (self.pick.spelling(), self.on)
+    }
+}
+
+impl Spelled for SoundRow {
+    fn spelled(&self) -> (String, bool) {
+        (self.pick.spelling(), self.on)
+    }
+}
+
+/// 設定に書く並び。使わない物は頭に `!`。
+fn spell(rows: &[impl Spelled]) -> Vec<String> {
     rows.iter()
-        .map(|row| {
-            let spelled = row.pick.spelling();
-            if row.on {
-                spelled
-            } else {
-                format!("!{spelled}")
-            }
+        .map(|row| match row.spelled() {
+            (spelled, true) => spelled,
+            (spelled, false) => format!("!{spelled}"),
         })
         .collect()
 }
@@ -169,7 +183,7 @@ pub(super) fn codecs(
     let before = rows.clone();
     sound_table(form, sound, &mut rows);
     if rows != before {
-        *sound_written_mut(edited, sound) = sound_spell(&rows);
+        *sound_written_mut(edited, sound) = spell(&rows);
     }
     *form.at += 6.0;
     let line = form.line(skin::ROW);
@@ -243,19 +257,6 @@ fn sound_rows(written: &[String], offers: &[String]) -> Vec<SoundRow> {
         }
     }
     rows
-}
-
-fn sound_spell(rows: &[SoundRow]) -> Vec<String> {
-    rows.iter()
-        .map(|row| {
-            let spelled = row.pick.spelling();
-            if row.on {
-                spelled
-            } else {
-                format!("!{spelled}")
-            }
-        })
-        .collect()
 }
 
 fn sound_table(form: &mut Form<'_, '_>, codec: SoundCodec, rows: &mut [SoundRow]) {
@@ -711,15 +712,9 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert!(!rows[0].on);
         rows[0].on = true;
-        assert_eq!(
-            sound_spell(&rows),
-            ["system:Microsoft AAC Audio Decoder MFT"]
-        );
+        assert_eq!(spell(&rows), ["system:Microsoft AAC Audio Decoder MFT"]);
         let rows = sound_rows(&[String::from("zerowave")], &offers);
-        assert_eq!(
-            sound_spell(&rows),
-            ["!system:Microsoft AAC Audio Decoder MFT"]
-        );
+        assert_eq!(spell(&rows), ["!system:Microsoft AAC Audio Decoder MFT"]);
     }
 
     #[test]

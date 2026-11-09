@@ -565,6 +565,26 @@ impl Stage {
         self.status.signal_alarm = verdict.is_some_and(|verdict| verdict.trouble.alarms());
     }
 
+    /// 案内に出すチューナーの名前。
+    fn tuner_text(&self) -> String {
+        self.status
+            .tuner
+            .clone()
+            .unwrap_or_else(|| String::from("—"))
+    }
+
+    /// 案内に出す信号の強さとビットレート。
+    fn signal_text(&self) -> String {
+        format!(
+            "{}　{:.2} Mbps",
+            self.status.cnr.map_or_else(
+                || String::from("CNR -- dB"),
+                |cnr| format!("CNR {cnr:.1} dB")
+            ),
+            self.status.bitrate
+        )
+    }
+
     fn trouble(&self) -> Option<scene::Trouble> {
         use super::reception::Trouble as Why;
         if self.player.tables().mixed_streams {
@@ -574,24 +594,8 @@ impl Stage {
                 guide: "この放送の受信に必要なプラグインを追加してください。",
                 station: None,
                 rows: vec![
-                    (
-                        String::from("チューナー"),
-                        self.status
-                            .tuner
-                            .clone()
-                            .unwrap_or_else(|| String::from("—")),
-                    ),
-                    (
-                        String::from("信号"),
-                        format!(
-                            "{}　{:.2} Mbps",
-                            self.status.cnr.map_or_else(
-                                || String::from("CNR -- dB"),
-                                |cnr| format!("CNR {cnr:.1} dB")
-                            ),
-                            self.status.bitrate
-                        ),
-                    ),
+                    (String::from("チューナー"), self.tuner_text()),
+                    (String::from("信号"), self.signal_text()),
                 ],
                 below: None,
                 dim: false,
@@ -620,14 +624,7 @@ impl Stage {
             band: band_label(key, remote_key),
         };
         let moment = self.guide.now_or_machine();
-        let signal = format!(
-            "{}　{:.2} Mbps",
-            self.status.cnr.map_or_else(
-                || String::from("CNR -- dB"),
-                |cnr| format!("CNR {cnr:.1} dB")
-            ),
-            self.status.bitrate
-        );
+        let signal = self.signal_text();
         let now = || {
             self.guide.at(key, moment).and_then(|programme| {
                 let start = programme.start?;
@@ -645,13 +642,7 @@ impl Stage {
         let (rows, below) = match verdict.trouble {
             Why::NoSignal => (
                 vec![
-                    row(
-                        "チューナー",
-                        self.status
-                            .tuner
-                            .clone()
-                            .unwrap_or_else(|| String::from("—")),
-                    ),
+                    row("チューナー", self.tuner_text()),
                     row("信号", signal),
                     row("状態", String::from("受信できません")),
                 ],

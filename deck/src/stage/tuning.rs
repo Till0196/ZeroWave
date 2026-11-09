@@ -20,26 +20,10 @@ pub(super) fn open_mirakurun(
         source.name(),
         channels.len()
     );
-    let (send, fetched) = std::sync::mpsc::channel();
-    let far = url.to_owned();
-    std::thread::Builder::new()
-        .name(String::from("guide"))
-        .spawn(move || {
-            crate::threads::background::lower();
-            let Ok(mut source) = zwcore::input::source::mirakurun::Mirakurun::at(&far) else {
-                return;
-            };
-            if let Err(why) = source.guide_in_parts(|part| {
-                let _ = send.send(part);
-            }) {
-                tracing::warn!("全局の番組表を取得できない: {why}");
-            }
-        })
-        .ok();
     Ok(Live {
         supply: Supply::new(Box::new(source)),
         channels,
-        fetched: Some(fetched),
+        fetched: Some(super::fetch_guide(url.to_owned())),
         url: Some(url.to_owned()),
         starting: None,
     })
