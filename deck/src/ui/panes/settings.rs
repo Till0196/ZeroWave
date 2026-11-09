@@ -353,6 +353,13 @@ pub(crate) fn reach_in(channels: &crate::config::channels::Channels) -> Reach {
 pub type Checks =
     std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Result<String, String>>>>;
 
+/// いまのプロファイルが coaxd を使うか。使わなければ、ページを開いただけでは coaxd を起動しない。
+fn uses_coaxd(file: &File, profile: &str) -> bool {
+    crate::stage::openings(file, profile)
+        .iter()
+        .any(|(_, opening)| matches!(opening, crate::stage::Opening::Coaxd { .. }))
+}
+
 fn pick_profile(form: &mut Form<'_, '_>, edited: &File, profile: &str) -> (Option<Pressed>, Rect) {
     let names: Vec<String> = std::iter::once(ALL.to_owned())
         .chain(edited.profiles.iter().map(|profile| profile.name.clone()))
@@ -776,7 +783,7 @@ fn self_page(
         Page::Playback => plain::playback(&mut form, edited, loaded),
         Page::Source => {
             if !state.boards_asked {
-                ask_boards(state, edited);
+                ask_boards(state, edited, uses_coaxd(edited, &state.active));
             }
             let reach = state.reach.get_or_insert_with(|| reach_of(&profile));
             pressed = source::source(
@@ -799,7 +806,7 @@ fn self_page(
         Page::ChannelList => {
             // チューナーの一覧を問い合わせるのが先。問い合わせると経路のテーブルとチャンネルマップが空に戻る。
             if !state.boards_asked {
-                ask_boards(state, edited);
+                ask_boards(state, edited, uses_coaxd(edited, &state.active));
             }
             let map = state
                 .channels
@@ -880,7 +887,7 @@ fn self_page(
         }
         Page::Scan => {
             if !state.boards_asked {
-                ask_boards(state, edited);
+                ask_boards(state, edited, uses_coaxd(edited, &state.active));
             }
             pressed = scan::scan(&mut form, edited, state);
         }

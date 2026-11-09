@@ -140,40 +140,6 @@ fn asked(label: &str, opening: &Opening) -> Vec<zwcore::input::source::Channel> 
     }
 }
 
-/// 設定にある Mirakurun の全部へ、バックグラウンドでサービス一覧を取得してキャッシュする。`skip` は重ねて取得しない物。
-pub(super) fn refresh_mirakurun(file: &crate::config::File, skip: &[String]) {
-    let wanted: Vec<(String, Opening)> = file
-        .sources
-        .iter()
-        .filter(|source| source.kind == "mirakurun" && !source.url.is_empty())
-        .filter(|source| !skip.contains(&source.label))
-        .map(|source| {
-            (
-                source.label.clone(),
-                Opening::Mirakurun {
-                    url: source.url.clone(),
-                    by: zwcore::input::source::mirakurun::By::parse(&source.by)
-                        .unwrap_or(zwcore::input::source::mirakurun::By::Auto),
-                },
-            )
-        })
-        .collect();
-    if wanted.is_empty() {
-        return;
-    }
-    let spawned = std::thread::Builder::new()
-        .name(String::from("services"))
-        .spawn(move || {
-            for (label, opening) in wanted {
-                let channels = asked(&label, &opening);
-                tracing::info!("{label}: サービス一覧 {} 局", channels.len());
-            }
-        });
-    if let Err(why) = spawned {
-        tracing::warn!("サービス一覧を取得するスレッドを起動できない: {why}");
-    }
-}
-
 pub(crate) fn listed_at_hand(
     file: &crate::config::File,
     profile: &str,
@@ -292,7 +258,8 @@ impl Stage {
     }
 
     pub(super) fn take_catalog(&mut self) {
-        if self.catalog_due {
+        // 再生モードの間はソースに問い合わせない（抜けたときに作り直す）。
+        if self.catalog_due && !self.player_mode && self.live.is_some() {
             self.rebuild_catalog();
         }
         while let Ok(guided) = self.guides.1.try_recv() {

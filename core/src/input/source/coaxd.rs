@@ -140,9 +140,20 @@ pub fn boards(endpoint: &str, priority: i32) -> Result<Vec<coax::daemon::Board>,
     Ok(boards)
 }
 
-pub fn boards_as_told(endpoint: &str, priority: i32) -> Result<Vec<coax::daemon::Board>, String> {
+/// `launch` が偽なら、動いていない coaxd を起動しない。
+pub fn boards_as_told(
+    endpoint: &str,
+    priority: i32,
+    launch: bool,
+) -> Result<Vec<coax::daemon::Board>, String> {
     let daemon = Daemon::new(endpoint_of(endpoint)).with_priority(priority);
-    reach(&daemon).map_err(|why| why.to_string())?;
+    if launch {
+        reach(&daemon).map_err(|why| why.to_string())?;
+    } else {
+        daemon
+            .version()
+            .map_err(|why| unreachable(why).to_string())?;
+    }
     daemon.listing().map_err(|why| explain(&why.to_string()))
 }
 

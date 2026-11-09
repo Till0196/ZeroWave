@@ -138,8 +138,8 @@ pub(crate) fn serving<'a>(
         .collect()
 }
 
-/// coaxd を起動して待つことがあるので別のスレッドで問い合わせる。
-pub fn ask_boards(state: &mut State, file: &File) {
+/// coaxd を起動して待つことがあるので別のスレッドで問い合わせる。`launch` が偽なら動いている coaxd にだけ問い合わせる。
+pub fn ask_boards(state: &mut State, file: &File, launch: bool) {
     state.boards_asked = true;
     state.reach = None;
     state.channels = None;
@@ -162,8 +162,11 @@ pub fn ask_boards(state: &mut State, file: &File) {
     std::thread::Builder::new()
         .name(String::from("boards"))
         .spawn(move || {
-            let answer =
-                zwcore::input::source::coaxd::boards_as_told(&source.endpoint, source.priority);
+            let answer = zwcore::input::source::coaxd::boards_as_told(
+                &source.endpoint,
+                source.priority,
+                launch,
+            );
             if let Ok(mut boards) = into.lock() {
                 *boards = Some(answer);
             }

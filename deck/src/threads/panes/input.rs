@@ -438,7 +438,7 @@ impl Screen {
             }
             // チューナーの状態は開くたびに問い合わせ直す（coaxd を起動して待つことがある）。
             Pressed::OpenTuners => {
-                ui::panes::settings::ask_boards(&mut self.settings_page, &self.edited);
+                ui::panes::settings::ask_boards(&mut self.settings_page, &self.edited, true);
                 self.open(Which::Tuners);
             }
             Pressed::OpenPlugin(name) => match crate::plugin_ui::settings_page_of(&name) {
@@ -455,7 +455,7 @@ impl Screen {
                 self.open(Which::TwentyTwo);
             }
             Pressed::Boards => {
-                ui::panes::settings::ask_boards(&mut self.settings_page, &self.edited);
+                ui::panes::settings::ask_boards(&mut self.settings_page, &self.edited, true);
             }
             Pressed::Close => {}
             // ウィンドウごとにクリップボードの扱いが違うので設定ウィンドウから。
