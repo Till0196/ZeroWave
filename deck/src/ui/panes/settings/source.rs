@@ -330,6 +330,17 @@ fn profiles(
             active
         }
     ));
+    // 名前が空のプロファイルは一覧から選べないので、ここで削除できるようにする。
+    if edited.profiles.iter().any(|p| p.name.is_empty()) {
+        let row = form.line(skin::SELECT_HEIGHT);
+        if form.button(
+            Rect::from_min_size(row.min, vec2(240.0, row.height())),
+            ("profile.delete_unnamed", 0),
+            "名前の無いプロファイルを削除",
+        ) {
+            edited.profiles.retain(|p| !p.name.is_empty());
+        }
+    }
     if is_main {
         form.note(
             "all は書いた順の全ソースと全チューナーです。絞るにはプロファイルを追加してください",
@@ -340,15 +351,35 @@ fn profiles(
         return pressed;
     };
     let before = edited.profiles[index].name.clone();
+    // 空にしている間は名前を替えない（空の名前は all と見分けられず、選ぶことも削除することもできなくなる）。
+    let draft_id = form
+        .ui
+        .scope_id()
+        .with(("profile.name.draft", index, before.clone()));
+    let mut name = form
+        .ui
+        .ctx()
+        .data(|data| data.get_temp::<String>(draft_id))
+        .unwrap_or_else(|| before.clone());
     labelled_field(
         form,
         "名前",
         ("profile.name", index),
-        &mut edited.profiles[index].name,
-        &before.clone(),
+        &mut name,
+        &before,
         "名前",
     );
-    if edited.profiles[index].name != before && !edited.profiles[index].name.is_empty() {
+    form.ui.ctx().data_mut(|data| {
+        if name.is_empty() {
+            data.insert_temp(draft_id, String::new());
+        } else {
+            data.remove::<String>(draft_id);
+        }
+    });
+    if !name.is_empty() {
+        edited.profiles[index].name.clone_from(&name);
+    }
+    if edited.profiles[index].name != before {
         let after = edited.profiles[index].name.clone();
         if !before.is_empty() {
             for network in &mut edited.networks {
