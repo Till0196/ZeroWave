@@ -11,6 +11,8 @@ impl Stage {
         let mut notices: std::collections::VecDeque<String> = crate::config::take_notices().into();
         let notice = notices.pop_front();
         let telling_since = notice.as_ref().map(|_| Instant::now());
+        // 録画から起動して放送のソースも持っているなら、再生モードとして始める（抜けると放送へ）。
+        let player_mode = boot.live.is_some() && boot.player.is_recording();
         Self {
             choices: boot.choices,
             painter: boot.painter,
@@ -67,7 +69,7 @@ impl Stage {
             asked_tables: Instant::now(),
             asked_info: Instant::now(),
             live: boot.live,
-            player_mode: false,
+            player_mode,
             leaving: None,
             profile_pending: false,
             live_key: None,
@@ -136,6 +138,7 @@ impl Stage {
             asking: Arc::default(),
             switching: None,
             started: None,
+            unstarted: None,
             starting_since: None,
             hidden: Vec::new(),
             plugins_seen: None,
@@ -249,7 +252,12 @@ impl Stage {
         if let Some(live) = self.live.as_mut() {
             live.supply.hand();
         }
-        if let Some(starting) = self.live.as_mut().and_then(|live| live.starting.take()) {
+        // 録画から起動したなら、放送のソースは再生モードを抜けるときに起動する。
+        #[cfg(target_os = "macos")]
+        let later = self.player_mode || crate::window::mac_open::handed();
+        #[cfg(not(target_os = "macos"))]
+        let later = self.player_mode;
+        if !later && let Some(starting) = self.live.as_mut().and_then(|live| live.starting.take()) {
             self.start_source(starting);
         }
         // Only now: which decoder a coding gets depends on what was just opened.

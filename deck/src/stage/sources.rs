@@ -346,6 +346,7 @@ impl Stage {
                 if let Some((since, said, waiting)) = self.starting_since
                     && said.elapsed() >= Duration::from_secs(3)
                     && !self.telling_notice()
+                    && !self.in_player_mode()
                 {
                     self.starting_since = Some((since, Instant::now(), waiting));
                     self.toast(&format!("{waiting}（{} 秒）", since.elapsed().as_secs()));
@@ -360,8 +361,21 @@ impl Stage {
         };
         self.started = None;
         self.starting_since = None;
+        let unstarted = self.unstarted.take();
         let started = match answer {
             Ok(started) => started,
+            // 録画を開いている間は出さない（頼んでいない放送のソースのこと）。
+            Err(why) if self.in_player_mode() => {
+                tracing::warn!("{why}");
+                return;
+            }
+            Err(why) if self.player_mode => {
+                if let (Some(live), Some(starting)) = (self.live.as_mut(), unstarted) {
+                    live.starting = Some(starting);
+                }
+                self.complain_not_tuned(&why);
+                return;
+            }
             Err(why) => {
                 self.complain(&why);
                 return;
@@ -389,6 +403,17 @@ impl Stage {
         self.roster_seeded = false;
         self.listed_mark = None;
         self.catalog_due = true;
+        // 起動している間に録画を開いた（macOS でファイルから起動したときなど）。選局は再生モードを抜けたときに。
+        if self.in_player_mode() {
+            if let Some(key) = chosen.and_then(|channel| channel.key) {
+                self.live_key = Some(key);
+            }
+            return;
+        }
+        // 抜けようとしていて選べる局が無ければ、再生モードのまま。
+        if self.player_mode && chosen.as_ref().is_none_or(|channel| channel.key.is_none()) {
+            self.stay_in_player_mode();
+        }
         match chosen.and_then(|channel| channel.key) {
             Some(key) => {
                 self.watched(key);

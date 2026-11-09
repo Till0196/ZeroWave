@@ -523,7 +523,7 @@ impl Stage {
             return;
         }
         // 再生モード中の選局は、抜けたときの局にするだけ。
-        if self.player_mode && self.leaving.is_none() {
+        if self.in_player_mode() {
             self.asked_key = before;
             self.live_key = Some(key);
             let name = self
@@ -1030,6 +1030,19 @@ impl Stage {
             );
             return;
         }
+        // 放送のソースをまだ起動していない（起動のときに録画を渡された）。選局は起動できてから。
+        // プロファイルを替えていたら、起動せずに替えた先のソースへ。
+        if let Some(starting) = self.live.as_mut().and_then(|live| live.starting.take())
+            && !self.profile_pending
+        {
+            if self.leaving.is_none() {
+                self.leaving = Some(self.asked_key);
+            }
+            // 接続できずに再生モードに残ったら、次に抜けるときにまた起動する。
+            self.unstarted = Some(starting.clone());
+            self.start_source(starting);
+            return;
+        }
         if self.profile_pending {
             let file = crate::config::load_plain();
             let profile = crate::config::load_state().profile;
@@ -1054,6 +1067,11 @@ impl Stage {
             self.leaving = Some(self.asked_key);
         }
         self.tune(key);
+    }
+
+    /// 再生モードにいて、抜けようとしていない。
+    pub(super) fn in_player_mode(&self) -> bool {
+        self.player_mode && self.leaving.is_none()
     }
 
     pub(super) fn stay_in_player_mode(&mut self) -> bool {

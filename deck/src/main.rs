@@ -364,26 +364,7 @@ fn main() {
                 }
             });
         } else {
-            let (entries, unknown) = file.entries_of(&file.profile(&profile));
-            for label in unknown {
-                tracing::info!("プロファイルで指定した source「{label}」が [[source]] に無い");
-            }
-            let mut chosen = None;
-            for entry in entries {
-                let source = entry.source;
-                match source.kind.as_str() {
-                    "mirakurun" if !source.url.is_empty() => {
-                        chosen = Some((source, entry.tuner));
-                        break;
-                    }
-                    "mirakurun" => tracing::info!("{}: url が無い", source.shown()),
-                    "coaxd" => {
-                        chosen = Some((source, entry.tuner));
-                        break;
-                    }
-                    other => tracing::info!("{}: 不明な kind「{other}」", source.shown()),
-                }
-            }
+            let chosen = profile_source(&file, &profile);
             match chosen {
                 Some((source, tuner)) => {
                     tracing::info!(
@@ -435,6 +416,22 @@ fn main() {
         let remembered = profile.clone();
         config::update_state(move |state| state.profile = remembered);
     }
+    // 録画から起動しても放送のソースを用意しておく（接続は再生モードを抜けるときに）。
+    let later = if path.is_some() && mirakurun.is_none() && coaxd.is_none() && config.found {
+        let remembered = profile.clone();
+        config::update_state(move |state| state.profile = remembered);
+        profile_source(&file, &profile).and_then(|(source, tuner)| {
+            let mut pick = Pick::First;
+            if file.general.on_start != "nothing"
+                && let Some(last) = config.state.last
+            {
+                pick = Pick::Exact(last);
+            }
+            live_of(&source, tuner, &file.profile(&profile).name, pick)
+        })
+    } else {
+        None
+    };
     if let Some(line) = scanning {
         leave(i32::from(!scan_only(&line)));
     }
@@ -584,7 +581,59 @@ fn main() {
         };
         return idle(&why, sound, keep, choices);
     }
-    run(player, choices, None, keep);
+    run(player, choices, later, keep);
+}
+
+/// プロファイルで最初に使えるソース（coaxd ならチューナーの指定も）。
+fn profile_source(
+    file: &config::File,
+    profile: &str,
+) -> Option<(config::file::Source, Option<String>)> {
+    let (entries, unknown) = file.entries_of(&file.profile(profile));
+    for label in unknown {
+        tracing::info!("プロファイルで指定した source「{label}」が [[source]] に無い");
+    }
+    let mut chosen = None;
+    for entry in entries {
+        let source = entry.source;
+        match source.kind.as_str() {
+            "mirakurun" if !source.url.is_empty() => {
+                chosen = Some((source, entry.tuner));
+                break;
+            }
+            "mirakurun" => tracing::info!("{}: url が無い", source.shown()),
+            "coaxd" => {
+                chosen = Some((source, entry.tuner));
+                break;
+            }
+            other => tracing::info!("{}: 不明な kind「{other}」", source.shown()),
+        }
+    }
+    chosen.map(|(source, tuner)| (source.clone(), tuner))
+}
+
+/// 録画から起動したときに用意しておく放送のソース。
+fn live_of(
+    source: &config::file::Source,
+    tuner: Option<String>,
+    profile: &str,
+    pick: Pick,
+) -> Option<Live> {
+    if source.kind == "coaxd" {
+        let tuners: Vec<String> = tuner.into_iter().collect();
+        return Some(coaxd_live(
+            source.endpoint.as_str(),
+            source.priority,
+            &tuners,
+            profile,
+            pick,
+        ));
+    }
+    let by = zwcore::input::source::mirakurun::By::parse(&source.by)
+        .unwrap_or(zwcore::input::source::mirakurun::By::Auto);
+    mirakurun_live(&source.url, by, pick)
+        .inspect_err(|why| tracing::warn!("{}: {why}", source.shown()))
+        .ok()
 }
 
 struct Finish;
@@ -659,8 +708,8 @@ fn from_mirakurun(
     keep: sound::Keep,
     choices: Choices,
 ) {
-    let mut source = match zwcore::input::source::mirakurun::Mirakurun::at(url) {
-        Ok(source) => source,
+    let live = match mirakurun_live(url, by, pick) {
+        Ok(live) => live,
         Err(why) => {
             return idle(
                 &stage::said_with("Mirakurun に接続できません。", &why),
@@ -670,7 +719,6 @@ fn from_mirakurun(
             );
         }
     };
-    source.set_by(by);
     let mut player = Player::from_source(
         zwcore::input::source::pending(),
         zwcore::filters::Container::Ts,
@@ -681,7 +729,19 @@ fn from_mirakurun(
     if !player.look_live(None) {
         leave(1);
     }
-    let live = Live {
+    run(player, choices, Some(live), keep);
+}
+
+/// Mirakurun のソース。接続は選局するとき。
+fn mirakurun_live(
+    url: &str,
+    by: zwcore::input::source::mirakurun::By,
+    pick: Pick,
+) -> Result<Live, String> {
+    let mut source =
+        zwcore::input::source::mirakurun::Mirakurun::at(url).map_err(|why| why.to_string())?;
+    source.set_by(by);
+    Ok(Live {
         supply: Supply::new(Box::new(source)),
         channels: Vec::new(),
         fetched: None,
@@ -691,8 +751,7 @@ fn from_mirakurun(
             by,
             pick,
         }),
-    };
-    run(player, choices, Some(live), keep);
+    })
 }
 
 fn scan_only(line: &str) -> bool {
@@ -807,9 +866,6 @@ fn from_coaxd(
     keep: sound::Keep,
     choices: Choices,
 ) {
-    let source = zwcore::input::source::coaxd::Coaxd::written(endpoint, priority)
-        .with_tuners(tuners.to_vec());
-    let came = stage::tuning::came_of_coaxd(endpoint, tuners, profile);
     let mut player = Player::from_source(
         zwcore::input::source::pending(),
         zwcore::filters::Container::Ts,
@@ -820,11 +876,19 @@ fn from_coaxd(
     if !player.look_live(None) {
         leave(1);
     }
-    let live = Live {
+    let live = coaxd_live(endpoint, priority, tuners, profile, pick);
+    run(player, choices, Some(live), keep);
+}
+
+/// coaxd のソース。coaxd の起動と接続は裏で（起動まで数秒かかる）。
+fn coaxd_live(endpoint: &str, priority: i32, tuners: &[String], profile: &str, pick: Pick) -> Live {
+    let source = zwcore::input::source::coaxd::Coaxd::written(endpoint, priority)
+        .with_tuners(tuners.to_vec());
+    Live {
         supply: Supply::new(Box::new(source)),
         channels: Vec::new(),
         fetched: None,
-        url: Some(came),
+        url: Some(stage::tuning::came_of_coaxd(endpoint, tuners, profile)),
         starting: Some(stage::Starting::Coaxd {
             endpoint: endpoint.to_owned(),
             priority,
@@ -832,8 +896,7 @@ fn from_coaxd(
             profile: config::channels_profile(profile).to_owned(),
             pick,
         }),
-    };
-    run(player, choices, Some(live), keep);
+    }
 }
 
 fn run(mut player: Player, choices: Choices, live: Option<Live>, keep: sound::Keep) {
