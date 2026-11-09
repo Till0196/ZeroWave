@@ -10,6 +10,7 @@ mod dxva;
 mod h264;
 mod hevc;
 mod mpeg2;
+mod outputs;
 pub(crate) mod pool;
 mod process;
 #[cfg(any(feature = "qsv", feature = "amf"))]

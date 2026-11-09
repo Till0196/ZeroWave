@@ -7,8 +7,6 @@
 //!
 //! ビデオプロセスと同じく、デコードと同じスレッドで呼ぶ。
 
-use std::sync::Arc;
-
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D::Fxc::D3DCompile;
 use windows::Win32::Graphics::Direct3D::{
@@ -20,6 +18,7 @@ use windows::core::{Interface, PCSTR, s};
 
 use super::Frame;
 use super::dx::{self, Owned, failed};
+use super::outputs::Outputs;
 #[cfg(feature = "qsv")]
 use super::process::Deinterlacer;
 #[cfg(feature = "qsv")]
@@ -63,7 +62,7 @@ pub(super) struct Weaver {
     /// 出力ごとに二つ（輝度・色差）。
     targets: ID3D12DescriptorHeap,
     target_step: usize,
-    outs: Vec<Out>,
+    outs: Outputs,
     /// 対になるフィールドを待っているフィールド（トップなら真）。
     pending: Option<(Frame, About, bool)>,
 }
@@ -72,18 +71,6 @@ struct Pipelines {
     ten_bit: bool,
     luma: ID3D12PipelineState,
     chroma: ID3D12PipelineState,
-}
-
-struct Out {
-    texture: ID3D12Resource,
-    size: [u32; 2],
-    ten_bit: bool,
-    allocator: ID3D12CommandAllocator,
-    /// ビデオプロセスが持っている間は 2 以上。
-    lease: Arc<()>,
-    written: u64,
-    /// 読んだフィールド。書き終えるまでデコーダーに返さない。
-    holding: Vec<Frame>,
 }
 
 impl std::fmt::Debug for Weaver {
@@ -148,7 +135,7 @@ impl Weaver {
                 target_step: raw.GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)
                     as usize,
                 targets,
-                outs: Vec::new(),
+                outs: Outputs::new(MOST_OUTS),
                 pending: None,
             })
         }
@@ -156,7 +143,7 @@ impl Weaver {
 
     /// 一フィールド受け取り、対がそろえば合成したフレームを返す。同じパリティーが続いたら先のフィールドは捨てる。
     pub fn push(&mut self, frame: &Frame, about: &About) -> Result<Option<(Frame, About)>, Error> {
-        self.release_read();
+        self.outs.release_read(&self.fence);
         let top = match about.structure {
             Structure::Top => true,
             Structure::Bottom => false,
@@ -211,20 +198,7 @@ impl Weaver {
     /// 前の番組のフィールドを捨てる。書き終えるのを待って、読んでいたフィールドもデコーダーに返す。
     pub fn reset(&mut self) {
         self.pending = None;
-        if self.event.wait_fence(&self.fence, self.value).is_ok() {
-            for out in &mut self.outs {
-                out.holding.clear();
-            }
-        }
-    }
-
-    fn release_read(&mut self) {
-        let done = dx::completed(&self.fence);
-        for out in &mut self.outs {
-            if out.written <= done {
-                out.holding.clear();
-            }
-        }
+        self.outs.release_all(&self.event, &self.fence, self.value);
     }
 
     /// ビット深度に合うパイプラインを用意する。
@@ -261,37 +235,18 @@ impl Weaver {
 
     /// 空いている出力。全部持たれていれば増やす。
     fn out_for(&mut self, size: [u32; 2], ten_bit: bool) -> Result<usize, Error> {
-        // 大きさか形式の違う出力は、空いたものから捨てる。
-        self.outs.retain(|out| {
-            (out.size == size && out.ten_bit == ten_bit) || Arc::strong_count(&out.lease) > 1
-        });
-        if let Some(at) = self.outs.iter().position(|out| {
-            out.size == size && out.ten_bit == ten_bit && Arc::strong_count(&out.lease) == 1
-        }) {
-            self.event.wait_fence(&self.fence, self.outs[at].written)?;
-            self.outs[at].holding.clear();
-            return Ok(at);
-        }
-        if self.outs.len() >= MOST_OUTS {
-            return Err(Error::Unavailable(String::from(
-                "フィールドの合成の出力が足りない",
-            )));
-        }
         let format = if ten_bit {
             DXGI_FORMAT_P010
         } else {
             DXGI_FORMAT_NV12
         };
-        self.outs.push(Out {
-            texture: target(&self.raw, format, size)?,
-            size,
-            ten_bit,
-            allocator: dx::allocator(&self.raw, D3D12_COMMAND_LIST_TYPE_DIRECT)?,
-            lease: Arc::new(()),
-            written: 0,
-            holding: Vec::new(),
-        });
-        Ok(self.outs.len() - 1)
+        let raw = &self.raw;
+        self.outs.free(&self.event, &self.fence, size, format, || {
+            Ok((
+                target(raw, format, size)?,
+                dx::allocator(raw, D3D12_COMMAND_LIST_TYPE_DIRECT)?,
+            ))
+        })
     }
 
     fn draw(&mut self, upper: &Frame, lower: &Frame, at: usize) -> Result<(), Error> {
