@@ -47,6 +47,7 @@ impl Stage {
             vsync: super::vsync::Vsync::default(),
             told_broadcast: None,
             told_clock: None,
+            told_hold: false,
             told_scene: None,
             status: Status::default(),
             wants_guide: false,

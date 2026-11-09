@@ -876,6 +876,8 @@ pub struct Guide {
     /// 見える画素が一つも無いロゴ（受け取ったときに調べる）。表示では無いものとして扱う。
     blank_logos: std::collections::BTreeSet<(u16, u8, u16)>,
     now: Option<(Moment, std::time::Instant)>,
+    /// 時計を止めている（録画の一時停止の間）。
+    held: bool,
     /// 放送の時刻と UTC の差、秒。Mirakurun（UTC）の時刻をこれで合わせる。
     offset: i32,
     revision: u64,
@@ -916,6 +918,7 @@ impl Default for Guide {
             logos: BTreeMap::new(),
             blank_logos: std::collections::BTreeSet::new(),
             now: None,
+            held: false,
             offset: JST_OFFSET,
             revision: 0,
             sections: std::collections::HashMap::new(),
@@ -951,6 +954,7 @@ impl Guide {
             logos: self.logos.clone(),
             blank_logos: self.blank_logos.clone(),
             now: self.now,
+            held: self.held,
             offset: self.offset,
             ..Self::default()
         }
@@ -1000,8 +1004,27 @@ impl Guide {
     }
 
     pub fn now(&self) -> Option<Moment> {
-        self.now
-            .map(|(moment, heard)| moment + heard.elapsed().as_secs() as i64)
+        self.now.map(|(moment, heard)| {
+            if self.held {
+                moment
+            } else {
+                moment + heard.elapsed().as_secs() as i64
+            }
+        })
+    }
+
+    /// 時計を止める・動かす。止めている間に届いた時刻はそのまま止まった時刻になる。変えたら真。
+    pub fn hold(&mut self, held: bool) -> bool {
+        if self.held == held {
+            return false;
+        }
+        if held {
+            self.now = self.now().map(|moment| (moment, std::time::Instant::now()));
+        } else if let Some((_, heard)) = self.now.as_mut() {
+            *heard = std::time::Instant::now();
+        }
+        self.held = held;
+        true
     }
 
     pub fn machine_now(&self) -> Moment {

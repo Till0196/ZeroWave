@@ -101,6 +101,11 @@ pub(super) fn read(
                 }
                 // 容量一つのチャネルなので、詰まっていたら送らない。
                 Ask::Tables => {
+                    // 録画の一時停止の間は番組表の時計も止める（進めると後の番組が出る）。
+                    if !live {
+                        let paused = shared.with_clock(|clock| clock.is_paused());
+                        engine.guide_mut().hold(paused);
+                    }
                     let _ = told.try_send(gather(engine));
                 }
                 Ask::Guide if engine.mixing() != crate::filters::packet::ts::Mixing::One => {}

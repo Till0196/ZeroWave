@@ -216,6 +216,8 @@ pub enum ToGuide {
     List(Ask),
     Prefs(Prefs),
     Clock(Option<Moment>),
+    /// 録画の一時停止で時計を止める・動かす。
+    Hold(bool),
     Search(Option<Asked>),
     Logos(std::collections::BTreeMap<Key, LogoOf>),
     /// 録画の再生に入る・出る。再生中は録画に含まれる情報だけで組み立て、ファイルは読み書きしない。
@@ -234,6 +236,7 @@ impl std::fmt::Debug for ToGuide {
             }
             Self::List(ask) => write!(out, "List({ask:?})"),
             Self::Clock(moment) => write!(out, "Clock({moment:?})"),
+            Self::Hold(on) => write!(out, "Hold({on})"),
             Self::Search(query) => write!(out, "Search({query:?})"),
             Self::Logos(map) => write!(out, "Logos({})", map.len()),
             Self::Recording(on) => write!(out, "Recording({on})"),
@@ -407,6 +410,9 @@ pub fn keeping(
                     if jumped {
                         fresh = true;
                     }
+                }
+                ToGuide::Hold(on) => {
+                    fresh |= recording.as_mut().unwrap_or(&mut master).hold(on);
                 }
                 ToGuide::Search(asked) => query = Some(asked),
                 ToGuide::Logos(map) => {
