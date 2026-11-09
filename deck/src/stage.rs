@@ -417,6 +417,8 @@ pub struct Stage {
     asking: Arc<std::sync::atomic::AtomicBool>,
     switching: Option<Receiver<Result<Live, String>>>,
     started: Option<Receiver<Result<Started, String>>>,
+    /// 再生モードを抜けるために起動しているソース（接続できなければ取っておき直す）。
+    unstarted: Option<Starting>,
     starting_since: Option<(Instant, Instant, &'static str)>,
     /// 音声の切り替えを要求したときの識別子と時刻。一秒たっても変わらなければ「できません」。
     sound_asked: Option<(Option<u16>, Instant)>,

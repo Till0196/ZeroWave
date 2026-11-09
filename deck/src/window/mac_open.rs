@@ -17,6 +17,14 @@ use crate::threads::link::{Act, ToStage};
 
 static TO_STAGE: OnceLock<Sender<ToStage>> = OnceLock::new();
 
+/// 録画を渡された。起動のときに渡されたなら、ウィンドウを作る前に立つ。
+static HANDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 録画を渡されたか（放送のソースを起動せずに待つため）。
+pub fn handed() -> bool {
+    HANDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// `EventLoop` を作ったあと、`run_app` の前に呼ぶ（起動時に渡されたファイルは起動の途中で届く）。
 pub fn accept(to_stage: Sender<ToStage>) {
     let _ = TO_STAGE.set(to_stage);
@@ -68,6 +76,7 @@ unsafe extern "C-unwind" fn open_urls(
             continue;
         }
         tracing::info!("Finder から開く: {}", path.display());
+        HANDED.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some(to_stage) = TO_STAGE.get() {
             let _ = to_stage.send(ToStage::Act(Act::Open(path)));
         }
