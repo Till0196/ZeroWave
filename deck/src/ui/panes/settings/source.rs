@@ -1200,12 +1200,22 @@ fn mirakurun_rows(
         form.look.label,
         skin::TEXT_SIZE,
     );
+    // 書いていなければ自動。
+    let shown = if source.by.is_empty() {
+        "auto"
+    } else {
+        source.by.as_str()
+    };
+    let mut by = shown.to_owned();
     form.select_at(
         Rect::from_min_size(pos2(value_left, row.top()), vec2(180.0, row.height())),
         ("source.by", index),
-        &mut source.by,
+        &mut by,
         BY,
     );
+    if by != shown {
+        source.by = by;
+    }
     let row = form.line(skin::SELECT_HEIGHT);
     say(
         form,
