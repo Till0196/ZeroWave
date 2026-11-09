@@ -126,10 +126,10 @@ fn mono(size: f32) -> FontId {
     FontId::monospace(size)
 }
 
-fn tone_colour(look: &Look, tone: Tone) -> Color32 {
+pub(super) fn tone_colour(look: &Look, tone: Tone) -> Color32 {
     match tone {
         Tone::Plain => look.text,
-        Tone::Muted => look.group,
+        Tone::Muted => look.label,
         Tone::Accent => look.primary,
         Tone::Good => look.ok,
         Tone::Warn => look.typed,

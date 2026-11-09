@@ -226,28 +226,11 @@ impl Stage {
                     return;
                 }
                 for (label, url) in guided {
-                    let began = std::time::Instant::now();
-                    let (mut services, mut programmes) = (0, 0);
-                    let fetched = zwcore::input::source::mirakurun::Mirakurun::at(&url)
-                        .map_err(|why| why.to_string())
-                        .and_then(|mut source| {
-                            source
-                                .guide_in_parts(|part| {
-                                    services = services.max(part.services().count());
-                                    programmes += part.programme_count();
-                                    let _ = guides.send(Guided::Part(part));
-                                })
-                                .map_err(|why| why.to_string())
-                        });
-                    match fetched {
-                        Ok(()) => tracing::info!(
-                            "{label}: 全局の番組表 {services} 局・{programmes} 番組（{:.1} 秒）",
-                            began.elapsed().as_secs_f64()
-                        ),
-                        Err(why) => {
-                            tracing::warn!("{label}: 全局の番組表を取得できない: {why}");
-                            let _ = guides.send(Guided::Failed(url));
-                        }
+                    let fetched = super::guide_in_parts(&url, &label, |part| {
+                        let _ = guides.send(Guided::Part(part));
+                    });
+                    if !fetched {
+                        let _ = guides.send(Guided::Failed(url));
                     }
                 }
             });

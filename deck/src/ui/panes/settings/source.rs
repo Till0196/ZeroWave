@@ -78,7 +78,7 @@ pub(super) fn source(
                 }
                 Err(_) => (String::from("接続できません"), form.look.error),
             };
-            status(form, pos2(left + 280.0, row.center().y), &said, colour);
+            form.status(pos2(left + 280.0, row.center().y), &said, colour);
         }
         if form.button(
             Rect::from_min_size(
@@ -234,18 +234,6 @@ pub(super) fn source(
         pressed = Some(picked);
     }
     pressed
-}
-
-fn status(form: &mut Form<'_, '_>, at: egui::Pos2, said: &str, colour: Color32) {
-    let painter = form.ui.painter();
-    painter.circle_filled(pos2(at.x + 3.0, at.y), 3.0, colour);
-    painter.text(
-        pos2(at.x + 12.0, at.y),
-        egui::Align2::LEFT_CENTER,
-        said,
-        FontId::proportional(skin::TEXT_SIZE - 0.5),
-        colour,
-    );
 }
 
 fn labelled_field(

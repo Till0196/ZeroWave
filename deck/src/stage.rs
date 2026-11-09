@@ -769,29 +769,40 @@ fn fetch_guide(url: String) -> Receiver<Guide> {
         .name(String::from("guide"))
         .spawn(move || {
             crate::threads::background::lower();
-            let began = Instant::now();
-            let Ok(mut source) = zwcore::input::source::mirakurun::Mirakurun::at(&url) else {
-                return;
-            };
-            // 届いた分から渡す（全部をまとめてから渡すと、番組表のスレッドがまとめ終えるまで二組並ぶ）。
-            let (mut services, mut programmes) = (0, 0);
-            let fetched = source.guide_in_parts(|part| {
-                services = services.max(part.services().count());
-                programmes += part.programme_count();
+            guide_in_parts(&url, &url, |part| {
                 let _ = send.send(part);
             });
-            match fetched {
-                Ok(()) => tracing::info!(
-                    "全局の番組表 {services} 局・{programmes} 番組（{:.1} 秒）",
-                    began.elapsed().as_secs_f64()
-                ),
-                Err(why) => tracing::warn!("全局の番組表を取得できない: {why}"),
-            }
         });
     if let Err(why) = spawned {
         tracing::warn!("番組表を取得するスレッドを起動できない: {why}");
     }
     fetched
+}
+
+/// Mirakurun の全局の番組表を、届いた分から `each` に渡す（全部をまとめてから渡すと、番組表のスレッドが
+/// まとめ終えるまで二組並ぶ）。取れたら真。
+fn guide_in_parts(url: &str, name: &str, mut each: impl FnMut(Guide)) -> bool {
+    let began = Instant::now();
+    let (mut services, mut programmes) = (0, 0);
+    let fetched = zwcore::input::source::mirakurun::Mirakurun::at(url)
+        .map_err(|why| why.to_string())
+        .and_then(|mut source| {
+            source
+                .guide_in_parts(|part| {
+                    services = services.max(part.services().count());
+                    programmes += part.programme_count();
+                    each(part);
+                })
+                .map_err(|why| why.to_string())
+        });
+    match &fetched {
+        Ok(()) => tracing::info!(
+            "{name}: 全局の番組表 {services} 局・{programmes} 番組（{:.1} 秒）",
+            began.elapsed().as_secs_f64()
+        ),
+        Err(why) => tracing::warn!("{name}: 全局の番組表を取得できない: {why}"),
+    }
+    fetched.is_ok()
 }
 
 fn live_is_empty(live: Option<&Live>) -> bool {

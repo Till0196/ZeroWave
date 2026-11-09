@@ -16,17 +16,6 @@ pub const HEIGHT: f32 = 640.0;
 
 const TABS: f32 = 44.0;
 
-fn tone(look: &Look, tone: Tone) -> Color32 {
-    match tone {
-        Tone::Plain => look.text,
-        Tone::Muted => look.label,
-        Tone::Accent => look.primary,
-        Tone::Good => look.ok,
-        Tone::Warn => look.typed,
-        Tone::Bad => look.error,
-    }
-}
-
 fn text_width(form: &Form<'_, '_>, text: &str, size: f32) -> f32 {
     form.ui
         .painter()
@@ -50,7 +39,7 @@ fn render(
                 None
             }
             Node::Note { text, tone: t } => {
-                note(form, text, tone(form.look, *t));
+                note(form, text, plugin_bound::tone_colour(form.look, *t));
                 None
             }
             Node::Toggle {
@@ -231,7 +220,7 @@ fn line(form: &mut Form<'_, '_>, scope: &str, label: &str, items: &[Inline]) -> 
     for (nth, item) in items.iter().enumerate() {
         let event = match item {
             Inline::Text { text, tone: t } => {
-                let colour = tone(form.look, *t);
+                let colour = plugin_bound::tone_colour(form.look, *t);
                 let width = text_width(form, text, skin::TEXT_SIZE);
                 form.ui.painter().text(
                     pos2(x, middle),
@@ -559,8 +548,7 @@ fn bar(form: &mut Form<'_, '_>, label: &str, parts: &[(f32, Tone)], left: &str, 
         }
         let colour = match t {
             Tone::Plain => look.primary,
-            Tone::Muted => look.label,
-            _ => tone(look, *t),
+            _ => plugin_bound::tone_colour(look, *t),
         };
         painter.rect_filled(
             Rect::from_min_size(pos2(x, row.top()), vec2(width, row.height())),
@@ -700,7 +688,7 @@ fn table(
                     let colour = if row.selected && *t == Tone::Plain {
                         look.chosen_text
                     } else {
-                        tone(look, *t)
+                        plugin_bound::tone_colour(look, *t)
                     };
                     let painter = form
                         .ui
@@ -740,7 +728,7 @@ fn table(
                 Cell::Tag { text, tone: t } => {
                     let colour = match t {
                         Tone::Plain => look.label,
-                        _ => tone(look, *t),
+                        _ => plugin_bound::tone_colour(look, *t),
                     };
                     let w = text_width(form, text, skin::TEXT_SIZE - 2.0) + 14.0;
                     let tag = Rect::from_min_size(

@@ -792,17 +792,6 @@ impl Item {
         }
     }
 
-    #[allow(dead_code)]
-    const fn pending(label: &'static str, command: Command, key: Option<&'static str>) -> Self {
-        Self::Command {
-            label,
-            command,
-            key,
-            enabled: false,
-            toggle: false,
-        }
-    }
-
     const fn group(label: &'static str, group: Group) -> Self {
         Self::Group {
             label,
