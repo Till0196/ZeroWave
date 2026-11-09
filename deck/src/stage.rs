@@ -317,6 +317,8 @@ pub struct Stage {
     vsync: vsync::Vsync,
     told_broadcast: Option<zwsdk::layer::Broadcast>,
     told_clock: Option<zwcore::guide::Moment>,
+    /// 番組表のスレッドに番組表の時計を止めさせているか（録画の一時停止）。
+    told_hold: bool,
     told_scene: Option<SceneMark>,
     status: Status,
     wants_guide: bool,

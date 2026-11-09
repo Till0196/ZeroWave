@@ -329,6 +329,11 @@ impl Stage {
         {
             self.told_broadcast = Some(broadcast);
         }
+        let hold = self.player.is_recording() && (self.player.paused() || self.player.buffering());
+        if self.told_hold != hold {
+            self.told_hold = hold;
+            let _ = self.guide_to.send(ToGuide::Hold(hold));
+        }
         if let Some(clock) = tables.clock
             && self.told_clock != Some(clock)
         {

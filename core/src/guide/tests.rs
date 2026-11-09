@@ -1529,3 +1529,15 @@ fn sdt_other_does_not_move_a_confirmed_transport() {
     assert_eq!(service.transport, 0x48f3);
     assert!(service.transport_confirmed);
 }
+
+#[test]
+fn a_held_clock_stays_at_the_last_time_told() {
+    let mut guide = Guide::new();
+    guide.tell_time(1_788_870_600);
+    guide.hold(true);
+    assert_eq!(guide.now(), Some(1_788_870_600));
+    guide.tell_time(1_788_870_700);
+    assert_eq!(guide.now(), Some(1_788_870_700));
+    guide.hold(false);
+    assert!(guide.now().is_some_and(|now| now - 1_788_870_700 <= 1));
+}
