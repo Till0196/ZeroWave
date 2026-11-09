@@ -75,13 +75,7 @@ impl Stage {
         self.volume_hold = file.osd.fade.max(1) as f32;
         self.osd_prefs = ui::overlay::osd::Prefs::of(&file.osd);
         self.no_sleep = file.general.no_sleep;
-        // 他のプロファイルの Mirakurun からもサービス一覧を取得してキャッシュする。
         self.catalog_due = true;
-        let active: Vec<String> = openings(file, &crate::config::load_state().profile)
-            .into_iter()
-            .map(|(label, _)| label)
-            .collect();
-        catalog::refresh_mirakurun(file, &active);
         crate::pcsc::apply(file);
         let asking = crate::config::apply::mirakurun_asking(file);
         let was = *self.player.options();
