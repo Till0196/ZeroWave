@@ -9,7 +9,6 @@
 //! 別のスレッドの `ProcessFrames` がそれを待って止まる。
 
 use std::collections::VecDeque;
-use std::sync::Arc;
 
 use windows::Win32::Foundation::RECT;
 use windows::Win32::Graphics::Direct3D12::*;
@@ -19,6 +18,7 @@ use windows::core::Interface;
 
 use super::Frame;
 use super::dx::{self, Owned, failed};
+use super::outputs::Outputs;
 use crate::decode::{About, Decoded, Error, Held, Surface};
 use mediadecoder::es::Structure;
 
@@ -39,7 +39,7 @@ pub(super) struct Deinterlacer {
     bob: bool,
     made: Option<Made>,
     refused: bool,
-    outs: Vec<Out>,
+    outs: Outputs,
     /// 処理を待つフレーム（先頭が次に出すフレーム、後ろは参照）。
     waiting: VecDeque<(Frame, About)>,
     /// 出し終えた前のフレーム（参照）。
@@ -59,18 +59,6 @@ struct Made {
     processor: ID3D12VideoProcessor,
     past: u32,
     future: u32,
-}
-
-/// 出力の一枚。受け取る側が全部持っていれば足す。
-struct Out {
-    texture: ID3D12Resource,
-    allocator: ID3D12CommandAllocator,
-    /// レンダラーが持っている間は 2 以上。
-    lease: Arc<()>,
-    /// この出力を書き終えるフェンスの値。
-    written: u64,
-    /// この出力を書く処理が読む入力。書き終えるまでデコーダーに返さない。
-    holding: Vec<Frame>,
 }
 
 impl std::fmt::Debug for Deinterlacer {
@@ -112,7 +100,7 @@ impl Deinterlacer {
                 bob,
                 made: None,
                 refused: false,
-                outs: Vec::new(),
+                outs: Outputs::new(usize::MAX),
                 waiting: VecDeque::new(),
                 past: VecDeque::new(),
                 count: 0,
@@ -145,8 +133,6 @@ impl Deinterlacer {
         }) {
             self.made = None;
             self.reset();
-            // 大きさか形式の違う出力は使い回さない。
-            self.outs.clear();
         }
         if self.made.is_none() {
             let first = match about.structure {
@@ -186,7 +172,7 @@ impl Deinterlacer {
                 }
             }
         }
-        self.release_read();
+        self.outs.release_read(&self.fence);
         self.waiting.push_back((frame, about));
         let future = self.made.as_ref().map_or(0, |made| made.future) as usize;
         let mut out = Vec::new();
@@ -215,22 +201,7 @@ impl Deinterlacer {
     pub fn reset(&mut self) {
         self.waiting.clear();
         self.past.clear();
-        if self.event.wait_fence(&self.fence, self.value).is_ok() {
-            for out in &mut self.outs {
-                out.holding.clear();
-            }
-        }
-    }
-
-    /// 書き終えた出力が読んだ入力をデコーダーに返す（出力を使い回すまで持つと、デコーダーのサーフェスが尽きる）。
-    fn release_read(&mut self) {
-        // SAFETY: 読むだけ。
-        let done = dx::completed(&self.fence);
-        for out in &mut self.outs {
-            if out.written <= done {
-                out.holding.clear();
-            }
-        }
+        self.outs.release_all(&self.event, &self.fence, self.value);
     }
 
     /// 先頭のフレームから二枚作る。
@@ -460,27 +431,14 @@ impl Deinterlacer {
 
     /// 空いている出力。全部持たれていれば増やす。
     fn out_for(&mut self, size: [u32; 2], format: DXGI_FORMAT) -> Result<usize, Error> {
-        if let Some(at) = self
-            .outs
-            .iter()
-            .position(|out| Arc::strong_count(&out.lease) == 1)
-        {
-            // 前の書き込みが終わるまでアロケーターも入力も手放さない（ふつうはとうに終わっている）。
-            self.event.wait_fence(&self.fence, self.outs[at].written)?;
-            self.outs[at].holding.clear();
-            return Ok(at);
-        }
-        // デコーダーのテクスチャと同じく同時アクセスで作る（レンダラーは COMMON から読む）。
-        let texture = dx::texture(&self.raw, format, size[0], size[1], false, 1)?;
-        let allocator = dx::allocator(&self.raw, D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS)?;
-        self.outs.push(Out {
-            texture,
-            allocator,
-            lease: Arc::new(()),
-            written: 0,
-            holding: Vec::new(),
-        });
-        Ok(self.outs.len() - 1)
+        let raw = &self.raw;
+        self.outs.free(&self.event, &self.fence, size, format, || {
+            // デコーダーのテクスチャと同じく同時アクセスで作る（レンダラーは COMMON から読む）。
+            Ok((
+                dx::texture(raw, format, size[0], size[1], false, 1)?,
+                dx::allocator(raw, D3D12_COMMAND_LIST_TYPE_VIDEO_PROCESS)?,
+            ))
+        })
     }
 
     fn make(
