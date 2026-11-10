@@ -46,6 +46,11 @@ impl Stretcher {
         self.pace
     }
 
+    /// この周波数とチャンネル数で作った物か（違う音は伸び縮みさせられない）。
+    pub fn fits(&self, sound: &Sound) -> bool {
+        sound.rate == self.rate && sound.channels.len() == self.channels
+    }
+
     pub fn position(&self) -> u64 {
         self.consumed + self.pos as u64
     }
@@ -57,7 +62,7 @@ impl Stretcher {
             speakers: sound.speakers.clone(),
             mixdown: sound.mixdown,
         };
-        if sound.rate != self.rate || sound.channels.len() != self.channels {
+        if !self.fits(sound) {
             return out;
         }
         for (held, run) in self.input.iter_mut().zip(&sound.channels) {
