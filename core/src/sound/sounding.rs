@@ -546,12 +546,17 @@ impl Sounding {
         self.start_count();
         let stretched = self.stretch(sound);
         let (played, at, pace) = if (self.pace - 1.0).abs() > 1e-6 {
+            // 音声を切り替えるとチャンネル数が変わる（合わない物は何も出さない）。
+            if self
+                .pacer
+                .as_ref()
+                .is_some_and(|pacer| !pacer.fits(&stretched) || pacer.pace() != self.pace)
+            {
+                self.drop_pacer();
+            }
             let pacer = self.pacer.get_or_insert_with(|| {
                 Stretcher::new(stretched.rate, stretched.channels.len(), self.pace)
             });
-            if pacer.pace() != self.pace {
-                *pacer = Stretcher::new(stretched.rate, stretched.channels.len(), self.pace);
-            }
             let begins = pacer.position();
             let total_before = self.pacer_fed;
             self.pacer_fed += stretched.len() as u64;
@@ -1234,5 +1239,46 @@ mod tests {
         for (at, _, ratio) in watched.seconds.iter().filter(|(at, _, _)| *at > 30.0) {
             assert!((ratio - 1.0).abs() < 3e-3, "{at:.0} 秒で {ratio}");
         }
+    }
+
+    #[test]
+    fn switching_to_fewer_channels_keeps_sounding_while_paced() {
+        // 画面に合わせて 1.001 倍速で再生している録画で、5.1ch からステレオの音声へ切り替える。
+        let fake = Fake::default();
+        let shared = Arc::new(Shared::new(48_000));
+        let (_say, says) = channel();
+        let mut sounding = Sounding::new(
+            Some(Device::Pcm(Box::new(fake.clone()))),
+            Arc::clone(&shared),
+            says,
+            0,
+            Mix::default(),
+        );
+        sounding.started = true;
+        sounding.pace = 1.001;
+        let five_one = Sound {
+            channels: vec![vec![0.1; FRAME]; 6],
+            speakers: vec![
+                Speaker::FrontCentre,
+                Speaker::FrontLeft,
+                Speaker::FrontRight,
+                Speaker::BackLeft,
+                Speaker::BackRight,
+                Speaker::LowFrequency,
+            ],
+            ..sound()
+        };
+        for n in 0..50 {
+            sounding.play(n * FRAME_TICKS, &five_one);
+        }
+        let before = fake.tape().written;
+        for n in 50..100 {
+            sounding.play(n * FRAME_TICKS, &sound());
+        }
+        let after = fake.tape().written - before;
+        assert!(
+            after > 40 * FRAME as u64,
+            "切り替えた後のステレオも書かれる: {after} サンプル"
+        );
     }
 }
