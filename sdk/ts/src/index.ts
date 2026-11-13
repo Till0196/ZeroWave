@@ -14,16 +14,22 @@
 // `__zwEvents` を呼ぶ。どのレイヤーか・何が必要かは package.json の
 // `zerowave.layer`（`{"above":"captions","wants":["clock"],"fps":60}`）。
 // esbuild で一つにまとめ、javy で wasm にする（zwsdk/javy/zwjavy.wasm）。
+// `fetch`・`WebSocket` も使える（net.ts）。繋がるのは package.json の `zerowave.config` で
+// `net` を宣言し、ユーザーが許可したときだけ。
 
 import { ZwCanvas } from "./canvas";
 import { installDom, runQueues, takePainted } from "./dom";
 import { host } from "./host";
+import { installNet, pollNet } from "./net";
 
 export { ZwCanvas, ZwContext2D } from "./canvas";
 export { host } from "./host";
 export type { ZwHost } from "./host";
+export { AbortController, AbortSignal, Headers, Response, WebSocket, fetch } from "./net";
+export type { HeadersInit, RequestInit } from "./net";
 
 installDom();
+installNet();
 
 /** 本体が起動時に渡すもの（`zwsdk::layer::Config`）。 */
 export interface Config {
@@ -110,6 +116,7 @@ globalThis.__zwMessage = (json: string, bytes: Uint8Array | null) => {
 };
 
 globalThis.__zwTick = () => {
+  pollNet();
   runQueues();
 };
 

@@ -6,3 +6,13 @@ declare var console: {
   warn(...args: unknown[]): void;
 };
 
+
+// Javy の TextEncoder・TextDecoder（UTF-8 だけ）と、zwsdk の dom が置くタイマー。
+declare class TextEncoder {
+  encode(text?: string): Uint8Array;
+}
+declare class TextDecoder {
+  constructor(label?: string);
+  decode(bytes?: ArrayBuffer | ArrayBufferView): string;
+}
+declare function setTimeout(fn: () => void, ms?: number): number;
