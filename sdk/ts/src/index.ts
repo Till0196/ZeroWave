@@ -80,7 +80,7 @@ export function send(event: Event): void {
 /** プラグインの設定（package.json の `zerowave.config` で宣言したキー）。 */
 export const config = {
   get(name: string): string | null {
-    return host.cfgGet(name);
+    return host.cfgGet(name) ?? null;
   },
   /** 値が `true`・`1`・`yes`・`on` なら真。 */
   on(name: string): boolean {

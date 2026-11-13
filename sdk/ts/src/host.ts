@@ -50,8 +50,8 @@ export interface ZwHost {
   nowMs(): number;
   /** 1970 年からのミリ秒。 */
   unixMs(): number;
-  /** プラグインの設定の値。無ければ null。 */
-  cfgGet(name: string): string | null;
+  /** プラグインの設定の値。 */
+  cfgGet(name: string): string | undefined;
   /** 書けないキー（ユーザーだけが決める物）なら false。 */
   cfgSet(name: string, value: string): boolean;
   /** `名前=値` の行。 */
@@ -60,8 +60,8 @@ export interface ZwHost {
   netOpen(method: string, url: string, headers: string, body: Uint8Array | null): number;
   /** `protocols` は `,` で並べたもの。開けなければ 0。 */
   netWebSocket(url: string, protocols: string, headers: string): number;
-  /** 届いた記録（zwsdk::net::conn）。無ければ null。 */
-  netPoll(handle: number): Uint8Array | null;
+  /** 届いた記録（zwsdk::net::conn）。 */
+  netPoll(handle: number): Uint8Array | undefined;
   /** `kind` は 1 テキスト・2 バイナリ・8 close（u16 BE のコードと理由）。 */
   netSend(handle: number, kind: number, bytes: Uint8Array): boolean;
   netClose(handle: number): void;

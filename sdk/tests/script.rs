@@ -202,7 +202,7 @@ globalThis.__zwTick = () => {
     while (at < bytes.length) {
       const len = (bytes[at + 1] << 24) | (bytes[at + 2] << 16) | (bytes[at + 3] << 8) | bytes[at + 4];
       const body = bytes.subarray(at + 5, at + 5 + len);
-      said.push(`${name} ${bytes[at]} ${new TextDecoder().decode(body.subarray(bytes[at] === 1 ? 2 : 0))}`);
+      said.push(`${name} ${bytes[at]} ${new TextDecoder().decode(body.subarray(bytes[at] === 1 || bytes[at] === 4 ? 2 : 0))}`);
       at += 5 + len;
     }
     if (name === "ws") {
@@ -261,7 +261,7 @@ fn a_script_talks_through_the_host_network() {
     assert_eq!(
         logs,
         [
-            "cfg true null",
+            "cfg true undefined",
             "http 1 content-type: text/plain",
             "http 2 ab",
             "http 2 c",

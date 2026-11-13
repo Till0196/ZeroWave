@@ -177,7 +177,7 @@ impl Drop for Lent {
     }
 }
 
-/// 届いた記録（`zwsdk::net::conn`）をそのまま。無ければ null。
+/// 届いた記録（`zwsdk::net::conn`）をそのまま。無ければ undefined。
 fn net_poll<'js>(ctx: Ctx<'js>, handle: u32) -> Option<TypedArray<'js, u8>> {
     let out = Lent(poll(handle));
     if out.0 == 0 {
