@@ -14,16 +14,22 @@
 // `__zwEvents` を呼ぶ。どのレイヤーか・何が必要かは package.json の
 // `zerowave.layer`（`{"above":"captions","wants":["clock"],"fps":60}`）。
 // esbuild で一つにまとめ、javy で wasm にする（zwsdk/javy/zwjavy.wasm）。
+// `fetch`・`WebSocket` も使える（net.ts）。繋がるのは package.json の `zerowave.config` で
+// `net` を宣言し、ユーザーが許可したときだけ。
 
 import { ZwCanvas } from "./canvas";
 import { installDom, runQueues, takePainted } from "./dom";
 import { host } from "./host";
+import { installNet, pollNet } from "./net";
 
 export { ZwCanvas, ZwContext2D } from "./canvas";
 export { host } from "./host";
 export type { ZwHost } from "./host";
+export { AbortController, AbortSignal, Headers, Response, WebSocket, fetch } from "./net";
+export type { HeadersInit, RequestInit } from "./net";
 
 installDom();
+installNet();
 
 /** 本体が起動時に渡すもの（`zwsdk::layer::Config`）。 */
 export interface Config {
@@ -71,6 +77,29 @@ export function send(event: Event): void {
   pending.push(event);
 }
 
+/** プラグインの設定（package.json の `zerowave.config` で宣言したキー）。 */
+export const config = {
+  get(name: string): string | null {
+    return host.cfgGet(name) ?? null;
+  },
+  /** 値が `true`・`1`・`yes`・`on` なら真。 */
+  on(name: string): boolean {
+    return ["true", "1", "yes", "on"].includes((host.cfgGet(name) ?? "").trim().toLowerCase());
+  },
+  /** 書けないキー（ユーザーだけが決める物）なら false。 */
+  set(name: string, value: string): boolean {
+    return host.cfgSet(name, value);
+  },
+  all(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const line of host.cfgList().split("\n")) {
+      const at = line.indexOf("=");
+      if (at > 0) out[line.slice(0, at)] = line.slice(at + 1);
+    }
+    return out;
+  },
+};
+
 /** レイヤーを開いてからのミリ秒。 */
 export function now(): number {
   return host.nowMs();
@@ -110,6 +139,7 @@ globalThis.__zwMessage = (json: string, bytes: Uint8Array | null) => {
 };
 
 globalThis.__zwTick = () => {
+  pollNet();
   runQueues();
 };
 

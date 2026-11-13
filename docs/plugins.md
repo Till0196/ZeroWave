@@ -33,6 +33,9 @@
 - `zwsdk::net`：ネットワーク通信。
 - `sdk/ts`・`sdk/javy`：TypeScript でレイヤーを書くための SDK と、それを動かす QuickJS の wasm（`sdk/ts/zwjs.wasm`）。
   `zw-stamp` が `zwjs.wasm` にスクリプト（カスタムセクション `zw_script`）とマニフェストを足して、プラグインの wasm にします。
+  TypeScript のレイヤーでは `fetch` と `WebSocket` も使えます。
+  package.json の `zerowave.config` に `{"key":"net","kind":"bool","default":"false","label":"通信を許可する"}` を書き、ユーザーが許可したときだけ繋がります。
+  LAN 内やこの PC へ繋ぐには `net_local` も要ります。
   リリースから実行環境を取得するには `node sdk/ts/bin/fetch-runtime.mjs sdk-v0.1.0` のようにSDK のリリースタグを指定します（そのタグに `zwjs.wasm` が必要です）。SHA-256 を確認して `sdk/ts/zwjs.wasm` に置きます。プラグインのビルドには Node.js 18 以降だけで使えます。
   実行環境をソースから作る場合は、Rust の `wasm32-wasip1` ターゲットを入れ、`sh sdk/javy/build.sh` を実行してください。
 

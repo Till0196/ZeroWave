@@ -2,7 +2,8 @@
 // プラグインの wasm を作る。JavaScript の実行環境（zwjs.wasm）に、スクリプト（カスタムセクション
 // `zw_script`）とマニフェスト（`zw_manifest`）を足す。name.wasm 一つで配置できる。
 // マニフェストは package.json から：name（"zerowave-" は除く）、version、zerowave.hooks（無ければ ["layer"]）、
-// zerowave.layer（どのレイヤーか・何が必要か。無ければ字幕の上）。
+// zerowave.layer（どのレイヤーか・何が必要か。無ければ字幕の上）、zerowave.config（設定。fetch・WebSocket には
+// {"key":"net","kind":"bool","default":"false","label":"通信を許可する"} が要る）。
 //
 //   zw-stamp dist/index.js -o dist/name.wasm [package.json]
 //   zw-stamp dist/name.wasm [package.json]   （wasm にマニフェストだけを足す）
@@ -25,6 +26,7 @@ const manifest = {
   version: pkg.version ?? "",
   hooks: zw.hooks ?? ["layer"],
   layer: zw.layer ?? { above: "captions" },
+  ...(zw.config ? { config: zw.config } : {}),
 };
 
 function leb(n) {

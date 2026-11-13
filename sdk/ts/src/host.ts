@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // 本体（zwhost）が提供する API。zwjavy が `globalThis.__zw` に追加する。
-// 番号は canvas（1 はレイヤー自体）。
+// canvas の番号（1 はレイヤー自体）と、通信の番号。
 
 export interface ZwHost {
   canvasNew(w: number, h: number): number;
@@ -50,6 +50,21 @@ export interface ZwHost {
   nowMs(): number;
   /** 1970 年からのミリ秒。 */
   unixMs(): number;
+  /** プラグインの設定の値。 */
+  cfgGet(name: string): string | undefined;
+  /** 書けないキー（ユーザーだけが決める物）なら false。 */
+  cfgSet(name: string, value: string): boolean;
+  /** `名前=値` の行。 */
+  cfgList(): string;
+  /** 待たない HTTP。`headers` は `名前: 値` の行。開けなければ 0。 */
+  netOpen(method: string, url: string, headers: string, body: Uint8Array | null): number;
+  /** `protocols` は `,` で並べたもの。開けなければ 0。 */
+  netWebSocket(url: string, protocols: string, headers: string): number;
+  /** 届いた記録（zwsdk::net::conn）。 */
+  netPoll(handle: number): Uint8Array | undefined;
+  /** `kind` は 1 テキスト・2 バイナリ・8 close（u16 BE のコードと理由）。 */
+  netSend(handle: number, kind: number, bytes: Uint8Array): boolean;
+  netClose(handle: number): void;
 }
 
 // 本体（zwjavy）が呼ぶ関数。zwsdk の index が定義する。

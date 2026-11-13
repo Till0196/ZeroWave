@@ -4,9 +4,9 @@
 //! ZeroWave のレイヤーを JavaScript で書くための、QuickJS の wasm。
 //!
 //! 本体（`zwsdk::host`）が提供する `zw_draw_v1`（canvas 2D）と `zw_layer_v1`（レイヤーの
-//! 大きさと時計）を、JS の `globalThis.__zw` に定義する。canvas 2D の
-//! インターフェース（`getContext("2d")` や `requestAnimationFrame`）は TypeScript の
-//! `zwsdk` がこの上に作る。
+//! 大きさと時計）、`zw_cfg_v1` の設定、`zw_net_v1` の待たない通信を、JS の `globalThis.__zw` に定義する。canvas 2D の
+//! インターフェース（`getContext("2d")` や `requestAnimationFrame`）と `fetch`・`WebSocket` は
+//! TypeScript の `zwsdk` がこの上に作る。
 //!
 //! レイヤーの関数（`zw_layer_new`／`message`／`tick`／`frame`／`events`／`drop`）は
 //! Rust のプラグインと同じで、それぞれ JS の `__zwNew`／`__zwMessage`／
@@ -20,7 +20,7 @@
 use std::cell::RefCell;
 
 use javy_plugin_api::javy::quickjs::{
-    prelude::Func, prelude::Rest, Context, Ctx, Function, Object, TypedArray, Value,
+    prelude::Func, prelude::Opt, prelude::Rest, Context, Ctx, Function, Object, TypedArray, Value,
 };
 use javy_plugin_api::{javy::Runtime, Config};
 
@@ -103,6 +103,42 @@ unsafe extern "C" {
     fn buf_read(buf: u32, from: u32, ptr: *mut u8, len: u32) -> u32;
     #[link_name = "create"]
     safe fn buf_create(ptr: *const u8, len: u32) -> u32;
+    #[link_name = "drop"]
+    safe fn buf_drop(buf: u32);
+}
+
+// プラグインの設定（マニフェストの config）。
+#[link(wasm_import_module = "zw_cfg_v1")]
+unsafe extern "C" {
+    #[link_name = "get"]
+    safe fn cfg_get(ptr: *const u8, len: u32) -> u32;
+    #[link_name = "set"]
+    safe fn cfg_set(name: *const u8, name_len: u32, value: *const u8, value_len: u32) -> u32;
+    #[link_name = "list"]
+    safe fn cfg_list() -> u32;
+}
+
+// 待たない通信。`net` を宣言して許されたときだけ繋がり、そうでなければ `open`・`ws` は 0。
+#[link(wasm_import_module = "zw_net_v1")]
+unsafe extern "C" {
+    safe fn open(
+        method_ptr: *const u8,
+        method_len: u32,
+        url_ptr: *const u8,
+        url_len: u32,
+        headers: u32,
+        body: u32,
+    ) -> u32;
+    safe fn ws(
+        url_ptr: *const u8,
+        url_len: u32,
+        protocols_ptr: *const u8,
+        protocols_len: u32,
+        headers: u32,
+    ) -> u32;
+    safe fn poll(handle: u32) -> u32;
+    safe fn send(handle: u32, kind: u32, ptr: *const u8, len: u32) -> u32;
+    safe fn close(handle: u32);
 }
 
 /// 本体のバイト列をコピーする。0 なら空。
@@ -122,6 +158,38 @@ fn bytes_of(buf: u32) -> Vec<u8> {
 /// バイト列を本体に渡す（buf の番号）。
 fn buf_of(bytes: &[u8]) -> u32 {
     buf_create(bytes.as_ptr(), bytes.len() as u32)
+}
+
+/// 使い終わったら解放する buf。0 は無し。
+struct Lent(u32);
+
+impl Lent {
+    fn of(bytes: Option<&[u8]>) -> Self {
+        Self(bytes.map_or(0, buf_of))
+    }
+}
+
+impl Drop for Lent {
+    fn drop(&mut self) {
+        if self.0 != 0 {
+            buf_drop(self.0);
+        }
+    }
+}
+
+/// 届いた記録（`zwsdk::net::conn`）をそのまま。無ければ undefined。
+fn net_poll<'js>(ctx: Ctx<'js>, handle: u32) -> Option<TypedArray<'js, u8>> {
+    let out = Lent(poll(handle));
+    if out.0 == 0 {
+        return None;
+    }
+    TypedArray::<u8>::new(ctx, bytes_of(out.0)).ok()
+}
+
+/// 本体が渡した文字列。無ければ `None`。
+fn take_text(buf: u32) -> Option<String> {
+    let buf = Lent(buf);
+    (buf.0 != 0).then(|| String::from_utf8_lossy(&bytes_of(buf.0)).into_owned())
 }
 
 fn config() -> Config {
@@ -258,6 +326,58 @@ fn modify_runtime(runtime: Runtime) -> Runtime {
         put!("layerHeight", || height());
         put!("nowMs", || now_ms());
         put!("unixMs", || unix_ms());
+        // ヘッダーは `名前: 値` を改行で並べたもの。本文が無ければ null。
+        put!(
+            "netOpen",
+            |method: String, url: String, headers: String, body: Opt<TypedArray<'_, u8>>| {
+                let headers = Lent::of((!headers.is_empty()).then_some(headers.as_bytes()));
+                let body = Lent::of(body.0.as_ref().map(|body| body.as_bytes().unwrap_or(&[])));
+                open(
+                    method.as_ptr(),
+                    method.len() as u32,
+                    url.as_ptr(),
+                    url.len() as u32,
+                    headers.0,
+                    body.0,
+                )
+            }
+        );
+        put!(
+            "netWebSocket",
+            |url: String, protocols: String, headers: String| {
+                let headers = Lent::of((!headers.is_empty()).then_some(headers.as_bytes()));
+                ws(
+                    url.as_ptr(),
+                    url.len() as u32,
+                    protocols.as_ptr(),
+                    protocols.len() as u32,
+                    headers.0,
+                )
+            }
+        );
+        put!("netPoll", net_poll);
+        put!("cfgGet", |name: String| take_text(cfg_get(
+            name.as_ptr(),
+            name.len() as u32
+        )));
+        put!("cfgSet", |name: String, value: String| {
+            cfg_set(
+                name.as_ptr(),
+                name.len() as u32,
+                value.as_ptr(),
+                value.len() as u32,
+            ) == 1
+        });
+        // `名前=値` の行。
+        put!("cfgList", || take_text(cfg_list()).unwrap_or_default());
+        put!(
+            "netSend",
+            |handle: u32, kind: u32, bytes: TypedArray<'_, u8>| {
+                let bytes = bytes.as_bytes().unwrap_or(&[]);
+                send(handle, kind, bytes.as_ptr(), bytes.len() as u32) != 0
+            }
+        );
+        put!("netClose", |handle: u32| close(handle));
         ctx.globals().set("__zw", zw).expect("__zw");
     });
     CONTEXT.with(|slot| *slot.borrow_mut() = Some(runtime.context().clone()));
