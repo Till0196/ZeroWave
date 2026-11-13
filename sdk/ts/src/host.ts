@@ -50,6 +50,12 @@ export interface ZwHost {
   nowMs(): number;
   /** 1970 年からのミリ秒。 */
   unixMs(): number;
+  /** プラグインの設定の値。無ければ null。 */
+  cfgGet(name: string): string | null;
+  /** 書けないキー（ユーザーだけが決める物）なら false。 */
+  cfgSet(name: string, value: string): boolean;
+  /** `名前=値` の行。 */
+  cfgList(): string;
   /** 待たない HTTP。`headers` は `名前: 値` の行。開けなければ 0。 */
   netOpen(method: string, url: string, headers: string, body: Uint8Array | null): number;
   /** `protocols` は `,` で並べたもの。開けなければ 0。 */

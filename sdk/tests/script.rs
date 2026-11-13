@@ -189,6 +189,7 @@ const NET_SCRIPT: &str = r#"
 const said = [];
 const conns = {};
 globalThis.__zwNew = () => {
+  said.push(`cfg ${__zw.cfgGet("net")} ${__zw.cfgGet("nothing")}`);
   conns.http = __zw.netOpen("POST", "http://example.jp/a", "x-a: 1\n", new Uint8Array([104, 105]));
   conns.ws = __zw.netWebSocket("ws://example.jp/s", "chat", "");
 };
@@ -260,6 +261,7 @@ fn a_script_talks_through_the_host_network() {
     assert_eq!(
         logs,
         [
+            "cfg true null",
             "http 1 content-type: text/plain",
             "http 2 ab",
             "http 2 c",

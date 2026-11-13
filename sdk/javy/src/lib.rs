@@ -4,7 +4,7 @@
 //! ZeroWave のレイヤーを JavaScript で書くための、QuickJS の wasm。
 //!
 //! 本体（`zwsdk::host`）が提供する `zw_draw_v1`（canvas 2D）と `zw_layer_v1`（レイヤーの
-//! 大きさと時計）、`zw_net_v1` の待たない通信を、JS の `globalThis.__zw` に定義する。canvas 2D の
+//! 大きさと時計）、`zw_cfg_v1` の設定、`zw_net_v1` の待たない通信を、JS の `globalThis.__zw` に定義する。canvas 2D の
 //! インターフェース（`getContext("2d")` や `requestAnimationFrame`）と `fetch`・`WebSocket` は
 //! TypeScript の `zwsdk` がこの上に作る。
 //!
@@ -107,6 +107,17 @@ unsafe extern "C" {
     safe fn buf_drop(buf: u32);
 }
 
+// プラグインの設定（マニフェストの config）。
+#[link(wasm_import_module = "zw_cfg_v1")]
+unsafe extern "C" {
+    #[link_name = "get"]
+    safe fn cfg_get(ptr: *const u8, len: u32) -> u32;
+    #[link_name = "set"]
+    safe fn cfg_set(name: *const u8, name_len: u32, value: *const u8, value_len: u32) -> u32;
+    #[link_name = "list"]
+    safe fn cfg_list() -> u32;
+}
+
 // 待たない通信。`net` を宣言して許されたときだけ繋がり、そうでなければ `open`・`ws` は 0。
 #[link(wasm_import_module = "zw_net_v1")]
 unsafe extern "C" {
@@ -149,7 +160,7 @@ fn buf_of(bytes: &[u8]) -> u32 {
     buf_create(bytes.as_ptr(), bytes.len() as u32)
 }
 
-/// 呼び出しの間だけ本体に渡すバイト列。0 は無し。
+/// 使い終わったら解放する buf。0 は無し。
 struct Lent(u32);
 
 impl Lent {
@@ -164,6 +175,21 @@ impl Drop for Lent {
             buf_drop(self.0);
         }
     }
+}
+
+/// 届いた記録（`zwsdk::net::conn`）をそのまま。無ければ null。
+fn net_poll<'js>(ctx: Ctx<'js>, handle: u32) -> Option<TypedArray<'js, u8>> {
+    let out = Lent(poll(handle));
+    if out.0 == 0 {
+        return None;
+    }
+    TypedArray::<u8>::new(ctx, bytes_of(out.0)).ok()
+}
+
+/// 本体が渡した文字列。無ければ `None`。
+fn take_text(buf: u32) -> Option<String> {
+    let buf = Lent(buf);
+    (buf.0 != 0).then(|| String::from_utf8_lossy(&bytes_of(buf.0)).into_owned())
 }
 
 fn config() -> Config {
@@ -329,14 +355,21 @@ fn modify_runtime(runtime: Runtime) -> Runtime {
                 )
             }
         );
-        // 届いた記録（`zwsdk::net::conn`）をそのまま。無ければ null。
-        put!("netPoll", |ctx: Ctx<'_>, handle: u32| {
-            let out = Lent(poll(handle));
-            if out.0 == 0 {
-                return None;
-            }
-            TypedArray::<u8>::new(ctx, bytes_of(out.0)).ok()
+        put!("netPoll", net_poll);
+        put!("cfgGet", |name: String| take_text(cfg_get(
+            name.as_ptr(),
+            name.len() as u32
+        )));
+        put!("cfgSet", |name: String, value: String| {
+            cfg_set(
+                name.as_ptr(),
+                name.len() as u32,
+                value.as_ptr(),
+                value.len() as u32,
+            ) == 1
         });
+        // `名前=値` の行。
+        put!("cfgList", || take_text(cfg_list()).unwrap_or_default());
         put!(
             "netSend",
             |handle: u32, kind: u32, bytes: TypedArray<'_, u8>| {

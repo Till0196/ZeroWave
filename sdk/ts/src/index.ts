@@ -77,6 +77,29 @@ export function send(event: Event): void {
   pending.push(event);
 }
 
+/** プラグインの設定（package.json の `zerowave.config` で宣言したキー）。 */
+export const config = {
+  get(name: string): string | null {
+    return host.cfgGet(name);
+  },
+  /** 値が `true`・`1`・`yes`・`on` なら真。 */
+  on(name: string): boolean {
+    return ["true", "1", "yes", "on"].includes((host.cfgGet(name) ?? "").trim().toLowerCase());
+  },
+  /** 書けないキー（ユーザーだけが決める物）なら false。 */
+  set(name: string, value: string): boolean {
+    return host.cfgSet(name, value);
+  },
+  all(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const line of host.cfgList().split("\n")) {
+      const at = line.indexOf("=");
+      if (at > 0) out[line.slice(0, at)] = line.slice(at + 1);
+    }
+    return out;
+  },
+};
+
 /** レイヤーを開いてからのミリ秒。 */
 export function now(): number {
   return host.nowMs();
