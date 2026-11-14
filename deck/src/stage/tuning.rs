@@ -267,11 +267,7 @@ fn refused(name: &str, why: &zwcore::input::source::Error) -> String {
 pub(crate) fn came_of_coaxd(endpoint: &str, tuners: &[String], profile: &str) -> String {
     // チューナーの絞り方とプロファイルも含める（変われば開き直す）。
     let profile = crate::config::channels_profile(profile);
-    if tuners.is_empty() {
-        format!("coaxd:{endpoint}|{profile}")
-    } else {
-        format!("coaxd:{endpoint}|{profile}|{}", tuners.join(","))
-    }
+    format!("coaxd:{:?}", (endpoint, profile, tuners))
 }
 
 impl Stage {
@@ -1270,6 +1266,18 @@ impl Stage {
 mod tests {
     use super::*;
     use zwcore::input::source::coaxd::DaemonTuner;
+
+    #[test]
+    fn tuner_reuse_keys_keep_string_boundaries() {
+        assert_ne!(
+            came_of_coaxd("", &["a,b".into()], "profile"),
+            came_of_coaxd("", &["a".into(), "b".into()], "profile"),
+        );
+        assert_ne!(
+            came_of_coaxd("host|profile", &[], "other"),
+            came_of_coaxd("host", &[], "profile|other"),
+        );
+    }
 
     fn tuner(id: &str, model: &str, deliveries: &[&str]) -> DaemonTuner {
         DaemonTuner {
