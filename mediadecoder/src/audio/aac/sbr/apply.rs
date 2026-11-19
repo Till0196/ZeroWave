@@ -353,8 +353,12 @@ impl Sbr {
                 );
                 let present = (low..high.min(MOST))
                     .any(|band| self.channels[at].sine_index[envelope + 1][band]);
-                for band in low..high.min(MOST) {
-                    self.mapped.sine[envelope][band] = present;
+                for sine in self.mapped.sine[envelope]
+                    .iter_mut()
+                    .take(high.min(MOST))
+                    .skip(low)
+                {
+                    *sine = present;
                 }
             }
         }

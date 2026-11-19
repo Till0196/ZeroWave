@@ -362,12 +362,12 @@ impl Synthesis {
 
     fn run(&mut self, subbands: &[f32; 32], out: &mut [f32]) {
         self.v.copy_within(0..960, 64);
-        for i in 0..64 {
+        for (i, slot) in self.v.iter_mut().enumerate().take(64) {
             let mut sum = 0.0f32;
             for (k, s) in subbands.iter().enumerate() {
                 sum += cosine(i, k) * s;
             }
-            self.v[i] = sum;
+            *slot = sum;
         }
         let mut u = [0.0f32; 512];
         for i in 0..8 {

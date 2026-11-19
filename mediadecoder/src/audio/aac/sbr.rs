@@ -435,8 +435,8 @@ impl Sbr {
             channel.add_harmonic = [false; MOST];
             channel.add_harmonic_flag = reader.bit() == 1;
             if channel.add_harmonic_flag {
-                for band in 0..count.min(MOST) {
-                    channel.add_harmonic[band] = reader.bit() == 1;
+                for flag in channel.add_harmonic.iter_mut().take(count.min(MOST)) {
+                    *flag = reader.bit() == 1;
                 }
             }
         }
@@ -487,8 +487,8 @@ impl Sbr {
                     channel.borders[at + 1] = channel.borders[at] + step;
                 }
                 let high = reader.bit() == 1;
-                for at in 1..=envelopes {
-                    channel.high_res[at] = high;
+                for flag in channel.high_res.iter_mut().take(envelopes + 1).skip(1) {
+                    *flag = high;
                 }
             }
             Class::FixVar => {
@@ -546,8 +546,8 @@ impl Sbr {
                     channel.borders[envelopes - 1 - at] = last - step;
                 }
                 pointer = reader.bits(pointer_bits(envelopes)) as usize;
-                for at in 1..=envelopes {
-                    channel.high_res[at] = reader.bit() == 1;
+                for flag in channel.high_res.iter_mut().take(envelopes + 1).skip(1) {
+                    *flag = reader.bit() == 1;
                 }
             }
         }
@@ -629,8 +629,8 @@ impl Sbr {
         let bands = self.n_noise;
         let channel = &mut self.channels[at];
         channel.invf[1] = channel.invf[0];
-        for band in 0..bands.min(5) {
-            channel.invf[0][band] = reader.bits(2) as u8;
+        for mode in channel.invf[0].iter_mut().take(bands.min(5)) {
+            *mode = reader.bits(2) as u8;
         }
     }
 
@@ -684,13 +684,13 @@ impl Sbr {
             } else {
                 let mut value = step * reader.bits(width) as i32;
                 channel.envelope_q[index + 1][0] = value;
-                for band in 1..count {
+                for slot in channel.envelope_q[index + 1].iter_mut().take(count).skip(1) {
                     let delta = i32::from(freq.read(reader)) - freq_lav;
                     value += step * delta;
                     if !(0..=127).contains(&value) {
                         return Err(Error::Damaged("an envelope scalefactor out of range"));
                     }
-                    channel.envelope_q[index + 1][band] = value;
+                    *slot = value;
                 }
             }
         }
@@ -731,13 +731,13 @@ impl Sbr {
             } else {
                 let mut value = step * reader.bits(5) as i32;
                 channel.noise_q[index + 1][0] = value;
-                for band in 1..bands {
+                for slot in channel.noise_q[index + 1].iter_mut().take(bands).skip(1) {
                     let delta = i32::from(freq.read(reader)) - freq_lav;
                     value += step * delta;
                     if !(0..=30).contains(&value) {
                         return Err(Error::Damaged("a noise floor scalefactor out of range"));
                     }
-                    channel.noise_q[index + 1][band] = value;
+                    *slot = value;
                 }
             }
         }

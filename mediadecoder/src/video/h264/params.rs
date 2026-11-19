@@ -761,10 +761,8 @@ pub fn header(
     if header.weighted {
         read_weights(&mut reader, &mut header, sps.chroma_array() != 0);
     } else {
-        for list in 0..2 {
-            for weight in &mut header.weights[list] {
-                *weight = Weight::default();
-            }
+        for weight in header.weights.iter_mut().flatten() {
+            *weight = Weight::default();
         }
     }
 
@@ -840,13 +838,11 @@ fn read_weights(reader: &mut Reader<'_>, header: &mut Header, chroma: bool) {
         1 << header.log2_weight_denom[0],
         1 << header.log2_weight_denom[1],
     ];
-    for list in 0..2 {
-        for at in 0..REFS {
-            header.weights[list][at] = Weight {
-                luma: (unweighted[0], 0),
-                chroma: [(unweighted[1], 0); 2],
-            };
-        }
+    for weight in header.weights.iter_mut().flatten() {
+        *weight = Weight {
+            luma: (unweighted[0], 0),
+            chroma: [(unweighted[1], 0); 2],
+        };
     }
     // 重みと足す値は -128〜127（7.4.3.2）。範囲外の値は予測の掛け算をあふれさせるので丸める。
     let pair =
@@ -857,8 +853,8 @@ fn read_weights(reader: &mut Reader<'_>, header: &mut Header, chroma: bool) {
                 header.weights[list][at].luma = pair(reader);
             }
             if chroma && reader.bit() == 1 {
-                for part in 0..2 {
-                    header.weights[list][at].chroma[part] = pair(reader);
+                for part in &mut header.weights[list][at].chroma {
+                    *part = pair(reader);
                 }
             }
         }

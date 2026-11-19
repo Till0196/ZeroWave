@@ -93,20 +93,17 @@ pub fn frozen(depth: u8) -> Frame {
     let mut frame = woven(0, depth, Parity::Top);
     let bytes = if depth > 8 { 2 } else { 1 };
     let shift = depth - 8;
-    for plane in 0..3 {
-        let (stride, width, height) = {
-            let plane = &frame.planes[plane];
-            (plane.stride, plane.width, plane.height)
-        };
+    for (plane, picture) in frame.planes.iter_mut().enumerate().take(3) {
+        let (stride, width, height) = (picture.stride, picture.width, picture.height);
         for y in 0..height {
             for x in 0..width {
                 // Bands two rows deep (yadif widens its tolerance where rows alternate).
                 let base = if plane == 0 { 60 } else { 70 };
                 let value = (base + ((y as u32 / 2) % 2) * 120 + (x as u32 % 7) * 3) << shift;
                 let at = y * stride + x * bytes;
-                frame.planes[plane].data[at] = value as u8;
+                picture.data[at] = value as u8;
                 if bytes == 2 {
-                    frame.planes[plane].data[at + 1] = (value >> 8) as u8;
+                    picture.data[at + 1] = (value >> 8) as u8;
                 }
             }
         }
@@ -120,11 +117,8 @@ pub fn slanted(at: usize, depth: u8, first: Parity) -> Frame {
     let mut frame = woven(at, depth, first);
     let bytes = if depth > 8 { 2 } else { 1 };
     let shift = depth - 8;
-    for plane in 0..3 {
-        let (stride, width, height) = {
-            let plane = &frame.planes[plane];
-            (plane.stride, plane.width, plane.height)
-        };
+    for (plane, picture) in frame.planes.iter_mut().enumerate().take(3) {
+        let (stride, width, height) = (picture.stride, picture.width, picture.height);
         for y in 0..height {
             for x in 0..width {
                 let early = (y % 2 == 0) == (first == Parity::Top);
@@ -134,9 +128,9 @@ pub fn slanted(at: usize, depth: u8, first: Parity) -> Frame {
                 let across = ((x as f32 - edge) * 0.6 + 0.5).clamp(0.0, 1.0);
                 let value = ((16.0 + 219.0 * across).round() as u32) << shift;
                 let at = y * stride + x * bytes;
-                frame.planes[plane].data[at] = value as u8;
+                picture.data[at] = value as u8;
                 if bytes == 2 {
-                    frame.planes[plane].data[at + 1] = (value >> 8) as u8;
+                    picture.data[at + 1] = (value >> 8) as u8;
                 }
             }
         }

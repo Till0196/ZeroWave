@@ -81,8 +81,8 @@ impl Sbr {
                 return Err(());
             }
             self.master = master;
-            for at in 1..=master {
-                self.f_master[at] = step as u16;
+            for value in self.f_master.iter_mut().take(master + 1).skip(1) {
+                *value = step as u16;
             }
             let difference = (self.k[2] - self.k[0]) as i64 - (master * step) as i64;
             if difference < 0 {

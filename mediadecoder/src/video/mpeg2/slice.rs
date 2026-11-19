@@ -596,10 +596,10 @@ impl Mpeg2 {
         // 7.6.3.7: chroma vector is luma / 2, truncated toward zero.
         let x = (rectangle.at.0 / 2) as i32 * 2 + rectangle.mv[0] / 2;
         let y = (rectangle.at.1 / 2) as i32 * 2 + rectangle.mv[1] / 2;
-        for plane in 0..2 {
+        for (plane, chroma) in prediction.chroma.iter_mut().enumerate() {
             let view = buffer.view(plane + 1, rectangle.field);
             let mut target = Target {
-                data: &mut prediction.chroma[plane],
+                data: chroma,
                 at: rectangle.chroma.0 * 8,
                 stride: 8 * rectangle.step,
                 width: 8,

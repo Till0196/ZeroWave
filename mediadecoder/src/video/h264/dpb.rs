@@ -230,8 +230,8 @@ impl<I, H> Dpb<I, H> {
                     let index = (absolute - 1) % length;
                     let sum: i32 = sps.cycle[..length as usize].iter().sum();
                     expected = cycle * sum;
-                    for step in 0..=index as usize {
-                        expected += sps.cycle[step];
+                    for step in sps.cycle.iter().take(index as usize + 1) {
+                        expected += step;
                     }
                 }
                 if header.nal_ref_idc == 0 {
@@ -434,8 +434,7 @@ impl<I, H> Dpb<I, H> {
             }
             let mut predicted = current_num;
             let mut at = 0usize;
-            for step in 0..header.reorders[list] {
-                let command = header.reorder[list][step];
+            for &command in header.reorder[list].iter().take(header.reorders[list]) {
                 let wanted = match command.op {
                     0 | 1 => {
                         let difference = command.value as i32 + 1;

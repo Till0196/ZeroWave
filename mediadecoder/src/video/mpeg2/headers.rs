@@ -201,10 +201,8 @@ impl PictureCoding {
     pub fn read_extension(&mut self, bytes: &[u8]) {
         let mut reader = Reader::new(bytes);
         reader.skip(4); // extension_start_code_identifier
-        for direction in 0..2 {
-            for axis in 0..2 {
-                self.f_code[direction][axis] = reader.bits(4);
-            }
+        for code in self.f_code.iter_mut().flatten() {
+            *code = reader.bits(4);
         }
         self.intra_dc_precision = reader.bits(2);
         self.picture_structure = reader.bits(2);

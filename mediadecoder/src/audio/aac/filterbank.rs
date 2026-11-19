@@ -289,8 +289,8 @@ impl Fft {
 
     /// The kernel the cosine transform's derivation above assumes.
     fn forward(&self, values: &mut [(f32, f32)]) {
-        for at in 0..self.n {
-            let to = self.reversed[at] as usize;
+        for (at, &to) in self.reversed.iter().enumerate().take(self.n) {
+            let to = to as usize;
             if at < to {
                 values.swap(at, to);
             }
