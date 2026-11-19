@@ -137,6 +137,9 @@ impl Shell {
         {
             #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
             let mut shell = self;
+            // イベントループを抜けた後はウィンドウのメッセージを処理しない。Windows では落としたウィンドウも
+            // ループで消すので、番組表の保存を待つ間に応答なしで残らないよう先に隠す。
+            shell.hide_all();
             #[cfg(target_os = "linux")]
             drop(shell.wayland_drop.take());
             let Self {
@@ -168,6 +171,12 @@ impl Shell {
             terminator.at("番組表を保存しているところ");
             guide.join_within(ending::GUIDE_SAVING);
             terminator.stood_down();
+        }
+    }
+
+    fn hide_all(&self) {
+        for window in self.window.iter().chain(self.panes_windows.values()) {
+            window.set_visible(false);
         }
     }
 
@@ -1242,7 +1251,7 @@ impl ApplicationHandler<Wake> for Shell {
                     }
                     let _ = self.to_stage.send(ToStage::Quit);
                     // 閉じたように見せて、終了処理は裏で（[`Shell::closing`]）。
-                    window.set_visible(false);
+                    self.hide_all();
                     let by = Instant::now() + ending::PATIENCE * 2;
                     self.closing = Some(by);
                     event_loop.set_control_flow(ControlFlow::WaitUntil(by));
