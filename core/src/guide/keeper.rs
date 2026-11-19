@@ -13,7 +13,7 @@ use super::listing::{Asked, Channel, Hit, Listing, Search};
 use super::{Band, Guide, Key, LogoOf, Moment, Prefs, Programme};
 
 /// EIT は数十秒の周期で送られるので、これより細かくしても意味が無い。
-const SAVE_EVERY: Duration = Duration::from_secs(5 * 60);
+const SAVE_EVERY: Duration = Duration::from_secs(60);
 const OPEN_POLL: Duration = Duration::from_millis(200);
 const FORGET_EVERY: Duration = Duration::from_secs(60 * 60);
 /// メモリに保持する過去の範囲。番組表の先頭（一時間前の正時）を含む三時間。

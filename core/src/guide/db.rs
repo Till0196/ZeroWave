@@ -211,7 +211,9 @@ fn open_as_is(path: &Path) -> rusqlite::Result<Connection> {
 fn prepare(connection: Connection) -> rusqlite::Result<Connection> {
     connection.busy_timeout(BUSY_WAIT)?;
     connection.pragma_update(None, "journal_mode", "DELETE")?;
-    connection.pragma_update(None, "synchronous", "NORMAL")?;
+    // 確定ごとに同期しない（HDD では一回に秒単位かかる）。番組表は放送から取り直せ、
+    // 電源が落ちて壊れても開けなければ退避して作り直す（[`open`]）。
+    connection.pragma_update(None, "synchronous", "OFF")?;
     // 二文字以下の語は trigram インデックスで検索できないので、番組の文字列を正規化して比べる。
     connection.create_scalar_function(
         "zw_fold",
@@ -230,8 +232,12 @@ pub struct Saved {
     pub dropped: usize,
 }
 
+/// 一度の確定までに書く長さ。確定ごとの同期書き込みは HDD では秒単位なので、細かく分けすぎない。
+const SAVE_BATCH: Duration = Duration::from_secs(5);
+
 /// 局と、このプロセスが変えた番組だけを書く。範囲から無くなった番組は、内容が最後に読み書きした時のままなら消す。
 /// `keep_since` より前に終わった番組は、どのプロセスが書いた物でも消す。
+/// [`SAVE_BATCH`] ごとに確定する（一度にまとめると、終了の期限で打ち切られたときに全部戻り、次はもっと大きくなる）。
 pub fn save(
     connection: &mut Connection,
     guide: &Guide,
@@ -240,129 +246,176 @@ pub fn save(
     keep_since: Moment,
 ) -> rusqlite::Result<Saved> {
     let mut saved = Saved::default();
-    // コミットできたときだけ記録済みの状態を進める（ロールバックしたのに進めると二度と書かれない）。
-    let mut pending = known.clone();
-    let tx = connection.transaction()?;
     {
-        let mut service_row = tx.prepare(
-            "INSERT INTO services (network, service, transport, name, provider, kind, scrambled,
-                remote_key, transport_confirmed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT (network, service) DO UPDATE SET transport = excluded.transport,
-                name = excluded.name, provider = excluded.provider, kind = excluded.kind,
-                scrambled = excluded.scrambled, remote_key = excluded.remote_key,
-                transport_confirmed = excluded.transport_confirmed",
-        )?;
-        for service in guide.services.values() {
-            service_row.execute(params![
-                service.network,
-                service.service,
-                service.transport,
-                service.name,
-                service.provider,
-                service.kind,
-                service.scrambled,
-                service.remote_key,
-                service.transport_confirmed,
-            ])?;
-        }
-        let mut write = tx.prepare(
-            "INSERT INTO programmes (network, service, event, start, seconds, ends, title, detail,
-                free, caption, rating, rest, digest)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-             ON CONFLICT (network, service, start) DO UPDATE SET event = excluded.event,
-                seconds = excluded.seconds, ends = excluded.ends, title = excluded.title,
-                detail = excluded.detail, free = excluded.free, caption = excluded.caption,
-                rating = excluded.rating, rest = excluded.rest, digest = excluded.digest
-             RETURNING id",
-        )?;
-        let mut children = Children::prepare(&tx)?;
-        let mut present: std::collections::HashSet<(u16, u16, Moment)> =
-            std::collections::HashSet::new();
-        for programme in guide
-            .programmes
-            .values()
-            .flat_map(|by_time| by_time.values())
+        let tx = connection.transaction()?;
         {
-            let Some(start) = programme.start else {
-                continue;
-            };
-            let at = (programme.network, programme.service, start);
-            present.insert(at);
-            let rest = rest_of(programme);
-            let rating = programme.details.rating().map(|rating| rating.rating);
-            let digest = digest_of(programme, rating, &rest);
-            if pending.get(&at).is_some_and(|(had, _)| *had == digest) {
-                continue;
-            }
-            let ends = programme.ends();
-            let id: i64 = write.query_row(
-                params![
-                    programme.network,
-                    programme.service,
-                    programme.event,
-                    start,
-                    programme.seconds,
-                    ends,
-                    programme.title,
-                    programme.detail,
-                    programme.free,
-                    programme.caption,
-                    rating,
-                    rest,
-                    digest,
-                ],
-                |row| row.get(0),
+            // 変わっていない局は書かない（同じ値でも書けばページが変わり、毎回ファイルに書くことになる）。
+            let mut service_row = tx.prepare(
+                "INSERT INTO services (network, service, transport, name, provider, kind, scrambled,
+                    remote_key, transport_confirmed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                 ON CONFLICT (network, service) DO UPDATE SET transport = excluded.transport,
+                    name = excluded.name, provider = excluded.provider, kind = excluded.kind,
+                    scrambled = excluded.scrambled, remote_key = excluded.remote_key,
+                    transport_confirmed = excluded.transport_confirmed
+                 WHERE (transport, name, provider, kind, scrambled, remote_key, transport_confirmed)
+                    IS NOT (excluded.transport, excluded.name, excluded.provider, excluded.kind,
+                    excluded.scrambled, excluded.remote_key, excluded.transport_confirmed)",
             )?;
-            children.write(id, programme)?;
-            pending.insert(at, (digest, ends));
-            saved.written += 1;
+            for service in guide.services.values() {
+                service_row.execute(params![
+                    service.network,
+                    service.service,
+                    service.transport,
+                    service.name,
+                    service.provider,
+                    service.kind,
+                    service.scrambled,
+                    service.remote_key,
+                    service.transport_confirmed,
+                ])?;
+            }
         }
-        let gone: Vec<(At, (i64, Option<Moment>))> = pending
-            .iter()
-            .filter(|(at, _)| !present.contains(*at))
-            .map(|(at, had)| (*at, *had))
-            .collect();
-        let mut find = tx.prepare(
-            "SELECT id FROM programmes
-             WHERE network = ?1 AND service = ?2 AND start = ?3 AND digest = ?4",
-        )?;
-        for ((network, service, start), (digest, ends)) in gone {
-            pending.remove(&(network, service, start));
-            if ends.is_some_and(|ends| ends <= kept_from) {
-                continue;
+        tx.commit()?;
+    }
+    let mut present: std::collections::HashSet<At> = std::collections::HashSet::new();
+    let mut changed: Vec<(&Programme, Moment, Option<u8>, Vec<u8>, i64)> = Vec::new();
+    for programme in guide
+        .programmes
+        .values()
+        .flat_map(|by_time| by_time.values())
+    {
+        let Some(start) = programme.start else {
+            continue;
+        };
+        let at = (programme.network, programme.service, start);
+        present.insert(at);
+        let rest = rest_of(programme);
+        let rating = programme.details.rating().map(|rating| rating.rating);
+        let digest = digest_of(programme, rating, &rest);
+        if known.get(&at).is_some_and(|(had, _)| *had == digest) {
+            continue;
+        }
+        changed.push((programme, start, rating, rest, digest));
+    }
+    let mut next = 0;
+    while next < changed.len() {
+        // 確定できたときだけ記録済みの状態を進める（ロールバックしたのに進めると二度と書かれない）。
+        let mut written = Vec::new();
+        let began = std::time::Instant::now();
+        let tx = connection.transaction()?;
+        {
+            let mut write = tx.prepare(
+                "INSERT INTO programmes (network, service, event, start, seconds, ends, title, detail,
+                    free, caption, rating, rest, digest)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                 ON CONFLICT (network, service, start) DO UPDATE SET event = excluded.event,
+                    seconds = excluded.seconds, ends = excluded.ends, title = excluded.title,
+                    detail = excluded.detail, free = excluded.free, caption = excluded.caption,
+                    rating = excluded.rating, rest = excluded.rest, digest = excluded.digest
+                 RETURNING id",
+            )?;
+            let mut children = Children::prepare(&tx)?;
+            for (programme, start, rating, rest, digest) in &changed[next..] {
+                let ends = programme.ends();
+                let id: i64 = write.query_row(
+                    params![
+                        programme.network,
+                        programme.service,
+                        programme.event,
+                        start,
+                        programme.seconds,
+                        ends,
+                        programme.title,
+                        programme.detail,
+                        programme.free,
+                        programme.caption,
+                        rating,
+                        rest,
+                        digest,
+                    ],
+                    |row| row.get(0),
+                )?;
+                children.write(id, programme)?;
+                written.push((
+                    (programme.network, programme.service, *start),
+                    (*digest, ends),
+                ));
+                if began.elapsed() >= SAVE_BATCH {
+                    break;
+                }
             }
-            let ids: Vec<i64> = find
-                .query_map(params![network, service, start, digest], |row| row.get(0))?
-                .collect::<rusqlite::Result<_>>()?;
-            for id in ids {
-                children.clear(id)?;
-                tx.execute("DELETE FROM programmes WHERE id = ?1", [id])?;
-                saved.dropped += 1;
+        }
+        tx.commit()?;
+        next += written.len();
+        saved.written += written.len();
+        known.extend(written);
+    }
+    let gone: Vec<(At, (i64, Option<Moment>))> = known
+        .iter()
+        .filter(|(at, _)| !present.contains(*at))
+        .map(|(at, had)| (*at, *had))
+        .collect();
+    let mut next = 0;
+    while next < gone.len() {
+        let began = std::time::Instant::now();
+        let from = next;
+        let tx = connection.transaction()?;
+        {
+            let mut find = tx.prepare(
+                "SELECT id FROM programmes
+                 WHERE network = ?1 AND service = ?2 AND start = ?3 AND digest = ?4",
+            )?;
+            let mut children = Children::prepare(&tx)?;
+            for ((network, service, start), (digest, ends)) in &gone[from..] {
+                next += 1;
+                if ends.is_some_and(|ends| ends <= kept_from) {
+                    continue;
+                }
+                let ids: Vec<i64> = find
+                    .query_map(params![network, service, start, digest], |row| row.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                for id in ids {
+                    children.clear(id)?;
+                    tx.execute("DELETE FROM programmes WHERE id = ?1", [id])?;
+                    saved.dropped += 1;
+                }
+                if began.elapsed() >= SAVE_BATCH {
+                    break;
+                }
             }
+        }
+        tx.commit()?;
+        for (at, _) in &gone[from..next] {
+            known.remove(at);
         }
     }
     // 長さの分からない番組は一日で終わったと見なす（[`Guide::forget_before`] と同じ）。
-    let old = "SELECT id FROM programmes
-        WHERE ends <= ?1 OR (ends IS NULL AND start + 86400 <= ?1)";
-    tx.execute(
-        &format!("DELETE FROM extended WHERE programme IN ({old})"),
-        [keep_since],
-    )?;
-    tx.execute(
-        &format!("DELETE FROM genres WHERE programme IN ({old})"),
-        [keep_since],
-    )?;
-    tx.execute(
-        &format!("DELETE FROM search WHERE rowid IN ({old})"),
-        [keep_since],
-    )?;
-    saved.dropped += tx.execute(
-        "DELETE FROM programmes WHERE ends <= ?1 OR (ends IS NULL AND start + 86400 <= ?1)",
-        [keep_since],
-    )?;
-    tx.commit()?;
-    *known = pending;
+    let old: Vec<i64> = connection
+        .prepare(
+            "SELECT id FROM programmes WHERE ends <= ?1 OR (ends IS NULL AND start + 86400 <= ?1)",
+        )?
+        .query_map([keep_since], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut next = 0;
+    while next < old.len() {
+        let began = std::time::Instant::now();
+        let from = next;
+        let tx = connection.transaction()?;
+        {
+            let mut children = Children::prepare(&tx)?;
+            for &id in &old[from..] {
+                next += 1;
+                children.clear(id)?;
+                tx.execute("DELETE FROM programmes WHERE id = ?1", [id])?;
+                if began.elapsed() >= SAVE_BATCH {
+                    break;
+                }
+            }
+        }
+        tx.commit()?;
+        saved.dropped += next - from;
+    }
     Ok(saved)
 }
 
@@ -998,6 +1051,41 @@ mod tests {
         );
         let (back, _) = load_after(&connection, 0, false).unwrap();
         assert_eq!(titles(&back), vec!["あと".to_owned()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 多くても全部書けて消せ、変わっていなければ次の保存は何も書かない。
+    #[test]
+    fn a_large_save_is_committed_in_batches() {
+        let dir = scratch();
+        let mut connection = open(&dir.join("epg.sqlite")).unwrap();
+        let mut guide = a_guide(KEY);
+        let many = 2000;
+        for n in 0..many {
+            guide.tell(programme(
+                KEY,
+                10 + n as u16,
+                10_000 + n as i64 * 1800,
+                "続き",
+            ));
+        }
+        let mut known = Known::new();
+        let saved = save(&mut connection, &guide, &mut known, 0, 0).unwrap();
+        assert_eq!(saved.written, many + 2);
+        assert_eq!(known.len(), many + 2);
+        let changes = connection.total_changes();
+        let again = save(&mut connection, &guide, &mut known, 0, 0).unwrap();
+        assert_eq!(again, Saved::default());
+        assert_eq!(connection.total_changes(), changes);
+        let ended = save(
+            &mut connection,
+            &Guide::new(),
+            &mut Known::new(),
+            0,
+            i64::MAX / 2,
+        )
+        .unwrap();
+        assert_eq!(ended.dropped, many + 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
