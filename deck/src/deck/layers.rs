@@ -50,7 +50,7 @@ impl Deck {
                 .to_broadcast
                 .try_send(ToBroadcast::Area(area.0, area.1));
         }
-        self.drawn_broadcast = shown.as_ref().map(|shown| Arc::as_ptr(shown) as usize);
+        self.drawn_broadcast = shown.as_ref().map(Arc::downgrade);
         let inset = shown
             .as_ref()
             .filter(|shown| !shown.invisible && self.broadcast_on)

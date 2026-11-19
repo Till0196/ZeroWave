@@ -268,7 +268,8 @@ struct Screen {
     to: Sender<ToPanes>,
     to_broadcast: SyncSender<ToBroadcast>,
     shown: Latest,
-    drawn_shown: Option<usize>,
+    /// 最後に描いた文書（`Weak` で持つのは `Deck` の `drawn_broadcast` と同じ理由）。
+    drawn_shown: Option<std::sync::Weak<zwcore::data::Shown>>,
     popup_area: Option<(u32, u32)>,
     textures: ui::panes::databroadcast::Textures,
     /// 番組表のスレッドへ一覧のビルドを要求するチャネル（数百 ms 掛かるので、ここではビルドしない）。

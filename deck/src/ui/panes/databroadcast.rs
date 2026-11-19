@@ -4,16 +4,17 @@
 //! データ放送の文書を映像の位置に表示する。
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use egui::{Color32, Rect, TextureHandle, pos2, vec2};
 
 use zwcore::data::Shown;
 
 /// 名前とバージョンが同じなら中身も同じなので、世代が変わっても使い回す。
+/// 画は `Weak` で持って比べる（アドレスだけだと、解放した後の次の画が同じ場所に来て古いまま残る）。
 #[derive(Default)]
 pub struct Textures {
-    held: BTreeMap<String, (usize, TextureHandle)>,
+    held: BTreeMap<String, (Weak<zwcore::data::Picture>, bool, TextureHandle)>,
 }
 
 impl std::fmt::Debug for Textures {
@@ -30,9 +31,9 @@ impl Textures {
         picture: &Arc<zwcore::data::Picture>,
         nearest: bool,
     ) -> TextureHandle {
-        let key = Arc::as_ptr(picture) as usize ^ usize::from(nearest);
-        if let Some((held_key, handle)) = self.held.get(name)
-            && *held_key == key
+        if let Some((held, held_nearest, handle)) = self.held.get(name)
+            && Weak::as_ptr(held) == Arc::as_ptr(picture)
+            && *held_nearest == nearest
         {
             return handle.clone();
         }
@@ -42,15 +43,19 @@ impl Textures {
             egui::TextureOptions::LINEAR
         };
         let image = crate::ui::rgba_image(picture);
-        if let Some((held_key, handle)) = self.held.get_mut(name)
+        if let Some((held, held_nearest, handle)) = self.held.get_mut(name)
             && handle.size() == picture.size()
         {
             handle.set(image, options);
-            *held_key = key;
+            *held = Arc::downgrade(picture);
+            *held_nearest = nearest;
             return handle.clone();
         }
         let handle = ctx.load_texture(format!("データ放送 {name}"), image, options);
-        self.held.insert(name.to_owned(), (key, handle.clone()));
+        self.held.insert(
+            name.to_owned(),
+            (Arc::downgrade(picture), nearest, handle.clone()),
+        );
         handle
     }
 

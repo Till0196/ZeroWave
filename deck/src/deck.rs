@@ -77,7 +77,8 @@ pub struct Deck {
     broadcast_on: bool,
     data_asked: Option<(Instant, Option<String>)>,
     one_seg_popup: bool,
-    drawn_broadcast: Option<usize>,
+    /// 最後に描いた文書。アドレスで比べるので `Weak` で持って、同じ場所が次の文書に使い回されないようにする。
+    drawn_broadcast: Option<std::sync::Weak<zwcore::data::Shown>>,
     drawn_layers: Option<usize>,
     theme: ui::theme::Theme,
     fitted: bool,

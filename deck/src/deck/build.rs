@@ -562,8 +562,8 @@ impl Deck {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .map(|shown| Arc::as_ptr(shown) as usize);
-        now != self.drawn_broadcast
+            .map(Arc::as_ptr);
+        now != self.drawn_broadcast.as_ref().map(std::sync::Weak::as_ptr)
     }
 
     pub fn layers_changed(&self) -> bool {

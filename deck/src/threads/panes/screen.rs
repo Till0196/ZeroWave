@@ -125,9 +125,9 @@ impl Screen {
             return None;
         }
         let shown = self.shown.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let now = shown.as_ref().map(|shown| Arc::as_ptr(shown) as usize);
-        if now != self.drawn_shown {
-            self.drawn_shown = now;
+        let now = shown.as_ref().map(Arc::as_ptr);
+        if now != self.drawn_shown.as_ref().map(std::sync::Weak::as_ptr) {
+            self.drawn_shown = shown.as_ref().map(Arc::downgrade);
             for sub in self.subs.values_mut() {
                 if matches!(sub.what, Which::OneSeg) {
                     sub.dirty = true;
