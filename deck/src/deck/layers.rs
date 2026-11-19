@@ -103,7 +103,11 @@ impl Deck {
             self.broadcast_textures.keep_only(shown);
             ui::panes::databroadcast::show(root, video, shown, &mut self.broadcast_textures);
         }
-        if self.broadcast_on && self.data_asked.is_some() && !video.is_negative() {
+        // 出ている文書が次の文書のモジュールを待っている間も（自動で始まった局は d を押していない）。
+        let fetching = shown
+            .as_ref()
+            .is_some_and(|shown| shown.waiting && !shown.invisible);
+        if self.broadcast_on && (self.data_asked.is_some() || fetching) && !video.is_negative() {
             let size = (15.0 * video.height() / 540.0).clamp(11.0, 20.0);
             ui::panes::databroadcast::loading(root, video, size);
         }
