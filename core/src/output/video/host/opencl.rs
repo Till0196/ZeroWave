@@ -1270,8 +1270,8 @@ impl Drop for Flow {
                     (api.release_mem)(level.plain_residuals[k]);
                 }
             }
-            for k in 0..2 {
-                (api.release_mem)(self.predictions[k]);
+            for &prediction in &self.predictions {
+                (api.release_mem)(prediction);
             }
 
             (api.release_program)(self.program);

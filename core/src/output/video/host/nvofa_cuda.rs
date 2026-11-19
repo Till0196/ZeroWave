@@ -610,9 +610,9 @@ impl Flow {
                 } else {
                     FORMAT_GRAYSCALE8
                 };
-                for k in 0..2 {
-                    if session.inputs[k].handle.is_null() {
-                        session.inputs[k] = self.buffer(handle, self.size, USAGE_INPUT, format)?;
+                for input in &mut session.inputs {
+                    if input.handle.is_null() {
+                        *input = self.buffer(handle, self.size, USAGE_INPUT, format)?;
                     }
                 }
                 session.output =

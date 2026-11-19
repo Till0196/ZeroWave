@@ -418,8 +418,8 @@ impl super::flow::Provider for Flow {
             ));
         }
         self.cur ^= 1;
-        for level in 0..LEVELS {
-            convert.luma(gpu, run.cur, &self.pyramid[self.cur][level]);
+        for level in &self.pyramid[self.cur] {
+            convert.luma(gpu, run.cur, level);
         }
         if !self.has_prev {
             self.has_prev = true;

@@ -997,9 +997,13 @@ impl Display {
             }
             Ok(planes)
         })();
-        for object in 0..descriptor.num_objects.min(4) as usize {
+        for object in descriptor
+            .objects
+            .iter()
+            .take(descriptor.num_objects.min(4) as usize)
+        {
             // SAFETY: エクスポートが所有権ごと渡したファイル記述子で、閉じるのは一度。
-            unsafe { close(descriptor.objects[object].fd) };
+            unsafe { close(object.fd) };
         }
         let planes = copied?;
         if planes.is_empty() {

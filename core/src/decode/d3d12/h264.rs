@@ -395,8 +395,8 @@ impl H264 {
             } else {
                 other.frame_num as u16
             };
-            for side in 0..2 {
-                if other.marked[side] != Marked::No {
+            for (side, marked) in other.marked.iter().enumerate() {
+                if *marked != Marked::No {
                     parameters.used_for_reference |= 1 << (2 * count + side);
                 }
             }

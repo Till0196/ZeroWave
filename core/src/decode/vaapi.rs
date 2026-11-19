@@ -424,8 +424,12 @@ impl Vaapi {
                 format: layer.drm_format,
             });
         }
-        for object in 0..descriptor.num_objects.min(4) as usize {
-            va::discard(descriptor.objects[object].fd);
+        for object in descriptor
+            .objects
+            .iter()
+            .take(descriptor.num_objects.min(4) as usize)
+        {
+            va::discard(object.fd);
         }
         if planes.is_empty() {
             return None;

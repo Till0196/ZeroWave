@@ -215,8 +215,8 @@ impl H264 {
                     let index = (absolute - 1) % length;
                     let sum: i32 = sps.cycle[..length as usize].iter().sum();
                     expected = cycle * sum;
-                    for step in 0..=index as usize {
-                        expected += sps.cycle[step];
+                    for step in sps.cycle.iter().take(index as usize + 1) {
+                        expected += step;
                     }
                 }
                 if idc == 0 {

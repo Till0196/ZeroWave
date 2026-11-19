@@ -485,8 +485,8 @@ impl H264 {
                 parameters.chroma_weight_l1_flag = u8::from(sps.chroma != 0);
             }
             for at in 0..32.min(params::REFS) {
-                for list in 0..2 {
-                    let weight = header.weights[list][at];
+                for (list, weights) in header.weights.iter().enumerate() {
+                    let weight = weights[at];
                     let (luma, luma_offset, chroma, chroma_offset) = if list == 0 {
                         (
                             &mut parameters.luma_weight_l0,

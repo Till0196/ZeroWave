@@ -18,11 +18,10 @@ pub(super) fn pans(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
     let count = edited.video.pans.len();
     // 名前を変えたプリセット（前、後）。比率で選んでいれば追う。
     let mut renamed = None;
-    for index in 0..count {
+    for (index, pan) in edited.video.pans.iter_mut().enumerate() {
         if index == 0 {
             *form.at += 8.0;
         }
-        let pan: &mut Pan = &mut edited.video.pans[index];
         let changed = loaded.video.pans.get(index) != Some(&*pan);
         let row = form.line(skin::SELECT_HEIGHT);
         let left = row.left() + 12.0;
