@@ -280,3 +280,83 @@ fn a_script_talks_through_the_host_network() {
         ]
     );
 }
+
+/// ui hook：下のパネルのページを返し、操作で状態を変えて、通知を出す。
+const UI_SCRIPT: &str = r#"
+let pressed = 0;
+globalThis.__zwUi = (kind, page, ctx, extra) => {
+  ctx = JSON.parse(ctx);
+  if (kind === "menu") {
+    return JSON.stringify([{ kind: "open", label: "番組", open: { panel: "now" } }]);
+  }
+  if (kind === "page") {
+    const title = ctx.program ? ctx.program.title : "";
+    return JSON.stringify({ nodes: [{ kind: "note", text: `${page} ${title} ${pressed}` }] });
+  }
+  if (kind === "event") {
+    pressed += 1;
+    __zw.notice(JSON.stringify({ title: `押した ${JSON.parse(extra).id}` }));
+    return JSON.stringify({ close: true });
+  }
+  return "";
+};
+"#;
+
+#[test]
+fn a_script_fills_a_panel() {
+    use zwsdk::ui::{Ctx, Event, MenuItem, Node, Open};
+
+    let runtime = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/ts/zwjs.wasm"))
+        .expect("ts/zwjs.wasm（javy/build.sh で作る）");
+    let mut wasm = runtime;
+    let manifest = format!(
+        r#"{{"abi":{},"name":"script-ui","version":"0","hooks":["ui"],"ui":{{"panels":[{{"id":"now","title":"番組"}}]}}}}"#,
+        abi::VERSION
+    );
+    section(abi::MANIFEST, manifest.as_bytes(), &mut wasm);
+    section(abi::SCRIPT, UI_SCRIPT.as_bytes(), &mut wasm);
+
+    let engine = zwsdk::host::engine().expect("engine");
+    let place = std::env::temp_dir().join("zw-script-ui.wasm");
+    let plugin = Plugin::from_bytes(&engine, &wasm, &place).expect("読み込める");
+    assert_eq!(plugin.manifest().ui.panels[0].id, "now");
+    let notices = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = std::sync::Arc::clone(&notices);
+    let io = Io {
+        notify: Some(std::sync::Arc::new(move |notice: zwsdk::ui::Notice| {
+            seen.lock().unwrap().push(notice.title)
+        })),
+        ..Io::default()
+    };
+    let mut ui = plugin.ui(Box::new(|_, _| {}), io).expect("起動する");
+    let ctx = Ctx {
+        program: Some(zwsdk::video::Program {
+            title: String::from("ニュース"),
+            ..Default::default()
+        }),
+        ..Ctx::default()
+    };
+    assert_eq!(
+        ui.menu(&ctx).expect("メニュー"),
+        [MenuItem::Open {
+            label: String::from("番組"),
+            open: Open::Panel(String::from("now")),
+        }]
+    );
+    let text = |ui: &mut zwsdk::host::UiInstance| {
+        let page = ui.page("now", &ctx).expect("ページ");
+        match &page.nodes[..] {
+            [Node::Note { text, .. }] => text.clone(),
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(text(&mut ui), "now ニュース 0");
+    let event = Event {
+        id: String::from("go"),
+        value: String::new(),
+    };
+    assert!(ui.event("now", &ctx, &event).expect("返事").close);
+    assert_eq!(text(&mut ui), "now ニュース 1");
+    assert_eq!(*notices.lock().unwrap(), ["押した go"]);
+    ui.pick(&ctx, "x").expect("pick");
+}

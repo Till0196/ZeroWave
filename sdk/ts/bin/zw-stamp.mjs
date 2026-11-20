@@ -2,7 +2,8 @@
 // プラグインの wasm を作る。JavaScript の実行環境（zwjs.wasm）に、スクリプト（カスタムセクション
 // `zw_script`）とマニフェスト（`zw_manifest`）を足す。name.wasm 一つで配置できる。
 // マニフェストは package.json から：name（"zerowave-" は除く）、version、zerowave.hooks（無ければ ["layer"]）、
-// zerowave.layer（どのレイヤーか・何が必要か。無ければ字幕の上）、zerowave.config（設定。fetch・WebSocket には
+// zerowave.layer（どのレイヤーか・何が必要か。無ければ字幕の上）、zerowave.ui（ui hook の title・settings・
+// panels。下のパネルは {"panels":[{"id":"now","title":"番組"}]}）、zerowave.config（設定。fetch・WebSocket には
 // {"key":"net","kind":"bool","default":"false","label":"通信を許可する"} が要る）。
 //
 //   zw-stamp dist/index.js -o dist/name.wasm [package.json]
@@ -20,12 +21,14 @@ if (!input || (at >= 0 && !out)) {
 }
 const pkg = JSON.parse(readFileSync(packagePath, "utf8"));
 const zw = pkg.zerowave ?? {};
+const hooks = zw.hooks ?? ["layer"];
 const manifest = {
   abi: 1,
   name: zw.name ?? String(pkg.name).replace(/^zerowave-/, ""),
   version: pkg.version ?? "",
-  hooks: zw.hooks ?? ["layer"],
-  layer: zw.layer ?? { above: "captions" },
+  hooks,
+  ...(hooks.includes("layer") ? { layer: zw.layer ?? { above: "captions" } } : {}),
+  ...(zw.ui ? { ui: zw.ui } : {}),
   ...(zw.config ? { config: zw.config } : {}),
 };
 

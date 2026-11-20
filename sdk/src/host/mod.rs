@@ -366,7 +366,8 @@ impl Plugin {
 
     pub fn ui(&self, logger: Logger, io: Io) -> Result<UiInstance, String> {
         let module = self.module_for("ui")?;
-        let made = Made::new(&self.engine, module, Limits::UI, logger, None, io)?;
+        let mut made = Made::new(&self.engine, module, Limits::UI, logger, None, io)?;
+        made.store.data_mut().script = self.script.clone();
         UiInstance::new(self.name().to_owned(), made)
     }
 }
@@ -564,6 +565,17 @@ impl Made {
             instance,
             memory,
         })
+    }
+
+    /// スクリプトのプラグイン（`zw_script`）は `_start` でスクリプトを評価する。`proc_exit(0)` は成功。
+    fn start(&mut self) -> Result<(), String> {
+        if let Ok(start) = self.func::<(), ()>("_start")
+            && let Err(error) = start.call(self.armed(), ())
+            && !matches!(error.downcast_ref::<layer::Exit>(), Some(layer::Exit(0)))
+        {
+            return Err(format!("_start: {error}"));
+        }
+        Ok(())
     }
 
     fn armed(&mut self) -> &mut Store<HostState> {

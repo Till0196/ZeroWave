@@ -65,6 +65,8 @@ export interface ZwHost {
   /** `kind` は 1 テキスト・2 バイナリ・8 close（u16 BE のコードと理由）。 */
   netSend(handle: number, kind: number, bytes: Uint8Array): boolean;
   netClose(handle: number): void;
+  /** 本体の通知（`zwsdk::ui::Notice` の JSON）。 */
+  notice(json: string): void;
 }
 
 // 本体（zwjavy）が呼ぶ関数。zwsdk の index が定義する。
@@ -81,6 +83,8 @@ declare global {
   var __zwFrame: (() => boolean) | undefined;
   // eslint-disable-next-line no-var
   var __zwEvents: (() => string) | undefined;
+  // eslint-disable-next-line no-var
+  var __zwUi: ((kind: string, page: string, ctx: string, extra: string) => string) | undefined;
 }
 
 export const host: ZwHost = globalThis.__zw;

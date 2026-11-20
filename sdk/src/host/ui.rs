@@ -29,6 +29,7 @@ impl std::fmt::Debug for UiInstance {
 
 impl UiInstance {
     pub(super) fn new(name: String, mut made: Made) -> Result<Self, String> {
+        made.start()?;
         Ok(Self {
             menu: made.func(abi::export::UI_MENU)?,
             pick: made.func(abi::export::UI_PICK)?,

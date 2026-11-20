@@ -14,6 +14,7 @@
 // `__zwEvents` を呼ぶ。どのレイヤーか・何が必要かは package.json の
 // `zerowave.layer`（`{"above":"captions","wants":["clock"],"fps":60}`）。
 // esbuild で一つにまとめ、javy で wasm にする（zwsdk/javy/zwjavy.wasm）。
+// メニュー・設定のページ・下のパネル（ui hook）は `ui()` で登録する（ui.ts）。
 // `fetch`・`WebSocket` も使える（net.ts）。繋がるのは package.json の `zerowave.config` で
 // `net` を宣言し、ユーザーが許可したときだけ。
 
@@ -27,6 +28,31 @@ export { host } from "./host";
 export type { ZwHost } from "./host";
 export { AbortController, AbortSignal, Headers, Response, WebSocket, fetch } from "./net";
 export type { HeadersInit, RequestInit } from "./net";
+export { notice, ui } from "./ui";
+export type {
+  Badge,
+  Button,
+  Cell,
+  Channel,
+  Chip,
+  Column,
+  Ctx,
+  Event as UiEvent,
+  FileOp,
+  Format,
+  Inline,
+  MenuItem,
+  Node,
+  Notice,
+  Open,
+  Page,
+  PickFile,
+  Program,
+  Reply,
+  Row,
+  Tone,
+  Ui,
+} from "./ui";
 
 installDom();
 installNet();

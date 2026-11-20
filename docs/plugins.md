@@ -31,7 +31,7 @@
 - `zwsdk::fonts`：フォントの探し方です。
 - `zwsdk::draw`：canvas 2D の API でレンダリングして画像にします（ホスト側だけ、feature `host`）。
 - `zwsdk::net`：ネットワーク通信。
-- `sdk/ts`・`sdk/javy`：TypeScript でレイヤーを書くための SDK と、それを動かす QuickJS の wasm（`sdk/ts/zwjs.wasm`）。
+- `sdk/ts`・`sdk/javy`：TypeScript でレイヤーやメニュー・ページ・下のパネルを書くための SDK と、それを動かす QuickJS の wasm（`sdk/ts/zwjs.wasm`）。
   `zw-stamp` が `zwjs.wasm` にスクリプト（カスタムセクション `zw_script`）とマニフェストを足して、プラグインの wasm にします。
   TypeScript のレイヤーでは `fetch` と `WebSocket` も使えます。
   package.json の `zerowave.config` に `{"key":"net","kind":"bool","default":"false","label":"通信を許可する"}` を書き、ユーザーが許可したときだけ繋がります。
@@ -69,7 +69,10 @@ stream のプラグインはマニフェストの `order` の小さい順に通�
   データ放送は `at: databroadcast` のレイヤー（文書の大きさ・映像の位置・別ウィンドウはこのレイヤーだけが指定できます）。
   プラグインが無ければ、そのレイヤーが表示されないだけです。
 - `ui`：メニュー・ページ・通知を足します。
-  プラグインはウィジェットの並びを返し、レンダリングは本体が行います（`zwsdk::plug::Ui` と `zwsdk::export_ui!`）。
+  プラグインはウィジェットの並びを返し、レンダリングは本体が行います（Rust は `zwsdk::plug::Ui` と `zwsdk::export_ui!`、TypeScript は `ui()` と `notice()`）。
+  下のパネル（パネルウィンドウのタブ）はマニフェストの `ui.panels` で宣言し、`page` と `event` がパネルの識別子で呼ばれます。
+  TypeScript では package.json の `zerowave.hooks` に `"ui"` を、`zerowave.ui` に `{"panels":[{"id":"now","title":"番組"}]}` のように書きます。
+  ui hook はレイヤーとは別のインスタンスで動くので、レイヤーと共有するデータは設定に置きます。
 - マニフェストの `hooks` に `control` を書くとリモコン API（`zw_control_v1`）を、`tuners` を書くとチューナーの貸し出しを使えます。
   リモコン API では、選局やキー操作のほか、いま見ている局と番組（`now`：サービス名・事業者名・ロゴ ID、現在と次の番組の名前・説明・拡張説明・ジャンル・時刻）、局ロゴの PNG（`logo`、deck はいま見ている局の分だけ）、本体の名前とバージョン（`host`）を、どの hook からでも取りに行けます。
   放送ソースが無く録画だけを見ているときも、ストリームの SDT・EIT から分かる分は入ります。

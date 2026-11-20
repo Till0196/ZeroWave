@@ -650,14 +650,7 @@ impl LayerInstance {
         mut made: Made,
         config: &crate::layer::Config,
     ) -> Result<Self, String> {
-        if let Ok(start) = made.func::<(), ()>("_start")
-            && let Err(error) = start.call(made.armed(), ())
-        {
-            match error.downcast_ref::<Exit>() {
-                Some(Exit(0)) => {}
-                _ => return Err(format!("_start: {error}")),
-            }
-        }
+        made.start()?;
         let new: TypedFunc<u32, u32> = made.func(abi::export::LAYER_NEW)?;
         let message = made.func(abi::export::LAYER_MESSAGE)?;
         let tick = made.func(abi::export::LAYER_TICK)?;

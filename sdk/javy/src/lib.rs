@@ -4,7 +4,7 @@
 //! ZeroWave のレイヤーを JavaScript で書くための、QuickJS の wasm。
 //!
 //! 本体（`zwsdk::host`）が提供する `zw_draw_v1`（canvas 2D）と `zw_layer_v1`（レイヤーの
-//! 大きさと時計）、`zw_cfg_v1` の設定、`zw_net_v1` の待たない通信を、JS の `globalThis.__zw` に定義する。canvas 2D の
+//! 大きさと時計）、`zw_cfg_v1` の設定、`zw_net_v1` の待たない通信、`zw_ui_v1` の通知を、JS の `globalThis.__zw` に定義する。canvas 2D の
 //! インターフェース（`getContext("2d")` や `requestAnimationFrame`）と `fetch`・`WebSocket` は
 //! TypeScript の `zwsdk` がこの上に作る。
 //!
@@ -12,6 +12,7 @@
 //! Rust のプラグインと同じで、それぞれ JS の `__zwNew`／`__zwMessage`／
 //! `__zwTick`／`__zwFrame`／`__zwEvents`（`zwsdk` が置く）を呼ぶ。フレームは
 //! 番号 1 の canvas にレンダリングし、`frame` は「canvas にレンダリングした」と返す。
+//! `ui` hook の関数（`zw_ui_menu`／`pick`／`page`／`event`）は、どれも JS の `__zwUi` を呼ぶ。
 //! スクリプトは本体が `zw_layer_v1` の `script` で渡す（wasm のカスタムセクション `zw_script`。
 //! `zw-stamp` が書き込む）。`_start` で一度だけ評価し、あとは残った runtime をここから直接呼ぶ。
 //!
@@ -116,6 +117,13 @@ unsafe extern "C" {
     safe fn cfg_set(name: *const u8, name_len: u32, value: *const u8, value_len: u32) -> u32;
     #[link_name = "list"]
     safe fn cfg_list() -> u32;
+}
+
+// 本体の通知（`zwsdk::ui::Notice` の JSON）。
+#[link(wasm_import_module = "zw_ui_v1")]
+unsafe extern "C" {
+    #[link_name = "notice"]
+    safe fn ui_notice(ptr: *const u8, len: u32);
 }
 
 // 待たない通信。`net` を宣言して許されたときだけ繋がり、そうでなければ `open`・`ws` は 0。
@@ -378,6 +386,7 @@ fn modify_runtime(runtime: Runtime) -> Runtime {
             }
         );
         put!("netClose", |handle: u32| close(handle));
+        put!("notice", |json: String| ui_notice(json.as_ptr(), json.len() as u32));
         ctx.globals().set("__zw", zw).expect("__zw");
     });
     CONTEXT.with(|slot| *slot.borrow_mut() = Some(runtime.context().clone()));
@@ -488,6 +497,43 @@ extern "C" fn zw_layer_events(_handle: u32) -> u32 {
 
 #[export_name = "zw_layer_drop"]
 extern "C" fn zw_layer_drop(_handle: u32) {}
+
+/// `ui` hook：`__zwUi(種類, ページ, ctx, 添え物)` を呼び、返った JSON の文字列。
+fn ui(kind: &str, page: u32, ctx: u32, extra: u32) -> String {
+    let text = |buf: u32| String::from_utf8_lossy(&bytes_of(buf)).into_owned();
+    let (page, ctx, extra) = (text(page), text(ctx), text(extra));
+    with_context(|js| {
+        call(js, "__zwUi", (kind.to_owned(), page, ctx, extra))
+            .and_then(|out| out.as_string().and_then(|s| s.to_string().ok()))
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
+}
+
+/// 本体に返す JSON。何も返らなければ `empty`（メニューは `[]`、ページと返事は `{}`）。
+fn answer(json: String, empty: &str) -> u32 {
+    buf_of(if json.is_empty() { empty } else { &json }.as_bytes())
+}
+
+#[export_name = "zw_ui_menu"]
+extern "C" fn zw_ui_menu(ctx: u32) -> u32 {
+    answer(ui("menu", 0, ctx, 0), "[]")
+}
+
+#[export_name = "zw_ui_pick"]
+extern "C" fn zw_ui_pick(ctx: u32, id: u32) {
+    ui("pick", 0, ctx, id);
+}
+
+#[export_name = "zw_ui_page"]
+extern "C" fn zw_ui_page(page: u32, ctx: u32) -> u32 {
+    answer(ui("page", page, ctx, 0), "{}")
+}
+
+#[export_name = "zw_ui_event"]
+extern "C" fn zw_ui_event(page: u32, ctx: u32, event: u32) -> u32 {
+    answer(ui("event", page, ctx, event), "{}")
+}
 
 #[export_name = "_start"]
 extern "C" fn start() {
