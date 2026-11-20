@@ -316,12 +316,9 @@ impl Spawner {
             own: plugins.io_for(plugin),
             plugin: Arc::clone(plugin),
             setup: self.setup.clone(),
-            interval: manifest
-                .fps
-                .filter(|fps| *fps > 0)
-                .map_or(Duration::from_millis(50), |fps| {
-                    Duration::from_micros(1_000_000 / u64::from(fps))
-                }),
+            interval: std::cell::Cell::new(interval_of(manifest.fps)),
+            manifest_interval: interval_of(manifest.fps),
+            smooth: std::cell::Cell::new(manifest.smooth.unwrap_or(true)),
             latest: Arc::clone(&self.latest),
             broadcast: Arc::clone(&self.broadcast),
             from: self.from.clone(),
@@ -403,6 +400,29 @@ fn shape(frame: &Frame) -> Shape {
     )
 }
 
+/// 一秒に `fps` 回の間隔。無ければ 0（提示の合図ごと、つまり画面のリフレッシュレート）。
+fn interval_of(fps: Option<u32>) -> Duration {
+    fps.filter(|fps| *fps > 0).map_or(Duration::ZERO, |fps| {
+        Duration::from_nanos(1_000_000_000 / u64::from(fps))
+    })
+}
+
+/// 提示の合図が来ないとき、自分の時計で作る間隔。合図ごとなら一秒に [`UNBEATEN_FPS`] 回。
+fn own_clock(interval: Duration) -> Duration {
+    if interval.is_zero() {
+        Duration::from_nanos(1_000_000_000 / u64::from(UNBEATEN_FPS))
+    } else {
+        interval
+    }
+}
+
+const UNBEATEN_FPS: u32 = 60;
+
+/// 合図で作るか。提示の間隔の揺れで一回飛ばさないよう、合図の間隔（`gap`）の半分までは早くても作る。
+fn due_on_beat(since_made: Duration, gap: Duration, interval: Duration) -> bool {
+    since_made + gap / 2 >= interval
+}
+
 fn is_key(message: &ToLayer) -> bool {
     matches!(message, ToLayer::Message(Message::Key(_), _))
 }
@@ -422,7 +442,12 @@ struct Worker {
     plugin: Arc<Plugin>,
     own: Io,
     setup: Setup,
-    interval: Duration,
+    /// レンダリングの間隔。0 なら提示の合図ごと。レイヤーが [`Event::Fps`] で変える。
+    interval: std::cell::Cell<Duration>,
+    /// マニフェストの `fps` の間隔（[`Event::Fps`] の 0 で戻す）。
+    manifest_interval: Duration,
+    /// 絵の並びを一つ前の並びとの間で動かす。レイヤーが [`Event::Smooth`] で変える。
+    smooth: std::cell::Cell<bool>,
     latest: Latest,
     broadcast: crate::data::Latest,
     from: Sender<FromLayer>,
@@ -503,7 +528,7 @@ impl Worker {
         let mut area = self.setup.size;
         // 作り直したら渡し直す（局が変わっても送り直されない）。
         let mut captions: Option<Message> = None;
-        let mut ticked = Instant::now() - self.interval;
+        let mut ticked = Instant::now() - own_clock(self.interval.get());
         // 再起動は重いので、間隔を延ばしていく。
         let mut reopen_after: Option<Instant> = None;
         let mut reopen_wait = REOPEN_FIRST;
@@ -511,11 +536,13 @@ impl Worker {
         let mut beaten: Option<Instant> = None;
         // 合図で最後に作った時の、合図の時刻。
         let mut beat_made: Option<Instant> = None;
+        // 合図の間隔（画面のリフレッシュの周期）。
+        let mut beat_gap = Duration::ZERO;
         loop {
             let wait = if beaten.is_some_and(|at| at.elapsed() < BEAT_LOST) {
                 BEAT_LOST
             } else {
-                self.interval.saturating_sub(ticked.elapsed())
+                own_clock(self.interval.get()).saturating_sub(ticked.elapsed())
             };
             let mut hurry = false;
             let mut beat = false;
@@ -526,6 +553,9 @@ impl Worker {
             };
             while let Some(message) = next.take().or_else(|| from.try_recv().ok()) {
                 if let ToLayer::Beat(at) = message {
+                    if let Some(before) = beaten {
+                        beat_gap = at.saturating_duration_since(before);
+                    }
                     beaten = Some(at);
                     beat = true;
                     continue;
@@ -543,13 +573,16 @@ impl Worker {
             }
             let clock = beaten.filter(|at| at.elapsed() < BEAT_LOST);
             let due = match clock {
-                // 提示の間隔の揺れで一回飛ばさないよう、少し早くても作る。
                 Some(at) => {
                     beat && beat_made.is_none_or(|made| {
-                        at.saturating_duration_since(made) + self.interval / 4 >= self.interval
+                        due_on_beat(
+                            at.saturating_duration_since(made),
+                            beat_gap,
+                            self.interval.get(),
+                        )
                     })
                 }
-                None => ticked.elapsed() >= self.interval,
+                None => ticked.elapsed() >= own_clock(self.interval.get()),
             };
             if !hurry && !due {
                 continue;
@@ -654,10 +687,14 @@ impl Worker {
                     }
                     zwsdk::host::Picture::Sprites(sprites) => {
                         let time = self.made_at.get();
-                        let earlier = self.last.replace(Some(Earlier {
-                            time,
-                            sprites: sprites.clone(),
-                        }));
+                        let earlier = if self.smooth.get() {
+                            self.last.replace(Some(Earlier {
+                                time,
+                                sprites: sprites.clone(),
+                            }))
+                        } else {
+                            self.last.replace(None)
+                        };
                         Picture::Sprites {
                             sprites,
                             time,
@@ -685,6 +722,12 @@ impl Worker {
                     }
                 }
                 Event::AudioStop => self.say(Say::Aiff(Vec::new())),
+                Event::Fps(fps) => self.interval.set(if fps == 0 {
+                    self.manifest_interval
+                } else {
+                    interval_of(Some(fps))
+                }),
+                Event::Smooth(on) => self.smooth.set(on),
                 Event::CaptionDisplay { language, on } => {
                     let _ = self.from.send(FromLayer::CaptionDisplay { language, on });
                 }
@@ -870,5 +913,39 @@ mod nvram {
             assert_eq!(read.keys().collect::<Vec<_>>(), ["d", "g"]);
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_layer_without_a_rate_follows_the_screen() {
+        assert_eq!(interval_of(None), Duration::ZERO);
+        assert_eq!(interval_of(Some(0)), Duration::ZERO);
+        assert_eq!(interval_of(Some(30)), Duration::from_nanos(33_333_333));
+        assert_eq!(interval_of(Some(360)), Duration::from_nanos(2_777_777));
+        assert_eq!(own_clock(Duration::ZERO), Duration::from_nanos(16_666_666));
+        assert_eq!(own_clock(interval_of(Some(360))), interval_of(Some(360)));
+    }
+
+    /// 合図の何回ごとに作るか。
+    fn every(fps: Option<u32>, hz: u32) -> u32 {
+        let gap = Duration::from_nanos(1_000_000_000 / u64::from(hz));
+        (1..=hz)
+            .find(|n| due_on_beat(gap * *n, gap, interval_of(fps)))
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn a_layer_draws_on_the_beats_its_rate_asks_for() {
+        assert_eq!(every(None, 360), 1);
+        assert_eq!(every(Some(360), 360), 1);
+        assert_eq!(every(Some(30), 360), 12);
+        assert_eq!(every(Some(30), 60), 2);
+        assert_eq!(every(Some(60), 60), 1);
+        assert_eq!(every(Some(360), 60), 1);
+        assert_eq!(every(Some(24), 120), 5);
     }
 }

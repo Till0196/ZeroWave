@@ -12,7 +12,9 @@
 // 本体は、メッセージが来れば `__zwMessage`、時刻を進めるとき `__zwTick`（タイマー・
 // requestAnimationFrame はここで実行される）、レンダリングのとき `__zwFrame`、要求を取得するとき
 // `__zwEvents` を呼ぶ。どのレイヤーか・何が必要かは package.json の
-// `zerowave.layer`（`{"above":"captions","wants":["clock"],"fps":60}`）。
+// `zerowave.layer`（`{"above":"captions","wants":["clock"],"fps":60}`）。`fps` は `send({ Fps: 30 })` で変えられる。
+// drawImage で置いた canvas は、本体が前のフレームとの間で動かす（一フレーム分遅れて出る）。
+// 動かさないなら `"smooth": false` か `send({ Smooth: false })`。
 // esbuild で一つにまとめ、javy で wasm にする（zwsdk/javy/zwjavy.wasm）。
 // メニュー・設定のページ・下のパネル（ui hook）は `ui()` で登録する（ui.ts）。
 // `fetch`・`WebSocket` も使える（net.ts）。繋がるのは package.json の `zerowave.config` で
@@ -71,7 +73,11 @@ export type Event =
   | { Log: string }
   | { Tune: { network: number; transport: number; service: number } }
   | { Sound: number }
-  | { CaptionDisplay: { language: number; on: boolean } };
+  | { CaptionDisplay: { language: number; on: boolean } }
+  /** 一秒に何回レンダリングするか。0 なら package.json の `zerowave.layer.fps`（無ければ画面のリフレッシュレート）に戻す。 */
+  | { Fps: number }
+  /** 絵（drawImage で置いた canvas）の位置を、前のフレームとの間で本体に動かさせるか。 */
+  | { Smooth: boolean };
 
 /** レイヤー自体（番号 1、本体が作る）。 */
 export const layer: ZwCanvas = new ZwCanvas(0, 0, 1);
@@ -81,7 +87,7 @@ let userMessage: ((message: Message, bytes: Uint8Array | null) => void) | null =
 let userNew: ((config: Config) => void) | null = null;
 let pending: Event[] = [];
 
-/** レンダリングのたびに呼ばれる（マニフェストの `fps`、無ければ 20 回/秒）。
+/** レンダリングのたびに呼ばれる（マニフェストの `fps`、無ければ画面のリフレッシュレート）。
  *  `false` を返せば「変わっていない」（本体はフレームを取得し直さない）。
  *  requestAnimationFrame でレンダリングするレイヤーは定義しなくてよい。 */
 export function onFrame(fn: () => void | boolean): void {

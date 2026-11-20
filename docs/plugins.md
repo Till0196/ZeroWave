@@ -66,6 +66,10 @@ stream のプラグインはマニフェストの `order` の小さい順に通�
   `wants` で欲しい入力（streams・captions・keys・clock・area・broadcast・popup）を指定すると、本体はそれだけを `zwsdk::layer::Message` で送ります（指定が無ければ clock・area・keys）。
   エントリポイントはどのレイヤーでも同じ六つです（new／message／tick／frame／events／drop。Rust は `zwsdk::plug::Layer` と `zwsdk::export_layer!`、TypeScript は `onNew`／`onMessage`／`onFrame`／`send`）。
   画像は RGBA で返しても、本体の canvas 2D（`zw_draw_v1`）にレンダリングしてそのことを返しても構いません。
+  レンダリングの回数はマニフェストの `fps` で決め（無ければ画面のリフレッシュレート）、動いている間は `Event::Fps` で変えられます（0 でマニフェストの値に戻ります）。
+  画面に出していない間は、`fps` が無ければ一秒に 60 回です。
+  canvas に別の canvas を置いて描いた絵は、本体が前のフレームとの間で位置を動かすので、少ない回数でも滑らかに動きます（その分一フレーム遅れて出ます）。
+  動かさないなら、マニフェストの `smooth` を偽にするか `Event::Smooth(false)` を送ります。
   データ放送は `at: databroadcast` のレイヤー（文書の大きさ・映像の位置・別ウィンドウはこのレイヤーだけが指定できます）。
   プラグインが無ければ、そのレイヤーが表示されないだけです。
 - `ui`：メニュー・ページ・通知を足します。

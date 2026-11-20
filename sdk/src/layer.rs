@@ -62,9 +62,14 @@ pub struct Manifest {
     pub below: Option<Slot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wants: Option<Vec<Want>>,
-    /// 一秒に何回レンダリングするか。無ければフレームが変わったと通知したときだけ。
+    /// 一秒に何回レンダリングするか。無ければ画面のリフレッシュレート。
+    /// 動いている間は [`Event::Fps`] で変えられる。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps: Option<u32>,
+    /// 偽なら、絵の並びを前の並びとの間で動かさない（その分の一枚の遅れも無くなる）。無ければ動かす。
+    /// 動いている間は [`Event::Smooth`] で変えられる。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smooth: Option<bool>,
 }
 
 impl Manifest {
@@ -198,6 +203,10 @@ pub enum Event {
         language: u32,
         on: bool,
     },
+    /// 一秒に何回レンダリングするか。0 ならマニフェストの `fps`（無ければ画面のリフレッシュレート）に戻す。
+    Fps(u32),
+    /// 絵の並びを前の並びとの間で動かすか（マニフェストの `smooth`）。
+    Smooth(bool),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,6 +356,11 @@ mod tests {
         let bytes = encode_events(&events, &audios);
         assert_eq!(decode_events(&bytes), (events, audios));
         assert_eq!(decode_events(b"[]"), (Vec::new(), Vec::new()), "改行が無い");
+        assert_eq!(
+            decode_events(b"[{\"Fps\":30},{\"Smooth\":false}]\n").0,
+            [Event::Fps(30), Event::Smooth(false)],
+            "TypeScript の send"
+        );
     }
 
     #[test]
