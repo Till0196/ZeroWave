@@ -434,14 +434,20 @@ impl Screen {
         for id in open {
             self.shut(id);
         }
-        if self.pending.iter().any(|what| matches!(what, Which::Menu(_))) {
+        if self
+            .pending
+            .iter()
+            .any(|what| matches!(what, Which::Menu(_)))
+        {
             self.menu_cancelled = true;
         }
     }
 
     /// メニュー用のウィンドウの背景を透過できなかった。ウィンドウを閉じ、メインウィンドウの中に表示し直してもらう。
     fn menu_unsupported(&self, window: &Window) {
-        tracing::info!("右クリックメニューのウィンドウの背景を透過できないため、メインウィンドウの中に表示する");
+        tracing::info!(
+            "右クリックメニューのウィンドウの背景を透過できないため、メインウィンドウの中に表示する"
+        );
         let _ = self.requests.send(Request::Closed(window.id()));
         let _ = self
             .requests

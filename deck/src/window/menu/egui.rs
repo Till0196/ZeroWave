@@ -63,7 +63,11 @@ fn fitting<R>(ui: &mut ::egui::Ui, width: f32, add: impl FnOnce(&mut ::egui::Ui)
         .ctx()
         .data(|data| data.get_temp::<bool>(whole_screen_id()))
         .unwrap_or(false);
-    let most = if whole { f32::INFINITY } else { MOST_ROWS * ROW };
+    let most = if whole {
+        f32::INFINITY
+    } else {
+        MOST_ROWS * ROW
+    };
     let room = (ui.ctx().content_rect().height() - 24.0).clamp(120.0, most);
     let (offset, content): (f32, f32) = ui.data(|data| data.get_temp(id)).unwrap_or_default();
     // メニュー用のウィンドウでは、画面に収まる限りスクロール領域に入れない（スクロール領域は最初に測った高さのままになる）。

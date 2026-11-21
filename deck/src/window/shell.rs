@@ -1282,7 +1282,8 @@ impl ApplicationHandler<Wake> for Shell {
             );
             if escape || matches!(event, WindowEvent::Focused(false)) {
                 let _ = self.to_panes.send(ToPanes::ShutMenu);
-                self.deck.menu_done(crate::threads::link::MenuDone::Closed, &window);
+                self.deck
+                    .menu_done(crate::threads::link::MenuDone::Closed, &window);
             }
             if escape {
                 return;

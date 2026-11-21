@@ -158,7 +158,8 @@ impl Deck {
                 self.menu_shown = false;
             }
             // X11 では、メニューをメインウィンドウの外にも出せるよう、画面全体を覆うメニュー用のウィンドウに表示する。
-            let covered = menu_click && !self.menu_in_window && self.open_covering_menu(&ctx, window);
+            let covered =
+                menu_click && !self.menu_in_window && self.open_covering_menu(&ctx, window);
             let reopen = std::mem::take(&mut self.menu_reopen);
             if menu_click && !covered {
                 self.menu_anchor = None;

@@ -32,7 +32,14 @@ pub fn cover_at(window: &Window) -> Option<(i32, i32)> {
         .reply()
         .ok()?
         .atom;
-    if connection.get_selection_owner(atom).ok()?.reply().ok()?.owner == x11rb::NONE {
+    if connection
+        .get_selection_owner(atom)
+        .ok()?
+        .reply()
+        .ok()?
+        .owner
+        == x11rb::NONE
+    {
         return None;
     }
     let root = connection.setup().roots.get(screen)?.root;

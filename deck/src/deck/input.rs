@@ -233,8 +233,10 @@ impl Deck {
 
     /// 右クリックメニューを、画面全体を覆うメニュー用のウィンドウに表示する。使えない環境（X11 でない、コンポジターが無い）なら false。
     pub(super) fn open_covering_menu(&mut self, ctx: &egui::Context, window: &Arc<Window>) -> bool {
-        let (Some(at), Ok(origin)) = (crate::window::x11::cover_at(window), window.inner_position())
-        else {
+        let (Some(at), Ok(origin)) = (
+            crate::window::x11::cover_at(window),
+            window.inner_position(),
+        ) else {
             return false;
         };
         let open = crate::window::sub::MenuOpen {

@@ -403,7 +403,12 @@ pub fn configure_surface(
     height: u32,
 ) {
     configure_with(gpu, surface, target, width, height, |modes| {
-        Some(modes.first().copied().unwrap_or(wgpu::CompositeAlphaMode::Auto))
+        Some(
+            modes
+                .first()
+                .copied()
+                .unwrap_or(wgpu::CompositeAlphaMode::Auto),
+        )
     });
 }
 
