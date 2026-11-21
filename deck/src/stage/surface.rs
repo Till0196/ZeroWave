@@ -402,10 +402,41 @@ pub fn configure_surface(
     width: u32,
     height: u32,
 ) {
+    configure_with(gpu, surface, target, width, height, |modes| {
+        Some(modes.first().copied().unwrap_or(wgpu::CompositeAlphaMode::Auto))
+    });
+}
+
+/// 背景を透過するサーフェス（egui の乗算済みアルファのまま合成する）。透過できなければ設定せずに false を返す。
+pub fn configure_transparent_surface(
+    gpu: &Gpu,
+    surface: &wgpu::Surface<'static>,
+    target: &mut wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> bool {
+    configure_with(gpu, surface, target, width, height, |modes| {
+        modes
+            .contains(&wgpu::CompositeAlphaMode::PreMultiplied)
+            .then_some(wgpu::CompositeAlphaMode::PreMultiplied)
+    })
+}
+
+fn configure_with(
+    gpu: &Gpu,
+    surface: &wgpu::Surface<'static>,
+    target: &mut wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+    alpha_of: impl FnOnce(&[wgpu::CompositeAlphaMode]) -> Option<wgpu::CompositeAlphaMode>,
+) -> bool {
     if width == 0 || height == 0 {
-        return;
+        return false;
     }
     let capabilities = surface.get_capabilities(&gpu.adapter);
+    let Some(alpha) = alpha_of(&capabilities.alpha_modes) else {
+        return false;
+    };
     // egui は sRGB の値の上で混ぜる前提。sRGB の形式だと縁のぼかしや影が明るく浮く。
     let format = capabilities
         .formats
@@ -415,11 +446,6 @@ pub fn configure_surface(
         .or_else(|| capabilities.formats.first().copied())
         .unwrap_or(wgpu::TextureFormat::Bgra8Unorm);
     *target = format;
-    let alpha = capabilities
-        .alpha_modes
-        .first()
-        .copied()
-        .unwrap_or(wgpu::CompositeAlphaMode::Auto);
     // 別ウィンドウは垂直同期を待たない（`Fifo` だと映像をレンダリングするスレッドが待たされる）。
     let present_mode = [
         wgpu::PresentMode::Mailbox,
@@ -443,4 +469,5 @@ pub fn configure_surface(
             view_formats: Vec::new(),
         },
     );
+    true
 }

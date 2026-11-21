@@ -244,6 +244,9 @@ pub enum Place {
     Centred,
     /// 閉じたときの位置と大きさを `state.toml` の `[panes]` に保存する（キーはその名前）。
     Kept(&'static str),
+    /// 画面の座標（物理ピクセル）のこの点を含む画面全体を覆う、枠の無いウィンドウ（X11 の右クリックメニュー用）。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Cover((i32, i32)),
 }
 
 /// 別ウィンドウのオーナー。
@@ -288,6 +291,9 @@ pub enum Request {
     /// 別ウィンドウを閉じた。イベントループが持つウィンドウの参照を手放さないとウィンドウが消えない。
     Closed(winit::window::WindowId),
     Remote(crate::ui::panes::remote::Pressed),
+    /// メニュー用のウィンドウが閉じた。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Menu(MenuDone),
     Panel(crate::ui::guide::panel::Said),
     Settings(Box<crate::config::File>),
     Replugged(bool),
@@ -299,3 +305,13 @@ pub enum Request {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Wake;
+
+/// メニュー用のウィンドウの閉じ方。
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub enum MenuDone {
+    Picked(crate::window::menu::Picked),
+    Closed,
+    /// 背景を透過できなかった。メインウィンドウの中に表示し直す。
+    Unsupported,
+}

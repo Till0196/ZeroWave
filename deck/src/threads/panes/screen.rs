@@ -249,6 +249,21 @@ impl Screen {
                 }
             }
             ToPanes::Mode(mode) => self.wear(mode),
+            ToPanes::Menu(open) => {
+                // 作成を要求中のメニュー用のウィンドウがあれば、表示する内容だけを差し替える。
+                if let Some(Which::Menu(pending)) = self
+                    .pending
+                    .iter_mut()
+                    .find(|what| matches!(what, Which::Menu(_)))
+                {
+                    *pending = open;
+                    self.menu_cancelled = false;
+                    return;
+                }
+                self.shut_menu();
+                self.open(Which::Menu(open));
+            }
+            ToPanes::ShutMenu => self.shut_menu(),
             ToPanes::ShutOneSeg => {
                 if let Some(id) = self
                     .subs
@@ -326,6 +341,12 @@ impl Screen {
                     }
                     Which::Panel(size) => open.push(Which::Panel(size)),
                     Which::Detail(_) => {}
+                    // 右クリックメニューは開き直さない。閉じたことをメインウィンドウに伝える。
+                    Which::Menu(_) => {
+                        let _ = self
+                            .requests
+                            .send(Request::Menu(crate::threads::link::MenuDone::Closed));
+                    }
                 }
             }
         }
@@ -402,6 +423,32 @@ impl Screen {
         }
     }
 
+    /// メニュー用のウィンドウを閉じる。まだ作成されていなければ、作成されたときに閉じる。
+    pub(super) fn shut_menu(&mut self) {
+        let open: Vec<WindowId> = self
+            .subs
+            .iter()
+            .filter(|(_, sub)| matches!(sub.what, Which::Menu(_)))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in open {
+            self.shut(id);
+        }
+        if self.pending.iter().any(|what| matches!(what, Which::Menu(_))) {
+            self.menu_cancelled = true;
+        }
+    }
+
+    /// メニュー用のウィンドウの背景を透過できなかった。ウィンドウを閉じ、メインウィンドウの中に表示し直してもらう。
+    fn menu_unsupported(&self, window: &Window) {
+        tracing::info!("右クリックメニューのウィンドウの背景を透過できないため、メインウィンドウの中に表示する");
+        let _ = self.requests.send(Request::Closed(window.id()));
+        let _ = self
+            .requests
+            .send(Request::Menu(crate::threads::link::MenuDone::Unsupported));
+        let _ = self.proxy.send_event(Wake);
+    }
+
     /// 開いているウィンドウを手前に出す前に、オーナーを替える。
     pub(super) fn reown(&self, window: &Window, owner: Owner) {
         let _ = self.requests.send(Request::Owner {
@@ -418,18 +465,27 @@ impl Screen {
         paint: Option<crate::window::sub::Paint>,
         presented: Arc<crate::threads::link::Presented>,
     ) {
-        let Some(what) = self.pending.pop_front() else {
+        let Some(mut what) = self.pending.pop_front() else {
             tracing::info!("要求していないウィンドウが作成された");
             return;
         };
+        let menu = matches!(what, Which::Menu(_));
+        if menu && std::mem::take(&mut self.menu_cancelled) {
+            let _ = self.requests.send(Request::Closed(window.id()));
+            let _ = self.proxy.send_event(Wake);
+            return;
+        }
         let Some(paint) = paint else {
             tracing::info!("別ウィンドウのサーフェスが無いため開けない");
+            if menu {
+                self.menu_unsupported(&window);
+            }
             return;
         };
         let size = window.inner_size();
         let mode = self.theme.mode;
         let paper = what.paper();
-        let face = match &paint {
+        let (mut face, target) = match &paint {
             crate::window::sub::Paint::Wgpu { .. } => {
                 let Some(gpu) = self.window_gpu() else {
                     tracing::info!("wgpu のデバイスが無いため、別ウィンドウを開けない");
@@ -447,17 +503,50 @@ impl Screen {
                     return;
                 };
                 let mut target = wgpu::TextureFormat::Bgra8UnormSrgb;
-                configure_surface(gpu, surface, &mut target, size.width, size.height);
+                if menu {
+                    // メニュー用のウィンドウは背景を透過する。透過できなければメインウィンドウの中に表示する。
+                    if !crate::stage::configure_transparent_surface(
+                        gpu,
+                        surface,
+                        &mut target,
+                        size.width,
+                        size.height,
+                    ) {
+                        self.menu_unsupported(&window);
+                        return;
+                    }
+                } else {
+                    configure_surface(gpu, surface, &mut target, size.width, size.height);
+                }
                 // サーフェスの形式が決まってから画面を用意する（別の形式のレンダラーではレンダリングできない）。
                 let face = dress(target);
                 (face, Some(target))
             }
             #[cfg(all(unix, not(target_os = "macos")))]
-            crate::window::sub::Paint::Gles(_) => {
+            crate::window::sub::Paint::Gles(painter) => {
+                // 背景を透過できるのは、ウィンドウのビジュアルが 32 ビット（アルファ付き）で、EGL のサーフェスを作れたときだけ。
+                // 透過できないまま表示すると、画面全体が黒く覆われる。
+                if menu
+                    && (crate::window::x11::depth(&window) != Some(32)
+                        || painter.gles_window().is_err())
+                {
+                    self.menu_unsupported(&window);
+                    return;
+                }
                 (Face::on_gles(&window, paper.then_some(mode)), None)
             }
         };
-        let (face, target) = face;
+        if let Which::Menu(open) = &mut what {
+            crate::ui::style(face.context(), open.mode);
+            face.clear_to_transparent();
+            // 開く位置をウィンドウの中の論理座標にする。override-redirect のウィンドウは指定した位置に置かれる。
+            let origin = window.inner_position().unwrap_or_default();
+            let scale = window.scale_factor() as f32;
+            open.local = Some(egui::pos2(
+                (open.at.0 - origin.x) as f32 / scale,
+                (open.at.1 - origin.y) as f32 / scale,
+            ));
+        }
         let mut paint = paint;
         if let (crate::window::sub::Paint::Wgpu { target: was, .. }, Some(target)) =
             (&mut paint, target)

@@ -74,7 +74,7 @@ mod vsync;
 pub(crate) use catalog::{listed_asked, listed_at_hand};
 pub(crate) use compose::shown_size;
 use compose::stream_info;
-pub use surface::configure_surface;
+pub use surface::{configure_surface, configure_transparent_surface};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Listed {

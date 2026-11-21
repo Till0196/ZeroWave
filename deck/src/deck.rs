@@ -89,6 +89,14 @@ pub struct Deck {
     pending: std::cell::RefCell<Vec<ToStage>>,
     pending_picks: Vec<menu::Picked>,
     context_wanted: bool,
+    /// 右クリックメニューをメニュー用のウィンドウに表示している（X11）。
+    menu_shown: bool,
+    /// メニュー用のウィンドウを使えなかったので、以後はメインウィンドウの中にメニューを表示する。
+    menu_in_window: bool,
+    /// メインウィンドウの中にメニューを表示し直す（メニュー用のウィンドウを使えなかった）。
+    menu_reopen: bool,
+    /// メインウィンドウの中にメニューを表示する位置。`None` なら右クリックした位置。
+    menu_anchor: Option<egui::Pos2>,
     /// OS のメニューが出ている。その間はポインタを消さない。
     menu_open: bool,
     bar_wanted: Option<(usize, (f64, f64))>,
@@ -200,6 +208,10 @@ impl Deck {
             pending: std::cell::RefCell::new(Vec::new()),
             pending_picks: Vec::new(),
             context_wanted: false,
+            menu_shown: false,
+            menu_in_window: false,
+            menu_reopen: false,
+            menu_anchor: None,
             menu_open: false,
             bar_wanted: None,
             sized_at: None,

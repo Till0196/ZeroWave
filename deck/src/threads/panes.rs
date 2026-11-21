@@ -67,6 +67,12 @@ pub enum ToPanes {
 
     Mode(ui::theme::Mode),
     ShutOneSeg,
+    /// X11 の右クリックメニューを、メニュー用のウィンドウに表示する。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Menu(Box<crate::window::sub::MenuOpen>),
+    /// メニュー用のウィンドウを閉じる（メインウィンドウで Esc を押した、フォーカスが外れた）。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    ShutMenu,
     Repaint,
     Profile(String),
     /// デバイスが作り直された。開いているウィンドウは閉じて開き直す（サーフェスは前のインスタンスの物）。
@@ -101,6 +107,8 @@ impl std::fmt::Debug for ToPanes {
 
             Self::Mode(_) => "Mode",
             Self::ShutOneSeg => "ShutOneSeg",
+            Self::Menu(_) => "Menu",
+            Self::ShutMenu => "ShutMenu",
             Self::Repaint => "Repaint",
             Self::Profile(_) => "Profile",
             Self::Gpu(_) => "Gpu",
@@ -231,6 +239,7 @@ impl Panes {
             panel_size: None,
             panel_quiet: false,
             panel_dropped: false,
+            menu_cancelled: false,
         };
         match crate::window::ending::Thread::spawn("panes", "別ウィンドウ", move |_told| {
             screen().run()
@@ -317,6 +326,8 @@ struct Screen {
     panel_size: Option<(u32, u32)>,
     panel_quiet: bool,
     panel_dropped: bool,
+    /// 作成を要求中のメニュー用のウィンドウは、作成されたらすぐ閉じる。
+    menu_cancelled: bool,
 }
 
 fn screen_only(path: &[String]) -> bool {

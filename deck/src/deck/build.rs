@@ -152,7 +152,18 @@ impl Deck {
         if menu::Menus::has_native_context() {
             self.context_wanted |= menu_click;
         } else {
-            let opening = if menu_click {
+            // メインウィンドウをクリックしたら、メニュー用のウィンドウを閉じる（メインウィンドウが別の画面にあるときなど）。
+            if self.menu_shown && ctx.input(|input| input.pointer.any_pressed()) {
+                let _ = self.to_panes.send(ToPanes::ShutMenu);
+                self.menu_shown = false;
+            }
+            // X11 では、メニューをメインウィンドウの外にも出せるよう、画面全体を覆うメニュー用のウィンドウに表示する。
+            let covered = menu_click && !self.menu_in_window && self.open_covering_menu(&ctx, window);
+            let reopen = std::mem::take(&mut self.menu_reopen);
+            if menu_click && !covered {
+                self.menu_anchor = None;
+            }
+            let opening = if (menu_click && !covered) || reopen {
                 Some(egui::SetOpenCommand::Bool(true))
             } else if grabbed.clicked() {
                 Some(egui::SetOpenCommand::Bool(false))
@@ -160,10 +171,12 @@ impl Deck {
                 None
             };
             let mut picked = None;
-            egui::Popup::menu(&grabbed)
-                .open_memory(opening)
-                .at_pointer_fixed()
-                .show(|ui| picked = menu::egui::context(ui, &filling));
+            let popup = egui::Popup::menu(&grabbed).open_memory(opening);
+            let popup = match self.menu_anchor {
+                Some(at) => popup.at_position(at),
+                None => popup.at_pointer_fixed(),
+            };
+            popup.show(|ui| picked = menu::egui::context(ui, &filling));
             if let Some(picked) = picked {
                 self.pick(picked, window);
             }

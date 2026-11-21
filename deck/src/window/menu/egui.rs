@@ -44,14 +44,38 @@ fn spaced(ui: &mut ::egui::Ui) {
     ui.style_mut().spacing.button_padding = ::egui::vec2(8.0, 4.0);
 }
 
+/// 画面全体を覆うメニュー用のウィンドウに表示するメニューにする。外に出せるので、行数で区切らず画面の高さまで使う。
+pub fn on_whole_screen(ctx: &::egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(whole_screen_id(), true));
+}
+
+fn whole_screen_id() -> ::egui::Id {
+    ::egui::Id::unique("メニューを画面の高さまで使う")
+}
+
 /// メニューの中身をウィンドウの高さに収める。収まらなければ ▲▼ のボタンでスクロールする。
 fn fitting<R>(ui: &mut ::egui::Ui, width: f32, add: impl FnOnce(&mut ::egui::Ui) -> R) -> R {
     // ポップアップの幅はここで決める（使える幅いっぱいに取ると、開いたポップアップの幅に引きずられて広がる）。
     ui.set_min_width(width);
     ui.set_max_width(width);
     let id = ui.scope_id().with("はみ出し");
-    let room = (ui.ctx().content_rect().height() - 24.0).clamp(120.0, MOST_ROWS * ROW);
+    let whole = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(whole_screen_id()))
+        .unwrap_or(false);
+    let most = if whole { f32::INFINITY } else { MOST_ROWS * ROW };
+    let room = (ui.ctx().content_rect().height() - 24.0).clamp(120.0, most);
     let (offset, content): (f32, f32) = ui.data(|data| data.get_temp(id)).unwrap_or_default();
+    // メニュー用のウィンドウでは、画面に収まる限りスクロール領域に入れない（スクロール領域は最初に測った高さのままになる）。
+    if whole && content <= room + 0.5 {
+        let shown = ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            add(ui)
+        });
+        let content = shown.response.rect.height();
+        ui.data_mut(|data| data.insert_temp(id, (0.0f32, content)));
+        return shown.inner;
+    }
     let over = content > room + 0.5;
     let view = if over { room - 2.0 * STRIP } else { room };
     let most = (content - view).max(0.0);
@@ -220,7 +244,9 @@ fn menu_width<'a>(
     icons: bool,
 ) -> f32 {
     let mut widest = 0.0f32;
+    let mut any = false;
     for (label, key) in labels {
+        any = true;
         let key = if key.is_empty() {
             0.0
         } else {
@@ -228,8 +254,14 @@ fn menu_width<'a>(
         };
         widest = widest.max(text_width(ui, label) + key);
     }
+    // 項目が無ければ「（まだありません）」の行が入る幅。
+    if !any {
+        widest = text_width(ui, EMPTY);
+    }
     let fixed = GUTTER + if icons { ICON } else { 0.0 } + ARROW + 8.0;
-    (widest + fixed).clamp(WIDTH * 0.6, MOST_WIDTH)
+    // OS のメニューと同じく文字は省略しない。省略するのは画面（ウィンドウの中のメニューならウィンドウ）の幅を超えるときだけ。
+    let most = (ui.ctx().content_rect().width() - 16.0).max(WIDTH * 0.6);
+    (widest + fixed).clamp(WIDTH * 0.6, most)
 }
 
 fn sub_row<R>(
@@ -276,7 +308,7 @@ fn items_in(
 ) -> Option<menu::Picked> {
     // 空のポップアップは壊れて見えるので、中身の無い見出しも出してその旨を表示する。
     if items.is_empty() {
-        row(ui, WIDTH * 0.6, Mark::None, None, EMPTY, "", false, false);
+        row(ui, width, Mark::None, None, EMPTY, "", false, false);
         return None;
     }
     let mut pressed = None;
@@ -372,7 +404,7 @@ fn entries_in(
 ) -> Option<menu::Picked> {
     use menu::Entry;
     if entries.is_empty() {
-        row(ui, WIDTH * 0.6, Mark::None, None, EMPTY, "", false, false);
+        row(ui, width, Mark::None, None, EMPTY, "", false, false);
         return None;
     }
     let mut picked = None;
@@ -417,7 +449,6 @@ fn entries_in(
 
 const ROW: f32 = 22.0;
 const MOST_ROWS: f32 = 18.0;
-const MOST_WIDTH: f32 = 360.0;
 const KEY_GAP: f32 = 24.0;
 const GUTTER: f32 = 28.0;
 const ICON: f32 = 40.0;

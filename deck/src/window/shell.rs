@@ -484,7 +484,7 @@ impl Shell {
                             .get(name)
                             .copied()
                             .filter(|placed| placed.w > 0 && placed.h > 0),
-                        Place::Centred => None,
+                        Place::Centred | Place::Cover(_) => None,
                     };
                     if let Some(placed) = kept {
                         attributes = attributes
@@ -493,6 +493,9 @@ impl Shell {
                     attributes = attributes.with_visible(false);
                     if let Some(owner) = self.owner_window(owner) {
                         attributes = with_owner(attributes, &owner);
+                    }
+                    if let Place::Cover(at) = place {
+                        attributes = covering(event_loop, attributes, at);
                     }
                     match event_loop.create_window(attributes) {
                         Ok(window) => {
@@ -576,6 +579,13 @@ impl Shell {
                     if let Some(window) = self.window.clone() {
                         self.deck.remote(pressed, &window);
                     }
+                }
+                Request::Menu(done) => {
+                    if let Some(window) = self.window.clone() {
+                        self.deck.menu_done(done, &window);
+                    }
+                    // 選んだ項目や、メインウィンドウの中に表示し直すメニューを画面に反映する。
+                    self.context.request_repaint();
                 }
                 Request::Panel(said) => self.deck.panel_said(said),
                 Request::Settings(file) => {
@@ -845,6 +855,8 @@ impl Shell {
                 let work = main.and_then(placing::work_area).unwrap_or(owner);
                 placing::centred(owner, size, work)
             }
+            // 位置はウィンドウを作るときに決めてある。
+            (Place::Cover(_), _) => return,
         };
         window.set_outer_position(winit::dpi::PhysicalPosition::new(at.0, at.1));
     }
@@ -913,11 +925,52 @@ fn with_owner(
     attributes
 }
 
+/// 画面の座標の点 `at` を含む画面全体を覆う、枠の無いウィンドウ（X11 の右クリックメニュー用、背景は透明）。
+/// override-redirect なので、ウィンドウマネージャーを通さずパネルの上にも表示され、フォーカスも移らない。
+#[cfg(target_os = "linux")]
+fn covering(
+    event_loop: &ActiveEventLoop,
+    attributes: winit::window::WindowAttributes,
+    at: (i32, i32),
+) -> winit::window::WindowAttributes {
+    use winit::platform::x11::{WindowAttributesExtX11, WindowType};
+    let inside = |monitor: &winit::monitor::MonitorHandle| {
+        let (origin, size) = (monitor.position(), monitor.size());
+        at.0 >= origin.x
+            && at.1 >= origin.y
+            && at.0 < origin.x + size.width as i32
+            && at.1 < origin.y + size.height as i32
+    };
+    let monitor = event_loop
+        .available_monitors()
+        .find(inside)
+        .or_else(|| event_loop.primary_monitor());
+    let mut attributes = attributes
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_override_redirect(true)
+        .with_x11_window_type(vec![WindowType::PopupMenu]);
+    if let Some(monitor) = monitor {
+        attributes = attributes
+            .with_position(monitor.position())
+            .with_inner_size(monitor.size());
+    }
+    attributes
+}
+
+#[cfg(not(target_os = "linux"))]
+fn covering(
+    _event_loop: &ActiveEventLoop,
+    attributes: winit::window::WindowAttributes,
+    _at: (i32, i32),
+) -> winit::window::WindowAttributes {
+    attributes
+}
+
 /// X11 は winit が出すボタンを選べないので、`_MOTIF_WM_HINTS` の functions で伝える（表示する前に）。
 /// 従うかはウィンドウマネージャー次第。decorations など他の欄は winit が書いた物を残す。
 #[cfg(target_os = "linux")]
 fn x11_buttons(window: &Window, buttons: winit::window::WindowButtons, resizable: bool) {
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use winit::window::WindowButtons;
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{ConnectionExt as _, PropMode};
@@ -931,10 +984,8 @@ fn x11_buttons(window: &Window, buttons: winit::window::WindowButtons, resizable
     if buttons == WindowButtons::all() {
         return;
     }
-    let id = match window.window_handle().map(|handle| handle.as_raw()) {
-        Ok(RawWindowHandle::Xlib(handle)) => handle.window as u32,
-        Ok(RawWindowHandle::Xcb(handle)) => handle.window.get(),
-        _ => return,
+    let Some(id) = crate::window::x11::window_id(window) else {
+        return;
     };
     let set = || -> Result<(), Box<dyn std::error::Error>> {
         let (connection, _) = x11rb::connect(None)?;
@@ -1220,6 +1271,23 @@ impl ApplicationHandler<Wake> for Shell {
         let Some(window) = self.window.clone() else {
             return;
         };
+        // メニュー用のウィンドウにはフォーカスが来ないので、キーはメインウィンドウに届く。Esc を押したときと
+        // フォーカスが外れたときは、ここでメニューを閉じる。
+        if self.deck.menu_shown() {
+            let escape = matches!(
+                &event,
+                WindowEvent::KeyboardInput { event: key, .. }
+                    if key.state.is_pressed()
+                        && key.logical_key == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)
+            );
+            if escape || matches!(event, WindowEvent::Focused(false)) {
+                let _ = self.to_panes.send(ToPanes::ShutMenu);
+                self.deck.menu_done(crate::threads::link::MenuDone::Closed, &window);
+            }
+            if escape {
+                return;
+            }
+        }
         if let Some(state) = self.state.as_mut() {
             // 消費されたかは見ない（`Deck::keys` と `Ui::interact` が自分で判じる）。
             let _ = state.on_window_event(&window, &event);

@@ -231,6 +231,49 @@ impl Deck {
         self.file.record.confirm_exit && zwcore::record::state().is_some()
     }
 
+    /// 右クリックメニューを、画面全体を覆うメニュー用のウィンドウに表示する。使えない環境（X11 でない、コンポジターが無い）なら false。
+    pub(super) fn open_covering_menu(&mut self, ctx: &egui::Context, window: &Arc<Window>) -> bool {
+        let (Some(at), Ok(origin)) = (crate::window::x11::cover_at(window), window.inner_position())
+        else {
+            return false;
+        };
+        let open = crate::window::sub::MenuOpen {
+            filling: self.filling(),
+            at,
+            local: None,
+            mode: self.theme.mode,
+        };
+        if self.to_panes.send(ToPanes::Menu(Box::new(open))).is_err() {
+            return false;
+        }
+        // メインウィンドウの中に表示し直すときの位置（このときメインウィンドウはポインターの位置を知らないことがある）。
+        let scale = ctx.pixels_per_point();
+        self.menu_anchor = Some(egui::pos2(
+            (at.0 - origin.x) as f32 / scale,
+            (at.1 - origin.y) as f32 / scale,
+        ));
+        self.menu_shown = true;
+        true
+    }
+
+    pub fn menu_shown(&self) -> bool {
+        self.menu_shown
+    }
+
+    /// メニュー用のウィンドウが閉じた。
+    pub fn menu_done(&mut self, done: crate::threads::link::MenuDone, window: &Arc<Window>) {
+        use crate::threads::link::MenuDone;
+        self.menu_shown = false;
+        match done {
+            MenuDone::Picked(picked) => self.pick(picked, window),
+            MenuDone::Closed => {}
+            MenuDone::Unsupported => {
+                self.menu_in_window = true;
+                self.menu_reopen = true;
+            }
+        }
+    }
+
     pub fn remote(&mut self, pressed: ui::panes::remote::Pressed, window: &Arc<Window>) {
         use ui::panes::remote::Pressed;
         let keys_taken = self.keys_taken();

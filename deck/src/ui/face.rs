@@ -14,6 +14,8 @@ pub struct Face {
     state: Option<egui_winit::State>,
     renderer: Renderer,
     next: Option<std::time::Instant>,
+    /// `Some` なら、レンダリングの前にこの色で塗る。`None` は呼ぶ側がレンダリングした物に重ねる。
+    clear: Option<wgpu::Color>,
 }
 
 enum Renderer {
@@ -75,6 +77,7 @@ impl Face {
             state: Some(state),
             renderer,
             next: Some(std::time::Instant::now()),
+            clear: None,
         }
     }
 
@@ -87,6 +90,15 @@ impl Face {
         let face = Self::new(window, device, target);
         super::paper(&face.context, mode);
         face
+    }
+
+    pub fn context(&self) -> &egui::Context {
+        &self.context
+    }
+
+    /// 毎回透明で塗りつぶしてからレンダリングする（画面全体を覆うメニュー用のウィンドウ）。
+    pub fn clear_to_transparent(&mut self) {
+        self.clear = Some(wgpu::Color::TRANSPARENT);
     }
 
     pub fn repaper(&self, mode: super::theme::Mode) {
@@ -162,7 +174,7 @@ impl Face {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        load: self.clear.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -198,6 +210,14 @@ impl Face {
             .context
             .tessellate(output.shapes, output.pixels_per_point);
         let mut delta = output.textures_delta;
+        let clear = self.clear.map_or([0.0, 0.0, 0.0, 1.0], |colour| {
+            [
+                colour.r as f32,
+                colour.g as f32,
+                colour.b as f32,
+                colour.a as f32,
+            ]
+        });
         let Renderer::Glow(painter) = &mut self.renderer else {
             delta.clear();
             return output.platform_output;
@@ -223,7 +243,7 @@ impl Face {
         };
         let size = window.follow();
         // 前のフレームの上にはレンダリングしない（egui の背景が塗らない隅が残る）。
-        painter.clear([size.0, size.1], [0.0, 0.0, 0.0, 1.0]);
+        painter.clear([size.0, size.1], clear);
         painter.paint_and_update_textures(
             [size.0, size.1],
             output.pixels_per_point,

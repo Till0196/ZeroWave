@@ -180,7 +180,13 @@ impl Screen {
                         continue;
                     }
                     if resized {
-                        configure_surface(gpu, surface, target, now.width, now.height);
+                        if matches!(what, Which::Menu(_)) {
+                            crate::stage::configure_transparent_surface(
+                                gpu, surface, target, now.width, now.height,
+                            );
+                        } else {
+                            configure_surface(gpu, surface, target, now.width, now.height);
+                        }
                     }
                     let frame = match surface.get_current_texture() {
                         wgpu::CurrentSurfaceTexture::Success(frame)
@@ -317,6 +323,11 @@ impl Screen {
                 Some(Happened::Remote(key)) => remote = Some(key),
                 Some(Happened::Pressed(what)) => pressed = Some(what),
                 Some(Happened::Panel(what)) => panel_pressed = Some(what),
+                Some(Happened::Menu(done)) => {
+                    closing.push(*id);
+                    let _ = self.requests.send(Request::Menu(done));
+                    let _ = self.proxy.send_event(Wake);
+                }
                 Some(Happened::Settings(what)) => {
                     if matches!(
                         what,

@@ -33,6 +33,20 @@ pub enum Which {
     ScanDelete,
     ScanCopy,
     Panel((f32, f32)),
+    /// X11 の右クリックメニュー。画面全体を覆うウィンドウに表示し、メインウィンドウの外にも出せるようにする。
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Menu(Box<MenuOpen>),
+}
+
+/// メニュー用のウィンドウに表示する右クリックメニュー。
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub struct MenuOpen {
+    pub filling: Arc<crate::window::menu::Filling>,
+    /// 開く位置（画面の座標、物理ピクセル）。
+    pub at: (i32, i32),
+    /// 開く位置（ウィンドウの中の論理座標）。ウィンドウを作ってから決まる。
+    pub local: Option<egui::Pos2>,
+    pub mode: ui::theme::Mode,
 }
 
 impl std::fmt::Debug for Which {
@@ -59,6 +73,7 @@ impl std::fmt::Debug for Which {
             Self::ScanDelete => "ScanDelete",
             Self::ScanCopy => "ScanCopy",
             Self::Panel(_) => "Panel",
+            Self::Menu(_) => "Menu",
         })
     }
 }
@@ -102,6 +117,7 @@ impl Which {
             Self::ScanDelete => "スキャン結果の削除".to_owned(),
             Self::ScanCopy => "スキャン結果の複製".to_owned(),
             Self::Panel(_) => ui::guide::panel::WINDOW_TITLE.to_owned(),
+            Self::Menu(_) => "メニュー".to_owned(),
         }
     }
 
@@ -162,6 +178,8 @@ impl Which {
                 ui::panes::settings::scan_results::COPY_HEIGHT,
             ),
             Self::Panel(size) => *size,
+            // 大きさはメインスレッドが画面に合わせて決める。
+            Self::Menu(_) => (1.0, 1.0),
         }
     }
 
@@ -170,6 +188,7 @@ impl Which {
         // 最大化・最小化は大きくして見る番組表とワンセグだけ。
         match self {
             Self::Guide | Self::Search | Self::OneSeg => WindowButtons::all(),
+            Self::Menu(_) => WindowButtons::empty(),
             _ => WindowButtons::CLOSE,
         }
     }
@@ -197,6 +216,7 @@ impl Which {
             Self::Favourites => Place::Kept("favourites"),
             Self::Panel(_) => Place::Kept("panel"),
             Self::Remote => Place::Kept("remote"),
+            Self::Menu(open) => Place::Cover(open.at),
             _ => Place::Centred,
         }
     }
@@ -208,12 +228,12 @@ impl Which {
     pub fn resizable(&self) -> bool {
         !matches!(
             self,
-            Self::About | Self::CoaxdUpdate | Self::ScanDelete | Self::ScanCopy
+            Self::About | Self::CoaxdUpdate | Self::ScanDelete | Self::ScanCopy | Self::Menu(_)
         )
     }
 
     pub fn paper(&self) -> bool {
-        true
+        !matches!(self, Self::Menu(_))
     }
 
     pub fn show(&self, root: &mut egui::Ui, showing: &mut Showing<'_>) -> Option<Happened> {
@@ -396,6 +416,7 @@ impl Which {
                 &showing.skins.settings,
             )
             .map(Happened::Settings),
+            Self::Menu(open) => show_menu(root, open).map(Happened::Menu),
             Self::Panel(_) => {
                 let feed = showing.panel?;
                 let tabs = ui::guide::panel::tabs_of(&crate::plugin_ui::panels());
@@ -441,6 +462,46 @@ impl Which {
     }
 }
 
+/// 右クリックメニューを開いた位置に表示する。メニューの外をクリックしたら閉じる（画面全体を覆っているので、どこをクリックしてもここに届く）。
+fn show_menu(root: &mut egui::Ui, open: &MenuOpen) -> Option<crate::threads::link::MenuDone> {
+    use crate::threads::link::MenuDone;
+    let at = open.local?;
+    let ctx = root.ctx().clone();
+    let id = egui::Id::unique("右クリックメニュー");
+    let mut picked = None;
+    crate::window::menu::egui::on_whole_screen(&ctx);
+    egui::Popup::new(
+        id,
+        ctx.clone(),
+        egui::PopupAnchor::Position(at),
+        egui::LayerId::new(egui::Order::Foreground, id),
+    )
+    .kind(egui::PopupKind::Menu)
+    .layout(egui::Layout::top_down_justified(egui::Align::Min))
+    .style(egui::containers::menu::menu_style)
+    .gap(0.0)
+    .open(true)
+    .close_behavior(egui::PopupCloseBehavior::IgnoreClicks)
+    .show(|ui| picked = crate::window::menu::egui::context(ui, &open.filling));
+    if let Some(picked) = picked {
+        return Some(MenuDone::Picked(picked));
+    }
+    // `ctx.input` の中で `ctx` を使うと egui が固まるので、押した位置を取ってから調べる。
+    let pressed_at = ctx.input(|input| {
+        input
+            .pointer
+            .any_pressed()
+            .then(|| input.pointer.interact_pos())
+            .flatten()
+    });
+    // Esc はメインウィンドウが受ける（このウィンドウにはフォーカスが来ない）。
+    let outside = pressed_at.is_some_and(|pos| {
+        ctx.layer_id_at(pos)
+            .is_none_or(|layer| layer.order == egui::Order::Background)
+    });
+    outside.then_some(MenuDone::Closed)
+}
+
 #[derive(Debug)]
 pub enum Happened {
     Close,
@@ -453,6 +514,7 @@ pub enum Happened {
     Settings(ui::panes::settings::Pressed),
     Follow(ui::guide::detail::Follow),
     Panel(ui::guide::panel::Pressed),
+    Menu(crate::threads::link::MenuDone),
 }
 
 pub struct Showing<'a> {
