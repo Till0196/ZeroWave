@@ -119,27 +119,16 @@ impl Analyzer {
     fn program_map(&mut self, section: &Section<'_>) -> Option<Program> {
         let map = tstables::program_map(section.data)?;
         let mut streams = Vec::with_capacity(map.streams.len());
-        let mut ecm: Vec<(u16, u16)> = Vec::new();
-        let mut take_ca = |descriptors: &[tstables::Descriptor]| {
-            for found in descriptors
-                .iter()
-                .filter(|d| d.tag == tag::CONDITIONAL_ACCESS)
-            {
-                if let Some((system, pid)) = desc::conditional_access(&found.body)
-                    && !ecm.contains(&(pid, system))
-                {
-                    ecm.push((pid, system));
-                }
-            }
-        };
-        take_ca(&map.descriptors);
+        let ecm: Vec<(u16, u16)> = super::tables::ca_systems(&map.descriptors)
+            .into_iter()
+            .map(|(system, pid)| (pid, system))
+            .collect();
         self.regions.insert(
             map.program_number,
             tstables::find(&map.descriptors, tag::TARGET_REGION)
                 .and_then(|found| desc::target_region(&found.body)),
         );
         for stream in &map.streams {
-            take_ca(&stream.descriptors);
             let kind = Kind::of_stream_type(stream.stream_type, &stream.descriptors);
             self.kinds.insert(stream.pid, kind);
             streams.push(Stream {
