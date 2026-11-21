@@ -12,9 +12,11 @@ use zwcore::data::Shown;
 
 /// 名前とバージョンが同じなら中身も同じなので、世代が変わっても使い回す。
 /// 画は `Weak` で持って比べる（アドレスだけだと、解放した後の次の画が同じ場所に来て古いまま残る）。
+/// テクスチャは作った Context のレンダラーにしか無いので、ウィンドウを開き直して Context が変わったら作り直す。
 #[derive(Default)]
 pub struct Textures {
     held: BTreeMap<String, (Weak<zwcore::data::Picture>, bool, TextureHandle)>,
+    ctx: Option<egui::Context>,
 }
 
 impl std::fmt::Debug for Textures {
@@ -31,6 +33,10 @@ impl Textures {
         picture: &Arc<zwcore::data::Picture>,
         nearest: bool,
     ) -> TextureHandle {
+        if self.ctx.as_ref() != Some(ctx) {
+            self.held.clear();
+            self.ctx = Some(ctx.clone());
+        }
         if let Some((held, held_nearest, handle)) = self.held.get(name)
             && Weak::as_ptr(held) == Arc::as_ptr(picture)
             && *held_nearest == nearest
