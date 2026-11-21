@@ -66,7 +66,7 @@ pub fn details_lines(details: &Details) -> Vec<String> {
             },
             service
                 .component_tag
-                .map(|tag| format!(" / component tag 0x{tag:04x}"))
+                .map(|tag| format!(" / コンポーネントタグ 0x{tag:02x}"))
                 .unwrap_or_default(),
             slashed(&service.text),
             match service.associated_contents {
