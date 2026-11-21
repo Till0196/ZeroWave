@@ -300,6 +300,7 @@ impl Spawner {
         }
         let manifest = plugin.layer_manifest().clone();
         let place = manifest.place();
+        let interval = interval_of(manifest.fps);
         static IDS: AtomicU64 = AtomicU64::new(1);
         let (to, rx) = channel();
         let queued = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -316,8 +317,8 @@ impl Spawner {
             own: plugins.io_for(plugin),
             plugin: Arc::clone(plugin),
             setup: self.setup.clone(),
-            interval: std::cell::Cell::new(interval_of(manifest.fps)),
-            manifest_interval: interval_of(manifest.fps),
+            interval: std::cell::Cell::new(interval),
+            manifest_interval: interval,
             smooth: std::cell::Cell::new(manifest.smooth.unwrap_or(true)),
             latest: Arc::clone(&self.latest),
             broadcast: Arc::clone(&self.broadcast),
@@ -407,16 +408,13 @@ fn interval_of(fps: Option<u32>) -> Duration {
     })
 }
 
-/// 提示の合図が来ないとき、自分の時計で作る間隔。合図ごとなら一秒に [`UNBEATEN_FPS`] 回。
+/// 提示の合図が来ないとき、自分の時計で作る間隔。表示していないので、[`UNBEATEN`] より速くは回さない。
 fn own_clock(interval: Duration) -> Duration {
-    if interval.is_zero() {
-        Duration::from_nanos(1_000_000_000 / u64::from(UNBEATEN_FPS))
-    } else {
-        interval
-    }
+    interval.max(UNBEATEN)
 }
 
-const UNBEATEN_FPS: u32 = 60;
+/// 一秒に 60 回。
+const UNBEATEN: Duration = Duration::from_nanos(16_666_666);
 
 /// 合図で作るか。提示の間隔の揺れで一回飛ばさないよう、合図の間隔（`gap`）の半分までは早くても作る。
 fn due_on_beat(since_made: Duration, gap: Duration, interval: Duration) -> bool {
@@ -927,7 +925,8 @@ mod tests {
         assert_eq!(interval_of(Some(30)), Duration::from_nanos(33_333_333));
         assert_eq!(interval_of(Some(360)), Duration::from_nanos(2_777_777));
         assert_eq!(own_clock(Duration::ZERO), Duration::from_nanos(16_666_666));
-        assert_eq!(own_clock(interval_of(Some(360))), interval_of(Some(360)));
+        assert_eq!(own_clock(interval_of(Some(360))), UNBEATEN);
+        assert_eq!(own_clock(interval_of(Some(20))), interval_of(Some(20)));
     }
 
     /// 合図の何回ごとに作るか。
