@@ -71,6 +71,7 @@ fn javy_imports_only_named_namespaces() {
             abi::import::BUF,
             abi::import::CFG,
             abi::import::NET,
+            abi::import::UI,
         ]
         .into_iter()
         .map(String::from)
@@ -83,6 +84,10 @@ fn javy_imports_only_named_namespaces() {
         abi::export::LAYER_FRAME,
         abi::export::LAYER_EVENTS,
         abi::export::LAYER_DROP,
+        abi::export::UI_MENU,
+        abi::export::UI_PICK,
+        abi::export::UI_PAGE,
+        abi::export::UI_EVENT,
     ] {
         assert!(source.contains(&format!("fn {name}(")), "{name}");
     }
