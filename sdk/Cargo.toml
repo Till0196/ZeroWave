@@ -38,7 +38,7 @@ glifo = { version = "0.5", default-features = false, optional = true }
 parley = { version = "0.13", default-features = false, features = ["std", "bytemuck"], optional = true }
 bytemuck = { version = "1", optional = true }
 parlance = { version = "0.1", optional = true }
-wasmtime = { version = "50", default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation"], optional = true }
+wasmtime = { version = "51", default-features = false, features = ["cranelift", "runtime", "std", "parallel-compilation"], optional = true }
 coax = { workspace = true, optional = true }
 # parley（fontique）と同じバージョンに揃える。
 skrifa = { version = "0.50", optional = true }
