@@ -8,3 +8,5 @@ sdk/javy/zwjavy.wasm
 sdk/ts/zwjs.wasm
 testdata/*.ts
 testdata/*.y4m
+testdata/*.mp2
+testdata/*.s16

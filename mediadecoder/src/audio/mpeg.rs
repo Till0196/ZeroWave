@@ -308,18 +308,22 @@ const TABLES: [&[u8]; 5] = [
     &[4, 4, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
     // 13818-3 B.1: 30 subbands, for the lower sampling frequencies.
     &[
-        1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+        7, 7, 7, 7, 5, 5, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
     ],
 ];
 
-/// The seventh list, only in the MPEG-2 table: three levels of two bits.
-const LOW: &[u32] = &[3, 5, 7];
+/// The lists only in the MPEG-2 table (13818-3 B.1): three levels of two bits for the upper
+/// subbands, and the first four subbands' fifteen, which stop at 16383.
+const LOW: &[u32] = &[3, 5, 9];
+const LOW_FIRST: &[u32] = &[
+    3, 5, 7, 9, 15, 31, 63, 127, 255, 511, 1023, 2047, 4095, 8191, 16383,
+];
 
 fn list(which: u8) -> &'static [u32] {
-    if which == 6 {
-        LOW
-    } else {
-        LISTS[usize::from(which)]
+    match which {
+        6 => LOW,
+        7 => LOW_FIRST,
+        _ => LISTS[usize::from(which)],
     }
 }
 
@@ -806,5 +810,60 @@ mod tests {
         let mut frames = Frames::new(&junk);
         assert_eq!(frames.by_ref().count(), 3);
         assert!(frames.skipped() >= 3);
+    }
+
+    /// Decodes a stream of the testdata and compares it with ffmpeg's decoding of it (s16le
+    /// beside it): the signal-to-noise ratio of each channel in dB.
+    fn against_ffmpeg(name: &str) -> Vec<f64> {
+        let stream = crate::testdata(&format!("{name}.mp2"));
+        let theirs: Vec<i16> = crate::testdata(&format!("{name}.s16"))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&pair| i16::from_le_bytes(pair))
+            .collect();
+        let mut decoder = Mpeg::new();
+        let mut ours: Vec<Vec<f32>> = Vec::new();
+        for frame in Frames::new(&stream) {
+            decoder
+                .decode(frame.format, frame.data)
+                .expect("a frame that decodes");
+            while let Some(sound) = decoder.take() {
+                ours.resize(sound.channels.len(), Vec::new());
+                for (all, channel) in ours.iter_mut().zip(&sound.channels) {
+                    all.extend_from_slice(channel);
+                }
+            }
+        }
+        let count = ours.len();
+        assert!(count > 0, "nothing decoded");
+        assert_eq!(theirs.len(), ours[0].len() * count, "lengths differ");
+        ours.iter()
+            .enumerate()
+            .map(|(at, channel)| {
+                let (mut signal, mut noise) = (0.0f64, 0.0f64);
+                for (index, &sample) in channel.iter().enumerate() {
+                    let ours = f64::from((sample * 32768.0).round().clamp(-32768.0, 32767.0));
+                    let theirs = f64::from(theirs[index * count + at]);
+                    signal += theirs * theirs;
+                    noise += (ours - theirs) * (ours - theirs);
+                }
+                10.0 * (signal / noise.max(1.0)).log10()
+            })
+            .collect()
+    }
+
+    /// MPEG-2's lower rates use the allocation table of 13818-3 B.1: a wrong list of levels
+    /// misreads every bit after it.
+    #[test]
+    fn the_lower_rates_decode_as_ffmpeg_does() {
+        for name in ["mp2-lsf-24k", "mp2-lsf-16k"] {
+            for (channel, snr) in against_ffmpeg(name).into_iter().enumerate() {
+                assert!(
+                    snr > 60.0,
+                    "{name} channel {channel}: {snr:.1} dB against ffmpeg"
+                );
+            }
+        }
     }
 }

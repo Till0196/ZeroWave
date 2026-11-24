@@ -67,4 +67,13 @@ ff -f lavfi -i testsrc2=s=160x96:r=30000/1001:d=2 -f lavfi -i "$(stereo 440 660 
     -c:v mpeg2video -q:v 10 -g 6 -bf 0 -flags +bitexact -c:a aac -b:a 64k \
     $same $ts three-sounds.ts
 
+# MPEG-2 の低いサンプルレートの音声レイヤー II（24 kHz ステレオ、16 kHz モノ）と、その ffmpeg の
+# 復号（s16le）。割り当てで 3 つ組の段（5、9）を使う帯まで音を入れる。
+ff -f lavfi -i "aevalsrc=0.2*sin(2*PI*440*t)+0.1*sin(2*PI*3100*t)+0.05*sin(2*PI*7300*t)+0.03*sin(2*PI*10100*t)|0.2*sin(2*PI*660*t)+0.1*sin(2*PI*4700*t)+0.05*sin(2*PI*9100*t):s=24000:d=1" \
+    -c:a mp2 -b:a 64k $same -f mp2 mp2-lsf-24k.mp2
+ff -f mp3 -i mp2-lsf-24k.mp2 -f s16le mp2-lsf-24k.s16
+ff -f lavfi -i "aevalsrc=0.2*sin(2*PI*330*t)+0.1*sin(2*PI*2500*t)+0.05*sin(2*PI*5300*t)+0.03*sin(2*PI*7100*t):s=16000:d=1" \
+    -c:a mp2 -b:a 32k $same -f mp2 mp2-lsf-16k.mp2
+ff -f mp3 -i mp2-lsf-16k.mp2 -f s16le mp2-lsf-16k.s16
+
 ls -l
