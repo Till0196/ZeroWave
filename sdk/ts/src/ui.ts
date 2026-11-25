@@ -125,8 +125,17 @@ export type Node =
   /** 行を押すと `id` のイベントが `value` に行の識別子で届く。 */
   | { kind: "table"; id: string; columns: Column[]; rows: Row[]; empty?: string }
   | { kind: "bar"; label: string; parts: [number, Tone][]; left?: string; right?: string }
-  | { kind: "columns"; width: number; left: Node[]; right: Node[] }
+  /**
+   * `scroll` が真なら、ページの残りの高さを埋めて左右を別々にスクロールし、ページ自体はスクロールしない。
+   * `left_foot`・`right_foot` はスクロールせず、それぞれの列の下に固定する。
+   */
+  | { kind: "columns"; width: number; left: Node[]; right: Node[]; scroll?: boolean; left_foot?: Node[]; right_foot?: Node[] }
   | { kind: "space"; height: number }
+  /**
+   * ページの残りの高さを埋めて `nodes` だけを別にスクロールし、`foot` はスクロールせず下に固定する。
+   * これより上の項目は止まったままで、ページ自体はスクロールしない。ページの最後に置く。
+   */
+  | { kind: "scroll"; nodes: Node[]; foot?: Node[] }
   /** 選ぶと `id` のイベントが `value` に選んだ項目の識別子で届く。 */
   | { kind: "segments"; id: string; options: [string, string][]; value: string }
   /** `kind = "program"` のキーのカード（下のパネルでは見せるだけ）。 */

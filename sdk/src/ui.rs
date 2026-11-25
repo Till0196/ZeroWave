@@ -193,13 +193,28 @@ pub enum Node {
         #[serde(default)]
         right: String,
     },
+    /// `scroll` が真なら、ページの残りの高さを埋めて左右を別々にスクロールし、ページ自体はスクロールしない。
+    /// `left_foot`・`right_foot` はスクロールせず、それぞれの列の下に固定する。
     Columns {
         width: f32,
         left: Vec<Node>,
         right: Vec<Node>,
+        #[serde(default)]
+        scroll: bool,
+        #[serde(default)]
+        left_foot: Vec<Node>,
+        #[serde(default)]
+        right_foot: Vec<Node>,
     },
     Space {
         height: f32,
+    },
+    /// ページの残りの高さを埋めて `nodes` だけを別にスクロールし、`foot` はスクロールせず下に固定する。
+    /// これより上の項目は止まったままで、ページ自体はスクロールしない。ページの最後に置く。
+    Scroll {
+        nodes: Vec<Node>,
+        #[serde(default)]
+        foot: Vec<Node>,
     },
     /// 選ぶと `id` のイベントが `value` に選んだ項目の識別子で届く。
     Segments {
@@ -632,6 +647,42 @@ mod tests {
         let json = String::from_utf8(to_json(&page)).unwrap();
         assert_eq!(from_json::<Page>(json.as_bytes()).unwrap(), page);
         assert!(!from_json::<Page>(b"{}").unwrap().confirm);
+    }
+
+    #[test]
+    fn columns_scroll_on_their_own_when_asked() {
+        let page: Page = from_json(
+            br#"{"nodes":[
+                {"kind":"columns","width":200,"left":[],"right":[]},
+                {"kind":"columns","width":200,"left":[],"right":[],"scroll":true,
+                 "left_foot":[{"kind":"space","height":4}]}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            &page.nodes[0],
+            Node::Columns { scroll: false, left_foot, right_foot, .. }
+                if left_foot.is_empty() && right_foot.is_empty()
+        ));
+        assert!(matches!(
+            &page.nodes[1],
+            Node::Columns { scroll: true, left_foot, .. } if left_foot.len() == 1
+        ));
+        let json = String::from_utf8(to_json(&page)).unwrap();
+        assert_eq!(from_json::<Page>(json.as_bytes()).unwrap(), page);
+    }
+
+    #[test]
+    fn a_scroll_holds_its_nodes_and_foot() {
+        let node: Node = from_json(
+            br#"{"kind":"scroll","nodes":[{"kind":"space","height":4}],
+                 "foot":[{"kind":"buttons","buttons":[]}]}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(&node, Node::Scroll { nodes, foot } if nodes.len() == 1 && foot.len() == 1)
+        );
+        let bare: Node = from_json(br#"{"kind":"scroll","nodes":[]}"#).unwrap();
+        assert!(matches!(bare, Node::Scroll { foot, .. } if foot.is_empty()));
     }
 
     #[test]

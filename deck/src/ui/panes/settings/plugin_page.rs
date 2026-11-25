@@ -32,7 +32,7 @@ fn render(
     bound: &mut Bound<'_>,
 ) -> Option<Event> {
     let mut said = None;
-    for node in nodes {
+    for (index, node) in nodes.iter().enumerate() {
         let event = match node {
             Node::Section { label } => {
                 form.section(label);
@@ -69,13 +69,26 @@ fn render(
                 bar(form, label, parts, left, right);
                 None
             }
-            Node::Columns { width, left, right } => {
-                columns(form, scope, *width, left, right, bound)
-            }
+            Node::Columns {
+                width,
+                left,
+                right,
+                scroll,
+                left_foot,
+                right_foot,
+            } => columns(
+                form,
+                scope,
+                *width,
+                [(left, left_foot), (right, right_foot)],
+                *scroll,
+                bound,
+            ),
             Node::Space { height } => {
                 *form.at += height;
                 None
             }
+            Node::Scroll { nodes, foot } => scroll(form, scope, index, nodes, foot, bound),
             Node::Segments { id, options, value } => {
                 plugin_bound::segments(form, scope, id, options, value)
             }
@@ -584,7 +597,15 @@ fn table(
     empty: &str,
 ) -> Option<Event> {
     let look = form.look;
-    let whole = form.line(18.0);
+    // 見出しがどれも空なら見出しの行は出さない。
+    let headed = columns.iter().any(|column| !column.label.is_empty());
+    let whole = if headed {
+        form.line(18.0)
+    } else {
+        let left = form.body.left() + skin::INSET + skin::DOT;
+        let right = form.body.right() - skin::PAD;
+        Rect::from_min_max(pos2(left, *form.at + 2.0), pos2(right, *form.at + 2.0))
+    };
     let fixed: f32 = columns.iter().map(|c| c.width).sum();
     let flexible = columns.iter().filter(|c| c.width <= 0.0).count().max(1) as f32;
     let share = ((whole.width() - fixed) / flexible).max(40.0);
@@ -632,7 +653,8 @@ fn table(
         *form.at = rect.bottom();
     }
     let mut picked = None;
-    for row in rows {
+    let last = rows.len().saturating_sub(1);
+    for (index, row) in rows.iter().enumerate() {
         let tall = row
             .cells
             .iter()
@@ -653,19 +675,30 @@ fn table(
             Sense::click(),
         );
         {
+            // 枠の角に接する行は、塗りも枠に合わせて角を丸める。見出しが無ければ 1 行目の上の線は枠の線。
+            let on_top = !headed && index == 0;
+            let round = |at: bool| if at { FRAME_ROUNDING } else { 0 };
+            let corners = egui::CornerRadius {
+                nw: round(on_top),
+                ne: round(on_top),
+                sw: round(index == last),
+                se: round(index == last),
+            };
             let painter = form.ui.painter();
             if row.selected {
-                painter.rect_filled(line, 0.0, look.chosen_fill);
+                painter.rect_filled(line, corners, look.chosen_fill);
             } else if response.hovered() {
-                painter.rect_filled(line, 0.0, look.select_fill);
+                painter.rect_filled(line, corners, look.select_fill);
             }
-            painter.line_segment(
-                [
-                    pos2(line.left(), line.top()),
-                    pos2(line.right(), line.top()),
-                ],
-                Stroke::new(0.5, look.edge),
-            );
+            if !on_top {
+                painter.line_segment(
+                    [
+                        pos2(line.left(), line.top()),
+                        pos2(line.right(), line.top()),
+                    ],
+                    Stroke::new(0.5, look.edge),
+                );
+            }
         }
         if response.clicked() {
             picked = Some(Event {
@@ -690,10 +723,8 @@ fn table(
                     } else {
                         plugin_bound::tone_colour(look, *t)
                     };
-                    let painter = form
-                        .ui
-                        .painter()
-                        .with_clip_rect(rect.shrink2(vec2(4.0, 0.0)));
+                    let clip = rect.shrink2(vec2(4.0, 0.0)).intersect(form.ui.clip_rect());
+                    let painter = form.ui.painter().with_clip_rect(clip);
                     let (x, align) = if right_aligned {
                         (rect.right() - 8.0, egui::Align2::RIGHT_CENTER)
                     } else {
@@ -752,10 +783,8 @@ fn table(
                     None
                 }
                 Cell::Chips { chips, joint } => {
-                    let painter = form
-                        .ui
-                        .painter()
-                        .with_clip_rect(rect.shrink2(vec2(4.0, 0.0)));
+                    let clip = rect.shrink2(vec2(4.0, 0.0)).intersect(form.ui.clip_rect());
+                    let painter = form.ui.painter().with_clip_rect(clip);
                     let mut x = rect.left() + 6.0;
                     for (i, chip) in chips.iter().enumerate() {
                         if i > 0 && !joint.is_empty() {
@@ -853,7 +882,7 @@ fn table(
     );
     form.ui.painter().rect_stroke(
         frame,
-        6.0,
+        FRAME_ROUNDING,
         Stroke::new(1.0, look.edge),
         egui::StrokeKind::Inside,
     );
@@ -862,34 +891,166 @@ fn table(
     picked
 }
 
+const FRAME_ROUNDING: u8 = 6;
+
+/// ページの残りを埋めてスクロールする所の、上と下の余白と最小の高さ。上は表の枠の線が切れないだけ空ける。
+const FILL_TOP: f32 = 2.0;
+const FILL_BOTTOM: f32 = 8.0;
+const FILL_LEAST: f32 = 40.0;
+/// スクロールバーを掴める幅（`bar_track`）。
+const TRACK: f32 = 12.0;
+
+/// 左右を別々にスクロールする [`Node::Columns`] か [`Node::Scroll`] があれば、ページ自体はスクロールしない。
+fn fills(nodes: &[Node]) -> bool {
+    nodes.iter().any(|node| {
+        matches!(
+            node,
+            Node::Columns { scroll: true, .. } | Node::Scroll { .. }
+        )
+    })
+}
+
+fn fill_bottom(form: &Form<'_, '_>) -> f32 {
+    (form.body.bottom() - FILL_BOTTOM).max(*form.at + FILL_LEAST)
+}
+
+/// 列ごとの、スクロールする項目と下に固定する項目。
+type Side<'n> = (&'n [Node], &'n [Node]);
+
 fn columns(
     form: &mut Form<'_, '_>,
     scope: &str,
     width: f32,
-    left: &[Node],
-    right: &[Node],
+    [(left, left_foot), (right, right_foot)]: [Side<'_>; 2],
+    scroll: bool,
     bound: &mut Bound<'_>,
 ) -> Option<Event> {
     let top = *form.at;
     let split = form.body.left() + skin::INSET + width;
-    let left_rect = Rect::from_min_max(
-        pos2(form.body.left(), form.body.top()),
-        pos2(split + skin::PAD, form.body.bottom()),
+    let left_x = (form.body.left(), split + skin::PAD);
+    let right_x = (split, form.body.right());
+    if !scroll {
+        let look = form.look;
+        let mut side = |(from, to): (f32, f32), nodes: &[Node], foot: &[Node]| {
+            let rect =
+                Rect::from_min_max(pos2(from, form.body.top()), pos2(to, form.body.bottom()));
+            let mut at = top;
+            let mut sub = Form::new(form.ui, look, rect, &mut at);
+            let said =
+                render(&mut sub, nodes, scope, bound).or(render(&mut sub, foot, scope, bound));
+            (said, at)
+        };
+        let (said_left, left_at) = side(left_x, left, left_foot);
+        let (said_right, right_at) = side(right_x, right, right_foot);
+        *form.at = left_at.max(right_at);
+        return said_left.or(said_right);
+    }
+    let bottom = fill_bottom(form);
+    let rect = |(from, to): (f32, f32)| Rect::from_min_max(pos2(from, top), pos2(to, bottom));
+    // 左のスクロールバーは左の列の中身のすぐ右に置き、ホイールの効く範囲は境の中ほどで分ける。
+    let middle = split + TRACK;
+    let said_left = scroll_area(
+        form,
+        (scope, "left"),
+        rect(left_x),
+        (left_x.0, middle),
+        left,
+        left_foot,
+        bound,
     );
-    let right_rect = Rect::from_min_max(pos2(split, form.body.top()), form.body.max);
-    let look = form.look;
-    let mut left_at = top;
-    let mut right_at = top;
-    let said_left = {
-        let mut sub = Form::new(form.ui, look, left_rect, &mut left_at);
-        render(&mut sub, left, scope, bound)
-    };
-    let said_right = {
-        let mut sub = Form::new(form.ui, look, right_rect, &mut right_at);
-        render(&mut sub, right, scope, bound)
-    };
-    *form.at = left_at.max(right_at);
+    let said_right = scroll_area(
+        form,
+        (scope, "right"),
+        rect(right_x),
+        (middle, right_x.1),
+        right,
+        right_foot,
+        bound,
+    );
+    *form.at = bottom;
     said_left.or(said_right)
+}
+
+/// `index` はページの中の位置で、スクロールの位置を分ける。
+fn scroll(
+    form: &mut Form<'_, '_>,
+    scope: &str,
+    index: usize,
+    nodes: &[Node],
+    foot: &[Node],
+    bound: &mut Bound<'_>,
+) -> Option<Event> {
+    let bottom = fill_bottom(form);
+    let rect = Rect::from_min_max(
+        pos2(form.body.left(), *form.at),
+        pos2(form.body.right(), bottom),
+    );
+    // スクロールバーは中身の右端のすぐ右に置く。
+    let said = scroll_area(
+        form,
+        (scope, index),
+        rect,
+        (rect.left(), rect.right() - skin::PAD + TRACK),
+        nodes,
+        foot,
+        bound,
+    );
+    *form.at = bottom;
+    said
+}
+
+/// `rect` の中だけに描き、スクロールの位置と下に固定する項目の高さは egui のメモリーに持つ。
+/// `span` はスクロールバーとホイールの効く左右の範囲で、バーはその右端に出す。
+fn scroll_area(
+    form: &mut Form<'_, '_>,
+    (scope, which): (&str, impl std::hash::Hash + std::fmt::Debug),
+    rect: Rect,
+    span: (f32, f32),
+    nodes: &[Node],
+    foot: &[Node],
+    bound: &mut Bound<'_>,
+) -> Option<Event> {
+    let look = form.look;
+    let id = form.ui.scope_id().with(("plugin.scroll", scope, which));
+    let foot_id = id.with("foot");
+    let (scroll, content): (f32, f32) = form.ui.data(|data| data.get_temp(id)).unwrap_or_default();
+    let foot_height: f32 = if foot.is_empty() {
+        0.0
+    } else {
+        form.ui
+            .data(|data| data.get_temp(foot_id))
+            .unwrap_or_default()
+    };
+    let body = rect.with_max_y((rect.bottom() - foot_height).max(rect.top()));
+    let wheel = body.with_min_x(span.0).with_max_x(span.1);
+    let scroll = scrolled(form.ui, wheel, scroll, content);
+    let mut at = body.top() + FILL_TOP - scroll;
+    let said = {
+        let mut inner = form.ui.new_child(egui::UiBuilder::new().max_rect(body));
+        inner.set_clip_rect(body.intersect(form.ui.clip_rect()));
+        let mut sub = Form::new(&mut inner, look, body, &mut at);
+        render(&mut sub, nodes, scope, bound)
+    };
+    let content = at + scroll - body.top() + 8.0;
+    scroll_bar(form.ui, look, wheel, scroll, content);
+    form.ui
+        .data_mut(|data| data.insert_temp(id, (scroll, content)));
+    if foot.is_empty() {
+        return said;
+    }
+    // 下に固定する項目の高さは描いてみるまで分からないので、前の回の高さで置き、変わったら描き直す。
+    let start = body.bottom() + skin::ROW_GAP * 2.0;
+    let mut foot_at = start;
+    let said_foot = {
+        let mut sub = Form::new(form.ui, look, rect, &mut foot_at);
+        render(&mut sub, foot, scope, bound)
+    };
+    let measured = foot_at - start + skin::ROW_GAP * 2.0;
+    if (measured - foot_height).abs() > 0.5 {
+        form.ui.data_mut(|data| data.insert_temp(foot_id, measured));
+        form.ui.ctx().request_repaint();
+    }
+    said.or(said_foot)
 }
 
 pub fn show_window(
@@ -1015,7 +1176,12 @@ pub fn show_window(
     }
     let body = Rect::from_min_max(pos2(full.left(), top), pos2(full.right(), bottom));
     let (scroll, content) = state.plugin_scroll.get(&key).copied().unwrap_or_default();
-    let scroll = scrolled(root, body, scroll, content);
+    let fill = fills(&page.nodes);
+    let scroll = if fill {
+        0.0
+    } else {
+        scrolled(root, body, scroll, content)
+    };
     let mut at = body.top() + 10.0 - scroll;
     let (browse, wrote) = {
         let mut bound = Bound::new(stem, page.confirm.then_some(&mut draft));
@@ -1035,7 +1201,9 @@ pub fn show_window(
         state.plugin_drafts.insert(stem.to_owned(), draft);
     }
     let content = at + scroll - body.top() + 12.0;
-    scroll_bar(root, look, body, scroll, content);
+    if !fill {
+        scroll_bar(root, look, body, scroll, content);
+    }
     state.plugin_scroll.insert(key, (scroll, content));
     if pressed.is_none() && wrote {
         pressed = Some(Pressed::Replugged(stream));
@@ -1141,7 +1309,12 @@ pub fn show_panel(
     };
     let key = format!("panel:{stem}:{panel}");
     let (scroll, content) = scrolls.get(&key).copied().unwrap_or_default();
-    let scroll = scrolled(root, rect, scroll, content);
+    let fill = fills(&page.nodes);
+    let scroll = if fill {
+        0.0
+    } else {
+        scrolled(root, rect, scroll, content)
+    };
     let mut at = rect.top() + 4.0 - scroll;
     let said = {
         let mut inner = root.new_child(egui::UiBuilder::new().max_rect(rect));
@@ -1152,7 +1325,9 @@ pub fn show_panel(
         render(&mut form, &page.nodes, &key, &mut bound)
     };
     let content = at + scroll - rect.top() + 8.0;
-    scroll_bar(root, look, rect, scroll, content);
+    if !fill {
+        scroll_bar(root, look, rect, scroll, content);
+    }
     scrolls.insert(key, (scroll, content));
     let event = said?;
     let reply = host.event(stem, panel, &event, guide);
