@@ -267,7 +267,9 @@ impl Stage {
             .name(String::from("switch"))
             .spawn(move || {
                 let opened = match wanted {
-                    Opening::Mirakurun { url, by } => tuning::open_mirakurun(&url, by),
+                    Opening::Mirakurun { url, by, lanes } => {
+                        tuning::open_mirakurun(&url, by, &lanes)
+                    }
                     Opening::Coaxd {
                         endpoint,
                         priority,

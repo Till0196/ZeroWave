@@ -46,6 +46,8 @@ pub struct Panel {
 pub struct Lineup {
     pub url: String,
     pub by: String,
+    /// `GR:TER` のようなタイプと受信経路で絞った一覧なら、その並び。
+    pub lanes: Vec<String>,
     pub fetched: Option<toml::value::Datetime>,
     pub channels: Vec<Listed>,
 }
@@ -320,6 +322,16 @@ impl State {
                     Lineup {
                         url: text("url"),
                         by: text("by"),
+                        lanes: body
+                            .get("lanes")
+                            .and_then(toml::Value::as_array)
+                            .map(|lanes| {
+                                lanes
+                                    .iter()
+                                    .filter_map(|lane| lane.as_str().map(str::to_owned))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                         fetched: body
                             .get("fetched")
                             .and_then(toml::Value::as_datetime)
@@ -443,6 +455,12 @@ impl State {
                 let mut table = Table::new();
                 table.insert("url", toml_edit::value(lineup.url.as_str()));
                 table.insert("by", toml_edit::value(lineup.by.as_str()));
+                if !lineup.lanes.is_empty() {
+                    table.insert(
+                        "lanes",
+                        toml_edit::value(lineup.lanes.iter().collect::<Array>()),
+                    );
+                }
                 if let Some(fetched) = lineup.fetched {
                     table.insert("fetched", toml_edit::value(fetched));
                 }
@@ -693,6 +711,7 @@ home = { fetched = 2026-09-20T18:00:00+09:00, streams = ["4:0x4031", "0x7fe6:0x7
             Lineup {
                 url: String::from("http://tvrec:40772"),
                 by: String::from("auto"),
+                lanes: vec![String::from("GR:CATV")],
                 fetched: now(),
                 channels: vec![
                     Listed {

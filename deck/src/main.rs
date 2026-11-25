@@ -126,6 +126,7 @@ fn main() {
     let mut program: Option<u16> = None;
     let mut mirakurun: Option<String> = None;
     let mut mirakurun_by = zwcore::input::source::mirakurun::By::Auto;
+    let mut mirakurun_lanes: Vec<String> = Vec::new();
     let mut coaxd: Option<(String, i32, Vec<String>, String)> = None;
     let mut scanning: Option<String> = None;
     let mut named = stage::Named::default();
@@ -385,6 +386,8 @@ fn main() {
                         ));
                     } else {
                         mirakurun = Some(source.url.clone());
+                        mirakurun_lanes =
+                            file.mirakurun_lanes(&file.profile(&profile), &source.label);
                     }
                     if !source.by.is_empty() {
                         match zwcore::input::source::mirakurun::By::parse(&source.by) {
@@ -427,7 +430,8 @@ fn main() {
             {
                 pick = Pick::Exact(last);
             }
-            live_of(&source, tuner, &file.profile(&profile).name, pick)
+            let lanes = file.mirakurun_lanes(&file.profile(&profile), &source.label);
+            live_of(&source, tuner, lanes, &file.profile(&profile).name, pick)
         })
     } else {
         None
@@ -556,7 +560,15 @@ fn main() {
         );
     }
     if let Some(url) = mirakurun {
-        return from_mirakurun(&url, mirakurun_by, pick, sound, keep, choices);
+        return from_mirakurun(
+            &url,
+            mirakurun_by,
+            mirakurun_lanes,
+            pick,
+            sound,
+            keep,
+            choices,
+        );
     }
     if let Some(why) = idle_because {
         return idle(&why, sound, keep, choices);
@@ -616,6 +628,7 @@ fn profile_source(
 fn live_of(
     source: &config::file::Source,
     tuner: Option<String>,
+    lanes: Vec<String>,
     profile: &str,
     pick: Pick,
 ) -> Option<Live> {
@@ -631,7 +644,7 @@ fn live_of(
     }
     let by = zwcore::input::source::mirakurun::By::parse(&source.by)
         .unwrap_or(zwcore::input::source::mirakurun::By::Auto);
-    mirakurun_live(&source.url, by, pick)
+    mirakurun_live(&source.url, by, lanes, pick)
         .inspect_err(|why| tracing::warn!("{}: {why}", source.shown()))
         .ok()
 }
@@ -703,12 +716,13 @@ impl Source for Nothing {
 fn from_mirakurun(
     url: &str,
     by: zwcore::input::source::mirakurun::By,
+    lanes: Vec<String>,
     pick: Pick,
     sound: Option<Device>,
     keep: sound::Keep,
     choices: Choices,
 ) {
-    let live = match mirakurun_live(url, by, pick) {
+    let live = match mirakurun_live(url, by, lanes, pick) {
         Ok(live) => live,
         Err(why) => {
             return idle(
@@ -736,19 +750,22 @@ fn from_mirakurun(
 fn mirakurun_live(
     url: &str,
     by: zwcore::input::source::mirakurun::By,
+    lanes: Vec<String>,
     pick: Pick,
 ) -> Result<Live, String> {
     let mut source =
         zwcore::input::source::mirakurun::Mirakurun::at(url).map_err(|why| why.to_string())?;
     source.set_by(by);
+    source.set_lanes(&lanes);
     Ok(Live {
         supply: Supply::new(Box::new(source)),
         channels: Vec::new(),
         fetched: None,
-        url: Some(url.to_owned()),
+        url: Some(stage::came_of_mirakurun(url, &lanes)),
         starting: Some(stage::Starting::Mirakurun {
             url: url.to_owned(),
             by,
+            lanes,
             pick,
         }),
     })

@@ -285,13 +285,23 @@ pub(super) fn channel_list(
     let coaxd_kind = String::from("coaxd");
     let mirakurun: Vec<String> = {
         let chosen = edited.profile(profile);
-        edited
-            .sources
-            .iter()
-            .filter(|source| source.kind == "mirakurun")
-            .filter(|source| chosen.sources.is_empty() || chosen.sources.contains(&source.label))
-            .map(|source| source.label.clone())
-            .collect()
+        let mut labels: Vec<String> = Vec::new();
+        let sources: Vec<&crate::config::file::Source> = if chosen.sources.is_empty() {
+            edited.sources.iter().collect()
+        } else {
+            edited
+                .entries_of(&chosen)
+                .0
+                .into_iter()
+                .map(|entry| entry.source)
+                .collect()
+        };
+        for source in sources {
+            if source.kind == "mirakurun" && !labels.contains(&source.label) {
+                labels.push(source.label.clone());
+            }
+        }
+        labels
     };
 
     let all = services_of(guide, offered);

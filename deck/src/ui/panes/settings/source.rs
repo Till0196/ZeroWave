@@ -7,7 +7,7 @@ use egui::{Color32, FontId, Rect, Stroke, pos2, vec2};
 
 use super::scan::{PLANS, boards_answer, offered, system_name, systems_of};
 use super::{Boards, Checks, File, Form, Pressed, skin};
-use crate::ui::icons::Icon;
+use crate::config::file::{join_entry, split_entry};
 
 const KINDS: &[(&str, &str)] = &[("coaxd", "coaxd"), ("mirakurun", "Mirakurun")];
 
@@ -29,6 +29,7 @@ pub(super) fn source(
     boards: &Boards,
     reach: &super::Reach,
     coaxd: &super::coaxd::Coaxd,
+    lanes: &super::Lanes,
 ) -> Option<Pressed> {
     use crate::config::file::Source;
     let mut pressed = None;
@@ -172,10 +173,9 @@ pub(super) fn source(
     for (before, after) in renamed {
         for profile in &mut edited.profiles {
             for name in &mut profile.sources {
-                if *name == before {
-                    name.clone_from(&after);
-                } else if let Some(tuner) = name.strip_prefix(&format!("{before}/")) {
-                    *name = format!("{after}/{tuner}");
+                let (label, rest) = split_entry(name);
+                if label == before {
+                    *name = join_entry(&after, rest);
                 }
             }
         }
@@ -184,9 +184,7 @@ pub(super) fn source(
         let label = edited.sources[index].label.clone();
         edited.sources.remove(index);
         for profile in &mut edited.profiles {
-            profile
-                .sources
-                .retain(|name| name != &label && !name.starts_with(&format!("{label}/")));
+            profile.sources.retain(|name| split_entry(name).0 != label);
         }
     }
     let row = form.line(skin::SELECT_HEIGHT);
@@ -230,7 +228,7 @@ pub(super) fn source(
     );
     form.hint("オフにすると、起動している coaxd に接続するだけになります");
 
-    if let Some(picked) = profiles(form, edited, profile, active, boards) {
+    if let Some(picked) = profiles(form, edited, profile, active, boards, lanes) {
         pressed = Some(picked);
     }
     pressed
@@ -266,6 +264,7 @@ fn profiles(
     profile: &str,
     active: &str,
     boards: &Boards,
+    lanes: &super::Lanes,
 ) -> Option<Pressed> {
     use crate::config::file::Profile;
     let mut pressed = None;
@@ -378,105 +377,42 @@ fn profiles(
         }
         pressed = Some(Pressed::Profile(after));
     }
-    let rows = profile_rows(edited, boards);
     let known = |name: &str| {
-        let label = name.split_once('/').map_or(name, |(label, _)| label);
+        let (label, _) = split_entry(name);
         edited.sources.iter().any(|source| source.label == label)
     };
-    let chosen: Vec<String> = edited.profiles[index].sources.clone();
-    let mut ordered: Vec<(String, Row, bool)> = chosen
+    let tuners: Vec<(String, String)> = match boards_answer(boards) {
+        Some(Ok(boards)) => boards
+            .iter()
+            .flat_map(|board| &board.tuners)
+            .map(|held| (held.tuner.id.clone(), held.tuner.label()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let shown: Vec<super::profile_tree::Shown<'_>> = edited
+        .sources
         .iter()
-        .filter(|name| known(name))
-        .map(|name| {
-            let shown = rows.iter().find(|(row, _)| row == name).map_or_else(
-                || Row {
-                    kind: String::from("coaxd"),
-                    said: name.clone(),
-                },
-                |(_, shown)| shown.clone(),
-            );
-            (name.clone(), shown, true)
+        .map(|source| super::profile_tree::Shown {
+            label: &source.label,
+            kind: &source.kind,
+            kids: match source.kind.as_str() {
+                "coaxd" if !tuners.is_empty() => super::profile_tree::Kids::Tuners(tuners.clone()),
+                "mirakurun" if !source.url.is_empty() => {
+                    match ask_lanes(form, lanes, &source.url) {
+                        Some(Ok(found)) if !found.is_empty() => {
+                            super::profile_tree::Kids::Lanes(found, source.by != "service")
+                        }
+                        _ => super::profile_tree::Kids::None,
+                    }
+                }
+                _ => super::profile_tree::Kids::None,
+            },
         })
         .collect();
-    ordered.extend(
-        rows.iter()
-            .filter(|(name, _)| !chosen.contains(name))
-            .map(|(name, shown)| (name.clone(), shown.clone(), false)),
-    );
-    let top = *form.at;
-    let head = form.line(26.0);
-    for (x, text) in [
-        (10.0, "利用"),
-        (60.0, "ソースとチューナー（上から優先）"),
-        (head.width() - 70.0, "順番"),
-    ] {
-        form.ui.painter().text(
-            pos2(head.left() + x, head.center().y),
-            egui::Align2::LEFT_CENTER,
-            text,
-            FontId::proportional(skin::TEXT_SIZE - 1.0),
-            form.look.label,
-        );
-    }
-    let mut next = chosen.clone();
-    for (place, (name, shown, on)) in ordered.iter().enumerate() {
-        let row = form.line(30.0);
-        form.ui.painter().hline(
-            row.x_range(),
-            row.top() - 3.0,
-            Stroke::new(1.0, form.look.edge),
-        );
-        if form.tick(
-            Rect::from_min_size(pos2(row.left() + 10.0, row.top()), vec2(24.0, row.height())),
-            ("profile.source", place),
-            *on,
-        ) {
-            if *on {
-                next.retain(|n| n != name);
-            } else {
-                next.push(name.clone());
-            }
-        }
-        let x = row.left() + 60.0;
-        let width = form.kind_tag(pos2(x, row.center().y), &shown.kind);
-        form.ui.painter().text(
-            pos2(x + width + 6.0, row.center().y),
-            egui::Align2::LEFT_CENTER,
-            &shown.said,
-            FontId::proportional(skin::TEXT_SIZE),
-            if *on { form.look.text } else { form.look.label },
-        );
-        if *on {
-            let at = next.iter().position(|n| n == name);
-            let up = Rect::from_min_size(
-                pos2(row.right() - 70.0, row.center().y - 12.0),
-                vec2(26.0, 24.0),
-            );
-            if form.button(up, ("profile.up", place), Icon::ArrowUp)
-                && let Some(at) = at
-                && at > 0
-            {
-                next.swap(at, at - 1);
-            }
-            let down = Rect::from_min_size(pos2(up.right() + 4.0, up.top()), up.size());
-            if form.button(down, ("profile.down", place), Icon::ArrowDown)
-                && let Some(at) = at
-                && at + 1 < next.len()
-            {
-                next.swap(at, at + 1);
-            }
-        }
-    }
-    let frame = Rect::from_min_max(pos2(head.left(), top), pos2(head.right(), *form.at - 2.0));
-    form.ui.painter().rect_stroke(
-        frame,
-        6.0,
-        Stroke::new(1.0, form.look.button_edge),
-        egui::StrokeKind::Inside,
-    );
-    *form.at += 4.0;
-    if next != chosen {
-        edited.profiles[index].sources = next;
+    let mut list = edited.profiles[index].sources.clone();
+    super::profile_tree::table(form, index, &shown, &mut list);
+    if list != edited.profiles[index].sources {
+        edited.profiles[index].sources = list;
     }
     let missing: Vec<String> = edited.profiles[index]
         .sources
@@ -502,55 +438,6 @@ fn profiles(
         );
     }
     pressed
-}
-
-#[derive(Debug, Clone)]
-struct Row {
-    kind: String,
-    said: String,
-}
-
-fn profile_rows(file: &File, boards: &Boards) -> Vec<(String, Row)> {
-    let answer = boards_answer(boards);
-    let listed: Vec<zwcore::input::source::coaxd::DaemonTuner> = match &answer {
-        Some(Ok(boards)) => boards
-            .iter()
-            .flat_map(|board| &board.tuners)
-            .map(|held| held.tuner.clone())
-            .collect(),
-        _ => Vec::new(),
-    };
-    let mut rows = Vec::new();
-    for source in &file.sources {
-        let kind = source.kind.clone();
-        if source.kind != "coaxd" {
-            rows.push((
-                source.label.clone(),
-                Row {
-                    kind,
-                    said: source.label.clone(),
-                },
-            ));
-            continue;
-        }
-        rows.push((
-            source.label.clone(),
-            Row {
-                kind: kind.clone(),
-                said: format!("{}（どのチューナーでも）", source.label),
-            },
-        ));
-        for tuner in &listed {
-            rows.push((
-                format!("{}/{}", source.label, tuner.id),
-                Row {
-                    kind: kind.clone(),
-                    said: tuner.label(),
-                },
-            ));
-        }
-    }
-    rows
 }
 
 /// 方式を返さないチューナー（BDA）のチップ。チャンネルスキャンできる物だけ。
@@ -1275,6 +1162,34 @@ fn mirakurun_rows(
         form.look.mirakurun.gamma_multiply(0.8),
     );
     *form.at += 4.0;
+}
+
+/// Mirakurun のタイプと受信経路。まだなら裏で問い合わせ、届いたら描き直させる。
+fn ask_lanes(
+    form: &Form<'_, '_>,
+    asked: &super::Lanes,
+    url: &str,
+) -> Option<Result<super::LaneList, String>> {
+    let mut held = asked.lock().ok()?;
+    if let Some(answer) = held.get(url) {
+        return answer.clone();
+    }
+    held.insert(url.to_owned(), None);
+    let into = std::sync::Arc::clone(asked);
+    let url = url.to_owned();
+    let ctx = form.ui.ctx().clone();
+    let _ = std::thread::Builder::new()
+        .name(String::from("lanes"))
+        .spawn(move || {
+            let answer = zwcore::input::source::mirakurun::Mirakurun::at(&url)
+                .and_then(|source| source.lanes())
+                .map_err(|why| why.to_string());
+            if let Ok(mut held) = into.lock() {
+                held.insert(url, Some(answer));
+            }
+            ctx.request_repaint();
+        });
+    None
 }
 
 fn gain_row(

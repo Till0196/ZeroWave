@@ -12,6 +12,7 @@ mod form;
 mod keys;
 mod pans;
 mod plain;
+mod profile_tree;
 mod scan;
 #[cfg(test)]
 mod snapshot;
@@ -157,6 +158,8 @@ pub struct State {
     /// coaxd を起動して待つことがあるのでウィンドウのスレッドでは問い合わせない。無ければ問い合わせ中。
     pub boards: Boards,
     pub boards_asked: bool,
+    /// Mirakurun の URL ごとのタイプと受信経路。ウィンドウのスレッドでは問い合わせない。値が無ければ問い合わせ中。
+    pub lanes: Lanes,
     pub plugin_scroll: std::collections::BTreeMap<String, (f32, f32)>,
     pub drops: Vec<Dropped>,
     pub choosing: Option<Dropped>,
@@ -209,6 +212,7 @@ impl Default for State {
             scanning: std::sync::Arc::new(std::sync::Mutex::new(crate::scan::Scanning::default())),
             scan_on: std::collections::BTreeMap::new(),
             boards: Boards::default(),
+            lanes: Lanes::default(),
             boards_asked: false,
             plugin_scroll: std::collections::BTreeMap::new(),
             drops: Vec::new(),
@@ -318,6 +322,12 @@ pub type Told = std::sync::Arc<std::sync::Mutex<Option<Result<String, String>>>>
 /// `Ok` はチューナー、`Err` は理由。無ければ問い合わせ中。
 pub type Boards = std::sync::Arc<
     std::sync::Mutex<Option<Result<Vec<zwcore::input::source::coaxd::Board>, String>>>,
+>;
+
+pub type LaneList = Vec<(String, Vec<String>)>;
+
+pub type Lanes = std::sync::Arc<
+    std::sync::Mutex<std::collections::BTreeMap<String, Option<Result<LaneList, String>>>>,
 >;
 
 /// 経路（`[line.<profile>.<plan>]` の `<plan>`）→ その経路で受ける局。
@@ -803,6 +813,7 @@ fn self_page(
                 &state.boards,
                 reach,
                 &state.coaxd,
+                &state.lanes,
             );
         }
         Page::Keys => keys::keys(&mut form, edited, &mut state.capturing),

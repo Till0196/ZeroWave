@@ -75,6 +75,7 @@ pub(crate) use catalog::{listed_asked, listed_at_hand};
 pub(crate) use compose::shown_size;
 use compose::stream_info;
 pub use surface::{configure_surface, configure_transparent_surface};
+pub(crate) use tuning::came_of_mirakurun;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Listed {
@@ -152,6 +153,7 @@ pub enum Starting {
     Mirakurun {
         url: String,
         by: zwcore::input::source::mirakurun::By,
+        lanes: Vec<String>,
         pick: Pick,
     },
 }
@@ -192,12 +194,18 @@ impl Starting {
                     guide_from: None,
                 })
             }
-            Self::Mirakurun { url, by, pick } => {
+            Self::Mirakurun {
+                url,
+                by,
+                lanes,
+                pick,
+            } => {
                 let unreached =
                     |why: &dyn std::fmt::Display| said_with("Mirakurun に接続できません。", why);
                 let mut source = zwcore::input::source::mirakurun::Mirakurun::at(&url)
                     .map_err(|why| unreached(&why))?;
                 source.set_by(by);
+                source.set_lanes(&lanes);
                 let version = source.version().map_err(|why| unreached(&why))?;
                 let channels = source.channels().map_err(|why| {
                     said_with("Mirakurun からチャンネルの一覧を取得できません。", &why)
@@ -739,6 +747,8 @@ pub enum Opening {
     Mirakurun {
         url: String,
         by: zwcore::input::source::mirakurun::By,
+        /// `GR:TER` のようなタイプと受信経路を試す順に。空なら全部。
+        lanes: Vec<String>,
     },
     Coaxd {
         endpoint: String,
@@ -752,7 +762,7 @@ impl Opening {
     /// 開き直す必要があるかを比べるためだけ。
     fn came(&self) -> String {
         match self {
-            Self::Mirakurun { url, .. } => url.clone(),
+            Self::Mirakurun { url, lanes, .. } => tuning::came_of_mirakurun(url, lanes),
             Self::Coaxd {
                 endpoint,
                 tuners,
@@ -828,16 +838,26 @@ pub(crate) fn openings(file: &crate::config::File, profile: &str) -> Vec<(String
     let profile = file.profile(profile);
     let (entries, _) = file.entries_of(&profile);
     let scanned = crate::config::channels_profile(&profile.name).to_owned();
+    // Mirakurun はタイプと受信経路の行をまとめて一つのソースにする。
+    let mut opened: Vec<String> = Vec::new();
     entries
         .into_iter()
         .filter_map(|entry| {
             let source = entry.source;
             let opening = match source.kind.as_str() {
-                "mirakurun" if !source.url.is_empty() => Opening::Mirakurun {
-                    url: source.url.clone(),
-                    by: zwcore::input::source::mirakurun::By::parse(&source.by)
-                        .unwrap_or(zwcore::input::source::mirakurun::By::Auto),
-                },
+                "mirakurun" if opened.contains(&source.label) => return None,
+                "mirakurun" if !source.url.is_empty() => {
+                    opened.push(source.label.clone());
+                    return Some((
+                        source.label.clone(),
+                        Opening::Mirakurun {
+                            url: source.url.clone(),
+                            by: zwcore::input::source::mirakurun::By::parse(&source.by)
+                                .unwrap_or(zwcore::input::source::mirakurun::By::Auto),
+                            lanes: file.mirakurun_lanes(&profile, &source.label),
+                        },
+                    ));
+                }
                 "coaxd" => Opening::Coaxd {
                     endpoint: source.endpoint.clone(),
                     priority: source.priority,

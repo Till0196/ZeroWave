@@ -62,11 +62,13 @@ pub(crate) fn lineup_channels(
 pub(crate) fn lineup_of(
     url: &str,
     by: &str,
+    lanes: &[String],
     channels: &[zwcore::input::source::Channel],
 ) -> crate::config::state::Lineup {
     crate::config::state::Lineup {
         url: url.to_owned(),
         by: by.to_owned(),
+        lanes: lanes.to_vec(),
         fetched: crate::config::state::now(),
         channels: channels
             .iter()
@@ -92,10 +94,12 @@ fn at_hand(
     opening: &Opening,
 ) -> Vec<zwcore::input::source::Channel> {
     match opening {
-        Opening::Mirakurun { url, by } => state
+        Opening::Mirakurun { url, by, lanes } => state
             .services
             .get(label)
-            .filter(|lineup| lineup.url == *url && lineup.by == by_name(*by))
+            .filter(|lineup| {
+                lineup.url == *url && lineup.by == by_name(*by) && lineup.lanes == *lanes
+            })
             .map(lineup_channels)
             .unwrap_or_default(),
         Opening::Coaxd {
@@ -107,16 +111,17 @@ fn at_hand(
 
 fn asked(label: &str, opening: &Opening) -> Vec<zwcore::input::source::Channel> {
     match opening {
-        Opening::Mirakurun { url, by } => {
+        Opening::Mirakurun { url, by, lanes } => {
             let fetched = zwcore::input::source::mirakurun::Mirakurun::at(url)
                 .map_err(|why| why.to_string())
                 .and_then(|mut source| {
                     source.set_by(*by);
+                    source.set_lanes(lanes);
                     source.channels().map_err(|why| why.to_string())
                 });
             match fetched {
                 Ok(channels) => {
-                    let lineup = lineup_of(url, by_name(*by), &channels);
+                    let lineup = lineup_of(url, by_name(*by), lanes, &channels);
                     let label = label.to_owned();
                     crate::config::update_state(move |state| {
                         state.services.insert(label, lineup);
@@ -350,7 +355,7 @@ mod tests {
                 container: zwcore::filters::Container::Ts,
             },
         ];
-        let lineup = lineup_of("http://tvrec:40772", "auto", &channels);
+        let lineup = lineup_of("http://tvrec:40772", "auto", &[], &channels);
         assert_eq!(lineup.channels.len(), 1);
         assert_eq!(lineup_channels(&lineup), channels[..1]);
     }

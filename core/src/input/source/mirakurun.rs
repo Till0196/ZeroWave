@@ -93,6 +93,8 @@ impl By {
 pub struct Mirakurun {
     place: Place,
     by: By,
+    /// 使うチャンネルのタイプと受信経路を試す順に。空なら全部。
+    lanes: Vec<Lane>,
     name: String,
     client: Client,
     /// 選局の前に切断する（チューナーが一つの相手は `503` で断る）。
@@ -114,6 +116,7 @@ impl Mirakurun {
             name: format!("Mirakurun {}", place.host),
             place,
             by: By::Auto,
+            lanes: Vec::new(),
             client,
             open: None,
         })
@@ -121,6 +124,11 @@ impl Mirakurun {
 
     pub fn set_by(&mut self, by: By) {
         self.by = by;
+    }
+
+    /// `GR:TER` はタイプと受信経路、`GR` はそのタイプの全部の経路。
+    pub fn set_lanes(&mut self, lanes: &[String]) {
+        self.lanes = lanes.iter().map(|lane| Lane::of(lane)).collect();
     }
 
     fn ask(&self, path: &str) -> Result<String, Error> {
@@ -253,8 +261,8 @@ impl Mirakurun {
                     },
                 );
             }
-            // `transportStreamId` が無ければ物理チャンネルの名前から仮の番号を決める（SDT で置き換わる）。
-            let told = number(service, "transportStreamId")
+            // `streamId` が無ければ物理チャンネルの名前から仮の番号を決める（SDT で置き換わる）。
+            let told = number(service, "streamId")
                 .map(|id| id as u16)
                 .filter(|id| *id != 0);
             let transport = told.unwrap_or_else(|| {
@@ -272,7 +280,7 @@ impl Mirakurun {
                 name: service.text("name").unwrap_or_default().to_owned(),
                 provider: String::new(),
                 kind: number(service, "type").unwrap_or_default() as u8,
-                scrambled: false,
+                scrambled: flag(service, "isFree") == Some(false),
                 remote_key: number(service, "remoteControlKeyId").map(|key| key as u8),
                 logo_id,
                 simple_logo: None,
@@ -296,18 +304,14 @@ impl Mirakurun {
             let (Some(kind), Some(where_)) = (carrier.text("type"), carrier.text("channel")) else {
                 continue;
             };
-            let at = (kind.to_owned(), where_.to_owned());
             for service in items(carrier, "services") {
                 if let Some(id) = number(service, "id") {
-                    carriers.carrying.insert(id, at.clone());
-                    match number(service, "tsmfRelTs") {
-                        Some(relative) => {
-                            carriers.relative.insert(id, relative);
-                        }
-                        None => {
-                            carriers.relative.remove(&id);
-                        }
-                    }
+                    carriers.carrying.entry(id).or_default().push(Carrier {
+                        kind: kind.to_owned(),
+                        channel: where_.to_owned(),
+                        route: carrier.text("route").map(str::to_owned),
+                        relative: number(service, "tsmfRelTs"),
+                    });
                 }
             }
         }
@@ -321,6 +325,30 @@ impl Mirakurun {
             .get(&(self.place.host.clone(), self.place.root.clone()))
             .copied()
             .unwrap_or_default()
+    }
+
+    /// チャンネルのタイプと、タイプごとの受信経路（`route`）を `/api/channels` に出てきた順に。
+    /// 経路を返さない Mirakurun では経路が空。
+    pub fn lanes(&self) -> Result<Vec<(String, Vec<String>)>, Error> {
+        let mut lanes: Vec<(String, Vec<String>)> = Vec::new();
+        for channel in self.read("/api/channels")?.items() {
+            let Some(kind) = channel.text("type") else {
+                continue;
+            };
+            let at = match lanes.iter().position(|(one, _)| one == kind) {
+                Some(at) => at,
+                None => {
+                    lanes.push((kind.to_owned(), Vec::new()));
+                    lanes.len() - 1
+                }
+            };
+            if let Some(route) = channel.text("route")
+                && !lanes[at].1.iter().any(|one| one == route)
+            {
+                lanes[at].1.push(route.to_owned());
+            }
+        }
+        Ok(lanes)
     }
 
     pub fn version(&self) -> Result<String, Error> {
@@ -392,7 +420,11 @@ fn picture(said: &Value) -> Option<Picture> {
     let resolution = said.get("resolution").and_then(Value::as_str);
     let frame_rate = said.get("frameRate").and_then(Value::as_str);
     let transfer = said.get("transferCharacteristics").and_then(Value::as_str);
-    if component_type.is_none() && resolution.is_none() {
+    if component_type.is_none()
+        && resolution.is_none()
+        && frame_rate.is_none()
+        && transfer.is_none()
+    {
         return None;
     }
     let (resolution, progressive) = match resolution {
@@ -586,24 +618,27 @@ impl Source for Mirakurun {
     fn channels(&mut self) -> Result<Vec<Channel>, Error> {
         let said = self.read("/api/services")?;
         let carriers = self.carriers();
+        // 受信できるチャンネルごとに並べる。選局は断られたら次の経路を試す。
         Ok(said
             .items()
             .iter()
-            .filter_map(|service| {
-                Some(Channel {
-                    name: service.text("name").unwrap_or_default().to_owned(),
-                    key: key(service),
-                    transport: number(service, "transportStreamId")
-                        .map(|id| id as u16)
-                        .filter(|id| *id != 0),
-                    order: number(service, "remoteControlKeyId").map(|key| key as u32),
-                    how: how(service, &carriers, self.by)?,
-                    container: if four_k(service) {
-                        Container::Tlv
-                    } else {
-                        Container::Ts
-                    },
-                })
+            .flat_map(|service| {
+                ways(service, &carriers, self.by, &self.lanes)
+                    .into_iter()
+                    .map(|how| Channel {
+                        name: service.text("name").unwrap_or_default().to_owned(),
+                        key: key(service),
+                        transport: number(service, "streamId")
+                            .map(|id| id as u16)
+                            .filter(|id| *id != 0),
+                        order: number(service, "remoteControlKeyId").map(|key| key as u32),
+                        how,
+                        container: if four_k(service) {
+                            Container::Tlv
+                        } else {
+                            Container::Ts
+                        },
+                    })
             })
             .collect())
     }
@@ -678,45 +713,115 @@ impl Source for Mirakurun {
     }
 }
 
+/// サービスの ID から、そのストリームを受信できるチャンネル（`/api/channels` の並び）。
 #[derive(Debug, Default)]
 struct Carriers {
-    carrying: BTreeMap<i64, (String, String)>,
-    relative: BTreeMap<i64, i64>,
+    carrying: BTreeMap<i64, Vec<Carrier>>,
+}
+
+/// チャンネルのタイプと受信経路。経路が無ければそのタイプの全部。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Lane {
+    kind: String,
+    route: Option<String>,
+}
+
+impl Lane {
+    fn of(text: &str) -> Self {
+        match text.split_once(':') {
+            Some((kind, route)) => Self {
+                kind: kind.to_owned(),
+                route: Some(route.to_owned()),
+            },
+            None => Self {
+                kind: text.to_owned(),
+                route: None,
+            },
+        }
+    }
+
+    fn takes(&self, kind: &str, route: Option<&str>) -> bool {
+        self.kind == kind && self.route.as_deref().is_none_or(|want| Some(want) == route)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Carrier {
+    kind: String,
+    channel: String,
+    route: Option<String>,
+    relative: Option<i64>,
 }
 
 /// 一覧にある局は搬送波ごと受信し、自分で局を選ぶ。局を指定して要求すると、違う搬送波を選局して
-/// ヘッダーも返さずに切ることがある。
-fn how(service: &Value, carriers: &Carriers, by: By) -> Option<String> {
-    let id = number(service, "id")?;
+/// ヘッダーも返さずに切ることがある。同じ局を複数の受信経路で受けられれば、その数だけ返す。
+/// `lanes` があれば、合うチャンネルだけを `lanes` の順に使う。
+fn ways(service: &Value, carriers: &Carriers, by: By, lanes: &[Lane]) -> Vec<String> {
+    let Some(id) = number(service, "id") else {
+        return Vec::new();
+    };
+    let rank = |kind: &str, route: Option<&str>| {
+        if lanes.is_empty() {
+            Some(0)
+        } else {
+            lanes.iter().position(|lane| lane.takes(kind, route))
+        }
+    };
+    let carrying: Option<Vec<&Carrier>> = carriers.carrying.get(&id).map(|carrying| {
+        let mut kept: Vec<(usize, &Carrier)> = carrying
+            .iter()
+            .filter_map(|carrier| Some((rank(&carrier.kind, carrier.route.as_deref())?, carrier)))
+            .collect();
+        kept.sort_by_key(|(rank, _)| *rank);
+        kept.into_iter().map(|(_, carrier)| carrier).collect()
+    });
+    // 一覧に無い局は、サービスの `channel` のタイプと経路で決める。
+    let reachable = match &carrying {
+        Some(kept) => !kept.is_empty(),
+        None => service.get("channel").map_or(lanes.is_empty(), |channel| {
+            rank(
+                channel.text("type").unwrap_or_default(),
+                channel.text("route"),
+            )
+            .is_some()
+        }),
+    };
+    if !reachable {
+        return Vec::new();
+    }
     // 無いと TS に変換する途中で MMT/TLV が崩れる。
     let format = four_k(service).then(|| String::from("format=tlv"));
     let by_service = || {
-        Some(stream(
+        vec![stream(
             &format!("/api/services/{id}/stream"),
             [format.clone()],
-        ))
+        )]
     };
     if by == By::Service {
         return by_service();
     }
-    if let Some((kind, carrier)) = carriers.carrying.get(&id) {
-        let relative = carriers
-            .relative
-            .get(&id)
-            .map(|relative| format!("tsmfRelTs={relative}"));
-        return Some(stream(
-            &format!("/api/channels/{kind}/{carrier}/stream"),
-            [format.clone(), relative],
-        ));
+    if let Some(carrying) = carrying {
+        return carrying
+            .iter()
+            .map(|carrier| {
+                let relative = carrier
+                    .relative
+                    .map(|relative| format!("tsmfRelTs={relative}"));
+                stream(
+                    &format!("/api/channels/{}/{}/stream", carrier.kind, carrier.channel),
+                    [format.clone(), relative],
+                )
+            })
+            .collect();
     }
     if by == By::Channel
         && let Some(carrier) = service.get("channel")
         && let (Some(kind), Some(where_)) = (carrier.text("type"), carrier.text("channel"))
     {
-        return Some(stream(
+        return vec![stream(
             &format!("/api/channels/{kind}/{where_}/stream"),
             [format.clone()],
-        ));
+        )];
     }
     by_service()
 }
@@ -813,7 +918,11 @@ fn programme(said: &Value, guide: &Guide) -> Option<Programme> {
         extended,
         stored_extended: None,
         genres,
-        video: said.get("video").and_then(picture),
+        // TLV の番組は MH-EIT の映像の情報を `mmtVideo` で返す。
+        video: said
+            .get("video")
+            .or_else(|| said.get("mmtVideo"))
+            .and_then(picture),
         audios: items(said, "audios").iter().filter_map(sound).collect(),
         free: flag(said, "isFree").unwrap_or(true),
         caption: false,
@@ -1053,28 +1162,109 @@ mod tests {
 
     fn carriers() -> Carriers {
         let mut carriers = Carriers::default();
-        for (id, at) in [
-            (1033293, ("SKY", "561250")),
-            (3233626624, ("GR", "49")),
-            (1100221, ("BS4K", "45234")),
+        for (id, kind, channel, relative) in [
+            (1033293, "SKY", "561250", None),
+            (3233626624, "GR", "49", None),
+            (1100221, "BS4K", "45234", None),
+            (400201, "BS", "23", Some(2)),
         ] {
-            carriers
-                .carrying
-                .insert(id, (at.0.to_owned(), at.1.to_owned()));
+            carriers.carrying.entry(id).or_default().push(Carrier {
+                kind: kind.to_owned(),
+                channel: channel.to_owned(),
+                route: None,
+                relative,
+            });
         }
         carriers
-            .carrying
-            .insert(400201, ("BS".to_owned(), "23".to_owned()));
-        carriers.relative.insert(400201, 2);
+    }
+
+    fn carriers_of(listed: &[(i64, &str, &str)]) -> Carriers {
+        let mut carriers = Carriers::default();
+        for (id, kind, channel) in listed {
+            carriers.carrying.entry(*id).or_default().push(Carrier {
+                kind: (*kind).to_owned(),
+                channel: (*channel).to_owned(),
+                route: None,
+                relative: None,
+            });
+        }
         carriers
+    }
+
+    #[test]
+    fn a_service_on_more_than_one_route_is_offered_on_each() {
+        let said = service(
+            r#"[{"type": "GR", "channel": "27", "route": "TER",
+                 "services": [{"id": 3273601024}]},
+                {"type": "GR", "channel": "C27", "route": "CATV",
+                 "services": [{"id": 3273601024}, {"id": 400101, "tsmfRelTs": 3}]}]"#,
+        );
+        let mut carriers = Carriers::default();
+        for carrier in said.items() {
+            for one in items(carrier, "services") {
+                carriers
+                    .carrying
+                    .entry(number(one, "id").unwrap())
+                    .or_default()
+                    .push(Carrier {
+                        kind: carrier.text("type").unwrap().to_owned(),
+                        channel: carrier.text("channel").unwrap().to_owned(),
+                        route: carrier.text("route").map(str::to_owned),
+                        relative: number(one, "tsmfRelTs"),
+                    });
+            }
+        }
+        let one = service(r#"{"id": 3273601024, "serviceId": 1024, "networkId": 32736}"#);
+        assert_eq!(
+            ways(&one, &carriers, By::Auto, &[]),
+            ["/api/channels/GR/27/stream", "/api/channels/GR/C27/stream"]
+        );
+        assert_eq!(
+            ways(&one, &carriers, By::Service, &[]),
+            ["/api/services/3273601024/stream"]
+        );
+        let lanes = |said: &[&str]| said.iter().map(|lane| Lane::of(lane)).collect::<Vec<_>>();
+        assert_eq!(
+            ways(&one, &carriers, By::Auto, &lanes(&["GR:CATV"])),
+            ["/api/channels/GR/C27/stream"]
+        );
+        assert_eq!(
+            ways(&one, &carriers, By::Auto, &lanes(&["GR:CATV", "GR:TER"])),
+            ["/api/channels/GR/C27/stream", "/api/channels/GR/27/stream"]
+        );
+        assert!(ways(&one, &carriers, By::Auto, &lanes(&["BS"])).is_empty());
+        assert!(ways(&one, &carriers, By::Service, &lanes(&["BS:SAT"])).is_empty());
+        // 経路を返さない Mirakurun はタイプだけで選ぶ。
+        let routeless = carriers_of(&[(3273601024, "GR", "27")]);
+        assert_eq!(
+            ways(&one, &routeless, By::Auto, &lanes(&["GR"])),
+            ["/api/channels/GR/27/stream"]
+        );
+        assert!(ways(&one, &routeless, By::Auto, &lanes(&["GR:TER"])).is_empty());
+    }
+
+    #[test]
+    fn a_programme_of_mmt_tells_its_picture_in_mmt_video() {
+        let said = service(
+            r#"{"networkId": 11, "serviceId": 101, "eventId": 1, "startAt": 0, "duration": 60000,
+                "mmtVideo": {"resolution": "2160p", "frameRate": "59.94",
+                             "transferCharacteristics": "bt2100-hlg"}}"#,
+        );
+        let programme = programme(&said, &Guide::new()).unwrap();
+        let video = programme.video.unwrap();
+        assert_eq!(video.hdr(), Some(true));
+        assert_eq!(video.name().as_deref(), Some("2160p 59.94fps、HDR（HLG）"));
+        let unknown = service(r#"{"resolution": null, "frameRate": "59.94"}"#);
+        assert!(picture(&unknown).is_some());
+        assert!(picture(&service(r#"{"resolution": null}"#)).is_none());
     }
 
     #[test]
     fn a_stream_of_a_multiplexing_frame_is_asked_for_by_its_relative_number() {
         let bs10 = service(r#"{"id": 400201, "channel": {"type": "BS", "channel": "16626"}}"#);
         assert_eq!(
-            how(&bs10, &carriers(), By::Auto).unwrap(),
-            "/api/channels/BS/23/stream?tsmfRelTs=2"
+            ways(&bs10, &carriers(), By::Auto, &[]),
+            ["/api/channels/BS/23/stream?tsmfRelTs=2"]
         );
     }
 
@@ -1117,12 +1307,12 @@ mod tests {
                 "channel": {"type": "BS4K", "channel": "45234"}}"#,
         );
         assert_eq!(
-            how(&four, &carriers(), By::Auto).unwrap(),
-            "/api/channels/BS4K/45234/stream?format=tlv"
+            ways(&four, &carriers(), By::Auto, &[]),
+            ["/api/channels/BS4K/45234/stream?format=tlv"]
         );
         assert_eq!(
-            how(&four, &Carriers::default(), By::Auto).unwrap(),
-            "/api/services/1100221/stream?format=tlv"
+            ways(&four, &Carriers::default(), By::Auto, &[]),
+            ["/api/services/1100221/stream?format=tlv"]
         );
         assert!(four_k(&four));
     }
@@ -1134,8 +1324,8 @@ mod tests {
                 "channel": {"type": "GR", "channel": "32336"}}"#,
         );
         assert_eq!(
-            how(&terrestrial, &carriers(), By::Auto).unwrap(),
-            "/api/channels/GR/49/stream"
+            ways(&terrestrial, &carriers(), By::Auto, &[]),
+            ["/api/channels/GR/49/stream"]
         );
         assert!(!four_k(&terrestrial));
     }
@@ -1147,8 +1337,8 @@ mod tests {
                 "channel": {"type": "SKY", "channel": "16425"}}"#,
         );
         assert_eq!(
-            how(&sky, &carriers(), By::Auto).unwrap(),
-            "/api/channels/SKY/561250/stream"
+            ways(&sky, &carriers(), By::Auto, &[]),
+            ["/api/channels/SKY/561250/stream"]
         );
     }
 
@@ -1159,8 +1349,8 @@ mod tests {
                 "channel": {"type": "GR", "channel": "27"}}"#,
         );
         assert_eq!(
-            how(&terrestrial, &carriers(), By::Auto).unwrap(),
-            "/api/services/3275101024/stream"
+            ways(&terrestrial, &carriers(), By::Auto, &[]),
+            ["/api/services/3275101024/stream"]
         );
     }
 
@@ -1171,16 +1361,16 @@ mod tests {
                 "channel": {"type": "SKY", "channel": "16425"}}"#,
         );
         assert_eq!(
-            how(&sky, &carriers(), By::Service).unwrap(),
-            "/api/services/1033293/stream"
+            ways(&sky, &carriers(), By::Service, &[]),
+            ["/api/services/1033293/stream"]
         );
         assert_eq!(
-            how(&sky, &Carriers::default(), By::Channel).unwrap(),
-            "/api/channels/SKY/16425/stream"
+            ways(&sky, &Carriers::default(), By::Channel, &[]),
+            ["/api/channels/SKY/16425/stream"]
         );
         assert_eq!(
-            how(&sky, &carriers(), By::Channel).unwrap(),
-            "/api/channels/SKY/561250/stream"
+            ways(&sky, &carriers(), By::Channel, &[]),
+            ["/api/channels/SKY/561250/stream"]
         );
         assert_eq!(By::parse("channel"), Some(By::Channel));
         assert_eq!(By::parse("service"), Some(By::Service));
@@ -1194,8 +1384,8 @@ mod tests {
                 "channel": {"type": "SKY", "channel": "16425"}}"#,
         );
         assert_eq!(
-            how(&sky, &Carriers::default(), By::Auto).unwrap(),
-            "/api/services/1033293/stream"
+            ways(&sky, &Carriers::default(), By::Auto, &[]),
+            ["/api/services/1033293/stream"]
         );
     }
 

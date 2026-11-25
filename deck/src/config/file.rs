@@ -837,6 +837,7 @@ impl Source {
 pub struct Entry<'a> {
     pub name: String,
     pub source: &'a Source,
+    /// coaxd はチューナー、Mirakurun はタイプと受信経路。
     pub tuner: Option<String>,
 }
 
@@ -882,7 +883,7 @@ impl TunerSetting {
 #[serde(default)]
 pub struct Profile {
     pub name: String,
-    /// ソースの並び。coaxd はチューナーを指定できる（`coaxd/model:PT3*`・`coaxd/s270:*`）。
+    /// ソースの並び。`<ソース>/<チューナー>`・`<ソース>/GR:TER`・`<ソース>/GR` で絞れる。同じソースの物は続けて並べる。
     pub sources: Vec<String>,
     #[serde(flatten)]
     pub overrides: BTreeMap<String, toml::Value>,
@@ -929,10 +930,7 @@ impl File {
         let mut entries = Vec::new();
         let mut unknown = Vec::new();
         for name in &profile.sources {
-            let (label, tuner) = match name.split_once('/') {
-                Some((label, tuner)) => (label, Some(tuner.to_owned())),
-                None => (name.as_str(), None),
-            };
+            let (label, tuner) = split_entry(name);
             let Some(source) = self.sources.iter().find(|source| source.label == label) else {
                 unknown.push(name.clone());
                 continue;
@@ -940,10 +938,24 @@ impl File {
             entries.push(Entry {
                 name: name.clone(),
                 source,
-                tuner: if source.kind == "coaxd" { tuner } else { None },
+                tuner: tuner.map(str::to_owned),
             });
         }
         (entries, unknown)
+    }
+
+    /// プロファイルが Mirakurun のソース `label` で使うタイプと受信経路（`GR:TER`・`GR`）を並びの順に。
+    /// ソースだけを書いていれば全部なので空。
+    pub fn mirakurun_lanes(&self, profile: &Profile, label: &str) -> Vec<String> {
+        let mut lanes = Vec::new();
+        for name in &profile.sources {
+            match split_entry(name) {
+                (one, Some(lane)) if one == label => lanes.push(lane.to_owned()),
+                (one, None) if one == label => return Vec::new(),
+                _ => {}
+            }
+        }
+        lanes
     }
 
     /// プロファイルが使う coax のチューナー。チューナーを指定しない coaxd が一つでもあれば空。
@@ -960,9 +972,62 @@ impl File {
     }
 }
 
+/// プロファイルの並びの一つを、ソースの名前と、その後ろ（チューナーやタイプと受信経路）に分ける。
+/// 名前に `/` があるソースは `"home/2"/GR:TER` のように `"` で囲む（中の `"` は `""`）。
+pub fn split_entry(name: &str) -> (String, Option<&str>) {
+    if let Some(quoted) = name.strip_prefix('"') {
+        let mut label = String::new();
+        let mut chars = quoted.char_indices().peekable();
+        while let Some((at, one)) = chars.next() {
+            if one != '"' {
+                label.push(one);
+                continue;
+            }
+            if chars.peek().is_some_and(|(_, next)| *next == '"') {
+                chars.next();
+                label.push('"');
+                continue;
+            }
+            let rest = &quoted[at + 1..];
+            return (label, rest.strip_prefix('/'));
+        }
+    }
+    match name.split_once('/') {
+        Some((label, rest)) => (label.to_owned(), Some(rest)),
+        None => (name.to_owned(), None),
+    }
+}
+
+/// [`split_entry`] の逆。
+pub fn join_entry(label: &str, rest: Option<&str>) -> String {
+    let label = if label.contains('/') || label.starts_with('"') {
+        format!("\"{}\"", label.replace('"', "\"\""))
+    } else {
+        label.to_owned()
+    };
+    match rest {
+        Some(rest) => format!("{label}/{rest}"),
+        None => label,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_source_named_with_a_slash_is_quoted_in_a_profile() {
+        for (label, rest, written) in [
+            ("home", Some("GR:TER"), "home/GR:TER"),
+            ("coaxd", Some("model:A / B"), "coaxd/model:A / B"),
+            ("home/2", Some("GR"), "\"home/2\"/GR"),
+            ("home/2", None, "\"home/2\""),
+            ("say \"hi\"/x", None, "\"say \"\"hi\"\"/x\""),
+        ] {
+            assert_eq!(join_entry(label, rest), written);
+            assert_eq!(split_entry(written), (label.to_owned(), rest));
+        }
+    }
 
     #[test]
     fn the_loop_through_output_is_kept_and_reaches_coaxd() {

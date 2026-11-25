@@ -9,10 +9,12 @@ use zwcore::input::source::Source as _;
 pub(super) fn open_mirakurun(
     url: &str,
     by: zwcore::input::source::mirakurun::By,
+    lanes: &[String],
 ) -> Result<Live, String> {
     let mut source =
         zwcore::input::source::mirakurun::Mirakurun::at(url).map_err(|why| why.to_string())?;
     source.set_by(by);
+    source.set_lanes(lanes);
     let version = source.version().map_err(|why| why.to_string())?;
     let channels = source.channels().map_err(|why| why.to_string())?;
     tracing::info!(
@@ -24,9 +26,18 @@ pub(super) fn open_mirakurun(
         supply: Supply::new(Box::new(source)),
         channels,
         fetched: Some(super::fetch_guide(url.to_owned())),
-        url: Some(url.to_owned()),
+        url: Some(came_of_mirakurun(url, lanes)),
         starting: None,
     })
+}
+
+/// 同じ URL でも使うタイプと受信経路が違えば別のソース。
+pub(crate) fn came_of_mirakurun(url: &str, lanes: &[String]) -> String {
+    if lanes.is_empty() {
+        url.to_owned()
+    } else {
+        format!("{url}#{}", lanes.join(","))
+    }
 }
 
 /// coaxd を開いて [`Live`] にする。全局の番組表は無い（放送波から埋まる）。
