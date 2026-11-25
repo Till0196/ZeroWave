@@ -3,14 +3,20 @@
 
 //! パン&スキャンのプリセット（`[[video.pan]]`）。比率のメニューに並ぶ。
 
-use egui::{FontId, Rect, pos2, vec2};
+use egui::{FontId, Rect, Stroke, pos2, vec2};
 
 use super::form::Form;
 use super::{File, skin};
 use crate::config::file::{PAN_PREFIX, Pan};
+use crate::ui::icons::Icon;
 
-const NUMBER: f32 = 56.0;
+const NUMBER: f32 = 44.0;
+const BUTTON: f32 = 26.0;
+const GAP: f32 = 10.0;
+/// 比率の二つの欄の間の「:」の幅。
+const COLON: f32 = 12.0;
 
+/// プリセット一つを一行にした表。ソースのプロファイルの表と同じ形。
 pub(super) fn pans(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
     form.section("パン&スキャン");
     let mut remove = None;
@@ -18,14 +24,46 @@ pub(super) fn pans(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
     let count = edited.video.pans.len();
     // 名前を変えたプリセット（前、後）。比率で選んでいれば追う。
     let mut renamed = None;
+    let top = *form.at;
+    let head = form.line(26.0);
+    let pair = NUMBER * 2.0 + 4.0;
+    let delete_left = head.right() - 10.0 - BUTTON;
+    let order_left = delete_left - 6.0 - (BUTTON * 2.0 + 4.0);
+    let aspect_left = order_left - GAP - (NUMBER * 2.0 + COLON);
+    let size_left = aspect_left - GAP - pair;
+    let place_left = size_left - GAP - pair;
+    let name_left = head.left() + 10.0;
+    let name_width = (place_left - GAP - name_left).max(60.0);
+    for (x, text) in [
+        (name_left, "名前"),
+        (place_left, "位置 横・縦 %"),
+        (size_left, "大きさ 横・縦 %"),
+        (aspect_left, "比率 横:縦"),
+        (order_left, "順番"),
+    ] {
+        form.ui.painter().text(
+            pos2(x, head.center().y),
+            egui::Align2::LEFT_CENTER,
+            text,
+            FontId::proportional(skin::TEXT_SIZE - 1.0),
+            form.look.label,
+        );
+    }
+    if count == 0 {
+        let row = form.line(30.0);
+        hline(form, row);
+        form.ui.painter().text(
+            pos2(name_left, row.center().y),
+            egui::Align2::LEFT_CENTER,
+            "プリセットはありません",
+            FontId::proportional(skin::TEXT_SIZE),
+            form.look.label,
+        );
+    }
     for (index, pan) in edited.video.pans.iter_mut().enumerate() {
-        if index == 0 {
-            *form.at += 8.0;
-        }
-        let changed = loaded.video.pans.get(index) != Some(&*pan);
-        let row = form.line(skin::SELECT_HEIGHT);
-        let left = row.left() + 12.0;
-        if changed {
+        let row = form.line(30.0);
+        hline(form, row);
+        if loaded.video.pans.get(index) != Some(&*pan) {
             let colour = form.look.changed;
             form.ui.painter().circle_filled(
                 pos2(row.left() - skin::DOT + 3.0, row.center().y),
@@ -33,9 +71,12 @@ pub(super) fn pans(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
                 colour,
             );
         }
+        let cell = |x: f32, width: f32| {
+            Rect::from_min_size(pos2(x, row.center().y - 13.0), vec2(width, 26.0))
+        };
         let before = pan.name.clone();
         form.field(
-            Rect::from_min_size(pos2(left, row.top()), vec2(180.0, row.height())),
+            cell(name_left, name_width),
             ("pan.name", index),
             &mut pan.name,
             "名前",
@@ -43,60 +84,52 @@ pub(super) fn pans(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
         if pan.name != before {
             renamed = Some((before, pan.name.clone()));
         }
-        let buttons = [
-            ("上へ", 56.0, index > 0),
-            ("下へ", 56.0, index + 1 < count),
-            ("削除", 60.0, true),
-        ];
-        let mut right = row.right();
-        for (word, width, enabled) in buttons.into_iter().rev() {
-            right -= width;
-            let rect = Rect::from_min_size(pos2(right, row.top()), vec2(width, row.height()));
-            right -= 6.0;
-            if form.button_enabled(rect, ("pan", word, index), word, enabled) {
-                match word {
-                    "上へ" => swap = Some((index - 1, index)),
-                    "下へ" => swap = Some((index, index + 1)),
-                    _ => remove = Some(index),
-                }
-            }
+        for (x, [first, second]) in [
+            (place_left, [&mut pan.x, &mut pan.y]),
+            (size_left, [&mut pan.width, &mut pan.height]),
+        ] {
+            form.number_box(cell(x, NUMBER), first, 0.0..=100.0);
+            form.number_box(cell(x + NUMBER + 4.0, NUMBER), second, 0.0..=100.0);
         }
-        let row = form.line(skin::SELECT_HEIGHT);
-        let mut at = row.left() + 26.0;
-        let groups: [(&str, [(&str, &mut f32); 2]); 2] = [
-            ("位置", [("横", &mut pan.x), ("縦", &mut pan.y)]),
-            ("大きさ", [("横", &mut pan.width), ("縦", &mut pan.height)]),
-        ];
-        for (title, pair) in groups {
-            at = said(form, at, row, title) + 4.0;
-            for (label, value) in pair {
-                at = said(form, at, row, label);
-                form.number_box(
-                    Rect::from_min_size(pos2(at, row.top()), vec2(NUMBER, row.height())),
-                    value,
-                    0.0..=100.0,
-                );
-                at += NUMBER + 4.0;
-            }
-            at = said(form, at, row, "%") + 8.0;
-        }
-        at = said(form, at, row, "比率") + 4.0;
         let [across, down] = &mut pan.aspect;
-        at = said(form, at, row, "横");
-        form.number_box(
-            Rect::from_min_size(pos2(at, row.top()), vec2(NUMBER, row.height())),
-            across,
-            1..=10_000,
+        form.number_box(cell(aspect_left, NUMBER), across, 1..=10_000);
+        form.ui.painter().text(
+            pos2(aspect_left + NUMBER + COLON / 2.0, row.center().y),
+            egui::Align2::CENTER_CENTER,
+            ":",
+            FontId::proportional(skin::TEXT_SIZE),
+            form.look.label,
         );
-        at += NUMBER + 4.0;
-        at = said(form, at, row, "縦");
-        form.number_box(
-            Rect::from_min_size(pos2(at, row.top()), vec2(NUMBER, row.height())),
+        form.number_box(cell(aspect_left + NUMBER + COLON, NUMBER), down, 1..=10_000);
+        let up = cell(order_left, BUTTON);
+        if form.button_enabled(up, ("pan.up", index), Icon::ArrowUp, index > 0) {
+            swap = Some((index - 1, index));
+        }
+        let down = cell(up.right() + 4.0, BUTTON);
+        if form.button_enabled(
             down,
-            1..=10_000,
-        );
-        *form.at += 6.0;
+            ("pan.down", index),
+            Icon::ArrowDown,
+            index + 1 < count,
+        ) {
+            swap = Some((index, index + 1));
+        }
+        if form.button(
+            cell(delete_left, BUTTON),
+            ("pan.remove", index),
+            Icon::Cross,
+        ) {
+            remove = Some(index);
+        }
     }
+    let frame = Rect::from_min_max(pos2(head.left(), top), pos2(head.right(), *form.at - 2.0));
+    form.ui.painter().rect_stroke(
+        frame,
+        6.0,
+        Stroke::new(1.0, form.look.button_edge),
+        egui::StrokeKind::Inside,
+    );
+    *form.at += 4.0;
     if let Some((before, after)) = renamed {
         let frame = &mut edited.video.frame;
         if frame.aspect.strip_prefix(PAN_PREFIX) == Some(before.as_str()) {
@@ -110,7 +143,7 @@ pub(super) fn pans(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
         edited.video.pans.remove(index);
     }
     let row = form.line(skin::SELECT_HEIGHT);
-    let add = Rect::from_min_size(pos2(row.left() + 12.0, row.top()), vec2(72.0, row.height()));
+    let add = Rect::from_min_size(row.min, vec2(80.0, row.height()));
     if form.button(add, ("pan.add", 0), "＋ 追加") {
         let mut n = edited.video.pans.len() + 1;
         let mut name = format!("プリセット {n}");
@@ -125,17 +158,13 @@ pub(super) fn pans(form: &mut Form<'_, '_>, edited: &mut File, loaded: &File) {
     }
 }
 
-/// 行 `row` の `at` に短い札を書き、その右端を返す。
-fn said(form: &mut Form<'_, '_>, at: f32, row: Rect, text: &str) -> f32 {
-    let colour = form.look.label;
-    let rect = form.ui.painter().text(
-        pos2(at, row.center().y),
-        egui::Align2::LEFT_CENTER,
-        text,
-        FontId::proportional(skin::TEXT_SIZE),
-        colour,
+/// 行の上の区切り線。1 行目では見出しとの境になる。
+fn hline(form: &Form<'_, '_>, row: Rect) {
+    form.ui.painter().hline(
+        row.x_range(),
+        row.top() - 3.0,
+        Stroke::new(1.0, form.look.edge),
     );
-    rect.right() + 4.0
 }
 
 /// 比率の選択肢：決まった物とプリセット。

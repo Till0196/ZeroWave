@@ -38,6 +38,42 @@ impl<'u, 'a> Form<'u, 'a> {
         }
     }
 
+    /// `body` を本文にして `at` から描く。
+    pub(super) fn within<R>(
+        &mut self,
+        body: Rect,
+        at: &mut f32,
+        draw: impl FnOnce(&mut Form<'_, '_>) -> R,
+    ) -> R {
+        draw(&mut Form {
+            ui: &mut *self.ui,
+            look: self.look,
+            body,
+            at,
+            overridden: self.overridden,
+            next_key: None,
+        })
+    }
+
+    /// [`Self::within`] と同じで、`body` の外には描かない。
+    pub(super) fn clipped<R>(
+        &mut self,
+        body: Rect,
+        at: &mut f32,
+        draw: impl FnOnce(&mut Form<'_, '_>) -> R,
+    ) -> R {
+        let mut inner = self.ui.new_child(egui::UiBuilder::new().max_rect(body));
+        inner.set_clip_rect(body.intersect(self.ui.clip_rect()));
+        draw(&mut Form {
+            ui: &mut inner,
+            look: self.look,
+            body,
+            at,
+            overridden: self.overridden,
+            next_key: None,
+        })
+    }
+
     pub(super) fn foot(root: &'u mut Ui, look: &'a Look, foot: Rect, at: &'a mut f32) -> Self {
         root.painter().rect_filled(foot, 0.0, look.dark);
         root.painter().line_segment(

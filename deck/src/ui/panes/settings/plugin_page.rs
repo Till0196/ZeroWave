@@ -6,6 +6,7 @@
 use egui::{Color32, FontId, Rect, Sense, Stroke, pos2, vec2};
 use zwsdk::ui::{Cell, Event, Inline, Node, Tone};
 
+use super::fill::{Fill, TRACK};
 use super::form::Label;
 use super::plugin_bound::{self, Bound};
 use super::{Form, Look, Pressed, State, scroll_bar, scrolled, skin};
@@ -893,12 +894,8 @@ fn table(
 
 const FRAME_ROUNDING: u8 = 6;
 
-/// ページの残りを埋めてスクロールする所の、上と下の余白と最小の高さ。上は表の枠の線が切れないだけ空ける。
-const FILL_TOP: f32 = 2.0;
-const FILL_BOTTOM: f32 = 8.0;
-const FILL_LEAST: f32 = 40.0;
-/// スクロールバーを掴める幅（`bar_track`）。
-const TRACK: f32 = 12.0;
+/// スクロールする所の中身の上の余白。表の枠の線が切れないだけ空ける。
+const LEAD: f32 = 2.0;
 
 /// 左右を別々にスクロールする [`Node::Columns`] か [`Node::Scroll`] があれば、ページ自体はスクロールしない。
 fn fills(nodes: &[Node]) -> bool {
@@ -908,10 +905,6 @@ fn fills(nodes: &[Node]) -> bool {
             Node::Columns { scroll: true, .. } | Node::Scroll { .. }
         )
     })
-}
-
-fn fill_bottom(form: &Form<'_, '_>) -> f32 {
-    (form.body.bottom() - FILL_BOTTOM).max(*form.at + FILL_LEAST)
 }
 
 /// 列ごとの、スクロールする項目と下に固定する項目。
@@ -930,14 +923,13 @@ fn columns(
     let left_x = (form.body.left(), split + skin::PAD);
     let right_x = (split, form.body.right());
     if !scroll {
-        let look = form.look;
         let mut side = |(from, to): (f32, f32), nodes: &[Node], foot: &[Node]| {
-            let rect =
+            let body =
                 Rect::from_min_max(pos2(from, form.body.top()), pos2(to, form.body.bottom()));
             let mut at = top;
-            let mut sub = Form::new(form.ui, look, rect, &mut at);
-            let said =
-                render(&mut sub, nodes, scope, bound).or(render(&mut sub, foot, scope, bound));
+            let said = form.within(body, &mut at, |sub| {
+                render(sub, nodes, scope, bound).or(render(sub, foot, scope, bound))
+            });
             (said, at)
         };
         let (said_left, left_at) = side(left_x, left, left_foot);
@@ -945,29 +937,31 @@ fn columns(
         *form.at = left_at.max(right_at);
         return said_left.or(said_right);
     }
-    let bottom = fill_bottom(form);
-    let rect = |(from, to): (f32, f32)| Rect::from_min_max(pos2(from, top), pos2(to, bottom));
+    let left_fill = Fill::begin(form, ("plugin", scope, "left"), left_x);
+    let right_fill = Fill::begin(form, ("plugin", scope, "right"), right_x);
     // 左のスクロールバーは左の列の中身のすぐ右に置き、ホイールの効く範囲は境の中ほどで分ける。
     let middle = split + TRACK;
-    let said_left = scroll_area(
+    let said_left = filled(
         form,
-        (scope, "left"),
-        rect(left_x),
+        &left_fill,
         (left_x.0, middle),
         left,
         left_foot,
+        scope,
         bound,
     );
-    let said_right = scroll_area(
+    let left_at = *form.at;
+    let right_span = (middle, form.body.right() - skin::PAD + TRACK);
+    let said_right = filled(
         form,
-        (scope, "right"),
-        rect(right_x),
-        (middle, right_x.1),
+        &right_fill,
+        right_span,
         right,
         right_foot,
+        scope,
         bound,
     );
-    *form.at = bottom;
+    *form.at = form.at.max(left_at);
     said_left.or(said_right)
 }
 
@@ -980,77 +974,26 @@ fn scroll(
     foot: &[Node],
     bound: &mut Bound<'_>,
 ) -> Option<Event> {
-    let bottom = fill_bottom(form);
-    let rect = Rect::from_min_max(
-        pos2(form.body.left(), *form.at),
-        pos2(form.body.right(), bottom),
-    );
-    // スクロールバーは中身の右端のすぐ右に置く。
-    let said = scroll_area(
-        form,
-        (scope, index),
-        rect,
-        (rect.left(), rect.right() - skin::PAD + TRACK),
-        nodes,
-        foot,
-        bound,
-    );
-    *form.at = bottom;
-    said
+    let x = (form.body.left(), form.body.right());
+    let fill = Fill::begin(form, ("plugin", scope, index), x);
+    let span = (x.0, x.1 - skin::PAD + TRACK);
+    filled(form, &fill, span, nodes, foot, scope, bound)
 }
 
-/// `rect` の中だけに描き、スクロールの位置と下に固定する項目の高さは egui のメモリーに持つ。
-/// `span` はスクロールバーとホイールの効く左右の範囲で、バーはその右端に出す。
-fn scroll_area(
+fn filled(
     form: &mut Form<'_, '_>,
-    (scope, which): (&str, impl std::hash::Hash + std::fmt::Debug),
-    rect: Rect,
+    fill: &Fill,
     span: (f32, f32),
     nodes: &[Node],
     foot: &[Node],
+    scope: &str,
     bound: &mut Bound<'_>,
 ) -> Option<Event> {
-    let look = form.look;
-    let id = form.ui.scope_id().with(("plugin.scroll", scope, which));
-    let foot_id = id.with("foot");
-    let (scroll, content): (f32, f32) = form.ui.data(|data| data.get_temp(id)).unwrap_or_default();
-    let foot_height: f32 = if foot.is_empty() {
-        0.0
-    } else {
-        form.ui
-            .data(|data| data.get_temp(foot_id))
-            .unwrap_or_default()
-    };
-    let body = rect.with_max_y((rect.bottom() - foot_height).max(rect.top()));
-    let wheel = body.with_min_x(span.0).with_max_x(span.1);
-    let scroll = scrolled(form.ui, wheel, scroll, content);
-    let mut at = body.top() + FILL_TOP - scroll;
-    let said = {
-        let mut inner = form.ui.new_child(egui::UiBuilder::new().max_rect(body));
-        inner.set_clip_rect(body.intersect(form.ui.clip_rect()));
-        let mut sub = Form::new(&mut inner, look, body, &mut at);
-        render(&mut sub, nodes, scope, bound)
-    };
-    let content = at + scroll - body.top() + 8.0;
-    scroll_bar(form.ui, look, wheel, scroll, content);
-    form.ui
-        .data_mut(|data| data.insert_temp(id, (scroll, content)));
+    let said = fill.scroll(form, span, LEAD, |sub| render(sub, nodes, scope, bound));
     if foot.is_empty() {
         return said;
     }
-    // 下に固定する項目の高さは描いてみるまで分からないので、前の回の高さで置き、変わったら描き直す。
-    let start = body.bottom() + skin::ROW_GAP * 2.0;
-    let mut foot_at = start;
-    let said_foot = {
-        let mut sub = Form::new(form.ui, look, rect, &mut foot_at);
-        render(&mut sub, foot, scope, bound)
-    };
-    let measured = foot_at - start + skin::ROW_GAP * 2.0;
-    if (measured - foot_height).abs() > 0.5 {
-        form.ui.data_mut(|data| data.insert_temp(foot_id, measured));
-        form.ui.ctx().request_repaint();
-    }
-    said.or(said_foot)
+    said.or(fill.foot(form, |sub| render(sub, foot, scope, bound)))
 }
 
 pub fn show_window(
