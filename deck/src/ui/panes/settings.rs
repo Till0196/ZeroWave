@@ -7,6 +7,7 @@ use egui::{Color32, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
 
 mod channels;
 mod codec;
+mod fill;
 mod form;
 mod keys;
 mod pans;
@@ -745,7 +746,13 @@ fn self_page(
         look.text,
     );
     let body = Rect::from_min_max(pos2(rect.left(), head.bottom()), rect.max);
-    state.scroll = scrolled(ui, body, state.scroll, state.content);
+    // 一覧だけをスクロールするページ（`fill`）は、ページ自体をスクロールしない。
+    let fill = matches!(page, Page::Keys | Page::Channels | Page::ChannelList);
+    state.scroll = if fill {
+        0.0
+    } else {
+        scrolled(ui, body, state.scroll, state.content)
+    };
     let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(body));
     inner.set_clip_rect(body);
     let mut at = body.top() + 6.0 - state.scroll;
@@ -896,7 +903,9 @@ fn self_page(
     }
     let content = at + state.scroll - body.top() + 8.0;
     state.content = content;
-    scroll_bar(ui, look, body, state.scroll, content);
+    if !fill {
+        scroll_bar(ui, look, body, state.scroll, content);
+    }
     pressed
 }
 

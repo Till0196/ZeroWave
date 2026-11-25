@@ -5,6 +5,7 @@
 
 use egui::{FontId, Rect, Stroke, pos2, vec2};
 
+use super::fill::{Fill, TRACK};
 use super::{File, Form, skin};
 
 pub(super) fn keys(
@@ -53,97 +54,107 @@ pub(super) fn keys(
             form.look.label,
         );
     }
-    for (index, action) in Action::all().into_iter().enumerate() {
-        let row = form.line(32.0);
-        form.ui.painter().hline(
-            row.x_range(),
-            row.top() - 3.0,
-            Stroke::new(1.0, form.look.edge),
-        );
-        let text = form.look.text;
-        form.fitted(
-            pos2(row.left() + 10.0, row.center().y),
-            &action.label(),
-            key_left - 10.0 - row.left() - 10.0,
-            FontId::proportional(skin::TEXT_SIZE),
-            text,
-        );
-        let chord = bindings.chord_of(action);
-        let waiting = *capturing == Some(action);
-        let key_rect =
-            Rect::from_min_size(pos2(key_left, row.center().y - 13.0), vec2(170.0, 26.0));
-        let response = form.ui.interact(
-            key_rect,
-            form.ui.scope_id().with(("keys.bind", index)),
-            egui::Sense::click(),
-        );
-        let painter = form.ui.painter();
-        painter.rect_filled(key_rect, skin::SELECT_ROUNDING, form.look.select_fill);
-        painter.rect_stroke(
-            key_rect,
-            skin::SELECT_ROUNDING,
-            Stroke::new(
-                1.0,
-                if waiting {
-                    form.look.primary
-                } else {
-                    form.look.select_edge
-                },
-            ),
-            egui::StrokeKind::Inside,
-        );
-        painter.text(
-            pos2(key_rect.left() + 10.0, key_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            if waiting {
-                String::from("キーを押してください")
-            } else {
-                chord.map_or(String::from("（なし）"), Chord::shown)
-            },
-            FontId::proportional(skin::TEXT_SIZE),
-            if waiting {
-                form.look.chosen_text
-            } else if chord.is_some() {
-                form.look.text
-            } else {
-                form.look.label
-            },
-        );
-        if response.clicked() {
-            *capturing = if waiting { None } else { Some(action) };
-        }
-        if chord.is_some()
-            && !waiting
-            && form.button(
-                Rect::from_min_size(
-                    pos2(key_rect.right() + 10.0, row.center().y - 13.0),
-                    vec2(60.0, 26.0),
+    // 見出しは止めて行だけをスクロールする。1 行目の上の線まで入れる。
+    *form.at = head.bottom() + 2.0;
+    let fill = Fill::begin(form, "keys", (form.body.left(), form.body.right()));
+    let span = (form.body.left(), head.right() + TRACK);
+    fill.scroll(form, span, 4.0, |form| {
+        for (index, action) in Action::all().into_iter().enumerate() {
+            let row = form.line(32.0);
+            form.ui.painter().hline(
+                row.x_range(),
+                row.top() - 3.0,
+                Stroke::new(1.0, form.look.edge),
+            );
+            let text = form.look.text;
+            form.fitted(
+                pos2(row.left() + 10.0, row.center().y),
+                &action.label(),
+                key_left - 10.0 - row.left() - 10.0,
+                FontId::proportional(skin::TEXT_SIZE),
+                text,
+            );
+            let chord = bindings.chord_of(action);
+            let waiting = *capturing == Some(action);
+            let key_rect =
+                Rect::from_min_size(pos2(key_left, row.center().y - 13.0), vec2(170.0, 26.0));
+            let response = form.ui.interact(
+                key_rect,
+                form.ui.scope_id().with(("keys.bind", index)),
+                egui::Sense::click(),
+            );
+            let painter = form.ui.painter();
+            painter.rect_filled(key_rect, skin::SELECT_ROUNDING, form.look.select_fill);
+            painter.rect_stroke(
+                key_rect,
+                skin::SELECT_ROUNDING,
+                Stroke::new(
+                    1.0,
+                    if waiting {
+                        form.look.primary
+                    } else {
+                        form.look.select_edge
+                    },
                 ),
-                ("keys.unbind", index),
-                "解除",
-            )
-        {
-            bindings.unbind(action);
-            changed = true;
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                pos2(key_rect.left() + 10.0, key_rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                if waiting {
+                    String::from("キーを押してください")
+                } else {
+                    chord.map_or(String::from("（なし）"), Chord::shown)
+                },
+                FontId::proportional(skin::TEXT_SIZE),
+                if waiting {
+                    form.look.chosen_text
+                } else if chord.is_some() {
+                    form.look.text
+                } else {
+                    form.look.label
+                },
+            );
+            if response.clicked() {
+                *capturing = if waiting { None } else { Some(action) };
+            }
+            if chord.is_some()
+                && !waiting
+                && form.button(
+                    Rect::from_min_size(
+                        pos2(key_rect.right() + 10.0, row.center().y - 13.0),
+                        vec2(60.0, 26.0),
+                    ),
+                    ("keys.unbind", index),
+                    "解除",
+                )
+            {
+                bindings.unbind(action);
+                changed = true;
+            }
         }
-    }
-    let frame = Rect::from_min_max(pos2(head.left(), top), pos2(head.right(), *form.at - 2.0));
+    });
+    let frame = Rect::from_min_max(
+        pos2(head.left(), top),
+        pos2(head.right(), fill.rect().bottom()),
+    );
     form.ui.painter().rect_stroke(
         frame,
         6.0,
         Stroke::new(1.0, form.look.button_edge),
         egui::StrokeKind::Inside,
     );
-    *form.at += 4.0;
-    let row = form.line(skin::SELECT_HEIGHT);
-    if form.button(
-        Rect::from_min_size(row.min, vec2(100.0, row.height())),
-        ("keys.default", 0),
-        "既定に戻す",
-    ) {
-        bindings = Bindings::of(&std::collections::BTreeMap::new());
-        changed = true;
-    }
+    fill.foot(form, |form| {
+        let row = form.line(skin::SELECT_HEIGHT);
+        if form.button(
+            Rect::from_min_size(row.min, vec2(100.0, row.height())),
+            ("keys.default", 0),
+            "既定に戻す",
+        ) {
+            bindings = Bindings::of(&std::collections::BTreeMap::new());
+            changed = true;
+        }
+    });
     if changed {
         edited.keys = bindings.changes_from_default();
     }

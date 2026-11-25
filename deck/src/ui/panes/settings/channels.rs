@@ -5,6 +5,7 @@
 
 use egui::{FontId, Rect, Sense, pos2, vec2};
 
+use super::fill::{Fill, TRACK};
 use super::{File, Form, Pressed, skin};
 use crate::ui::icons::Icon;
 
@@ -51,102 +52,110 @@ pub(super) fn channels(
     // 画面では「4, 0x7880-0x7fef」の一つの文字列で持ち、ファイルには配列で書く。
     let mut remove = None;
     let mut moved = None;
-    for index in 0..edited.networks.len() {
-        let row = form.line(32.0);
-        form.ui.painter().hline(
-            row.x_range(),
-            row.top() - 3.0,
-            egui::Stroke::new(1.0, form.look.edge),
-        );
-        let field = |x: f32, width: f32| {
-            Rect::from_min_size(pos2(x, row.center().y - 13.0), vec2(width, 26.0))
-        };
-        let network = &mut edited.networks[index];
-        form.field(
-            field(left, NAME),
-            ("network.name", index),
-            &mut network.name,
-            "表示名",
-        );
-        let mut text = nids_text(&network.nids);
-        let before = text.clone();
-        form.field(
-            field(left + NAME + 8.0, NIDS),
-            ("network.nids", index),
-            &mut text,
-            "例: 0x7880-0x7fef, 4",
-        );
-        if text != before {
-            network.nids = nids_of(&text);
-        }
-        let ranges: Vec<(u16, u16)> = network
-            .nids
-            .iter()
-            .filter_map(crate::config::key::pattern_of)
-            .map(|pattern| match pattern {
-                crate::config::key::Pattern::One(n) => (n, n),
-                crate::config::key::Pattern::Range(from, to) => (from, to),
-                crate::config::key::Pattern::Any => (0, u16::MAX),
-            })
-            .collect();
-        let mut x = route_left;
-        if let Some(kind) = coaxd.as_ref().filter(|_| routes_fit) {
-            for plan in super::PLANS {
-                let count = reach.get(*plan).map_or(0, |keys| {
-                    keys.iter()
-                        .filter(|key| {
-                            ranges
-                                .iter()
-                                .any(|(from, to)| (*from..=*to).contains(&key.network))
-                        })
-                        .count()
-                });
-                if count == 0 || x > order_left - 60.0 {
-                    continue;
+    // 見出しは止めて行だけをスクロールする。1 行目の上の線まで入れる。
+    *form.at = head.bottom() + 2.0;
+    let fill = Fill::begin(form, "networks", (form.body.left(), form.body.right()));
+    let span = (form.body.left(), head.right() + TRACK);
+    fill.scroll(form, span, 4.0, |form| {
+        for index in 0..edited.networks.len() {
+            let row = form.line(32.0);
+            form.ui.painter().hline(
+                row.x_range(),
+                row.top() - 3.0,
+                egui::Stroke::new(1.0, form.look.edge),
+            );
+            let field = |x: f32, width: f32| {
+                Rect::from_min_size(pos2(x, row.center().y - 13.0), vec2(width, 26.0))
+            };
+            let network = &mut edited.networks[index];
+            form.field(
+                field(left, NAME),
+                ("network.name", index),
+                &mut network.name,
+                "表示名",
+            );
+            let mut text = nids_text(&network.nids);
+            let before = text.clone();
+            form.field(
+                field(left + NAME + 8.0, NIDS),
+                ("network.nids", index),
+                &mut text,
+                "例: 0x7880-0x7fef, 4",
+            );
+            if text != before {
+                network.nids = nids_of(&text);
+            }
+            let ranges: Vec<(u16, u16)> = network
+                .nids
+                .iter()
+                .filter_map(crate::config::key::pattern_of)
+                .map(|pattern| match pattern {
+                    crate::config::key::Pattern::One(n) => (n, n),
+                    crate::config::key::Pattern::Range(from, to) => (from, to),
+                    crate::config::key::Pattern::Any => (0, u16::MAX),
+                })
+                .collect();
+            let mut x = route_left;
+            if let Some(kind) = coaxd.as_ref().filter(|_| routes_fit) {
+                for plan in super::PLANS {
+                    let count = reach.get(*plan).map_or(0, |keys| {
+                        keys.iter()
+                            .filter(|key| {
+                                ranges
+                                    .iter()
+                                    .any(|(from, to)| (*from..=*to).contains(&key.network))
+                            })
+                            .count()
+                    });
+                    if count == 0 || x > order_left - 60.0 {
+                        continue;
+                    }
+                    x += form.kind_tag(pos2(x, row.center().y), kind) + 4.0;
+                    let (shown, _) = super::offered(plan);
+                    let galley = form.ui.painter().layout_no_wrap(
+                        format!("{shown} {count} 局"),
+                        FontId::proportional(skin::TEXT_SIZE - 1.0),
+                        form.look.label,
+                    );
+                    let width = galley.size().x;
+                    form.ui.painter().galley(
+                        pos2(x, row.center().y - galley.size().y / 2.0),
+                        galley,
+                        form.look.label,
+                    );
+                    x += width + 10.0;
                 }
-                x += form.kind_tag(pos2(x, row.center().y), kind) + 4.0;
-                let (shown, _) = super::offered(plan);
-                let galley = form.ui.painter().layout_no_wrap(
-                    format!("{shown} {count} 局"),
-                    FontId::proportional(skin::TEXT_SIZE - 1.0),
-                    form.look.label,
-                );
-                let width = galley.size().x;
-                form.ui.painter().galley(
-                    pos2(x, row.center().y - galley.size().y / 2.0),
-                    galley,
-                    form.look.label,
-                );
-                x += width + 10.0;
+            }
+            let up = Rect::from_min_size(pos2(order_left, row.center().y - 13.0), vec2(26.0, 26.0));
+            if form.button(up, ("network.move", index, -1), Icon::ArrowUp) {
+                moved = Some((index, -1i32));
+            }
+            let down = Rect::from_min_size(pos2(up.right() + 4.0, up.top()), up.size());
+            if form.button(down, ("network.move", index, 1), Icon::ArrowDown) {
+                moved = Some((index, 1));
+            }
+            if form.button(
+                Rect::from_min_size(
+                    pos2(head.right() - 8.0 - DELETE, row.center().y - 13.0),
+                    vec2(DELETE, 26.0),
+                ),
+                ("network.delete", index),
+                "削除",
+            ) {
+                remove = Some(index);
             }
         }
-        let up = Rect::from_min_size(pos2(order_left, row.center().y - 13.0), vec2(26.0, 26.0));
-        if form.button(up, ("network.move", index, -1), Icon::ArrowUp) {
-            moved = Some((index, -1i32));
-        }
-        let down = Rect::from_min_size(pos2(up.right() + 4.0, up.top()), up.size());
-        if form.button(down, ("network.move", index, 1), Icon::ArrowDown) {
-            moved = Some((index, 1));
-        }
-        if form.button(
-            Rect::from_min_size(
-                pos2(head.right() - 8.0 - DELETE, row.center().y - 13.0),
-                vec2(DELETE, 26.0),
-            ),
-            ("network.delete", index),
-            "削除",
-        ) {
-            remove = Some(index);
-        }
-    }
-    let frame = Rect::from_min_max(pos2(head.left(), top), pos2(head.right(), *form.at - 2.0));
+    });
+    let frame = Rect::from_min_max(
+        pos2(head.left(), top),
+        pos2(head.right(), fill.rect().bottom()),
+    );
     form.ui.painter().rect_stroke(
         frame,
         6.0,
         egui::Stroke::new(1.0, form.look.button_edge),
         egui::StrokeKind::Inside,
     );
-    *form.at += 4.0;
     if let Some((index, by)) = moved {
         let to = index as i32 + by;
         if to >= 0 && (to as usize) < edited.networks.len() {
@@ -156,24 +165,26 @@ pub(super) fn channels(
     if let Some(index) = remove {
         edited.networks.remove(index);
     }
-    let row = form.line(skin::SELECT_HEIGHT);
-    if form.button(
-        Rect::from_min_size(row.min, vec2(80.0, row.height())),
-        ("network.add", 0),
-        "＋ 追加",
-    ) {
-        edited.networks.push(Network::default());
-    }
-    if form.button(
-        Rect::from_min_size(
-            pos2(row.left() + 88.0, row.top()),
-            vec2(100.0, row.height()),
-        ),
-        ("network.default", 0),
-        "既定に戻す",
-    ) {
-        edited.networks = default_networks();
-    }
+    fill.foot(form, |form| {
+        let row = form.line(skin::SELECT_HEIGHT);
+        if form.button(
+            Rect::from_min_size(row.min, vec2(80.0, row.height())),
+            ("network.add", 0),
+            "＋ 追加",
+        ) {
+            edited.networks.push(Network::default());
+        }
+        if form.button(
+            Rect::from_min_size(
+                pos2(row.left() + 88.0, row.top()),
+                vec2(100.0, row.height()),
+            ),
+            ("network.default", 0),
+            "既定に戻す",
+        ) {
+            edited.networks = default_networks();
+        }
+    });
     None
 }
 
@@ -413,325 +424,333 @@ pub(super) fn channel_list(
         .filter(|service| line_filter.is_empty() || lines_of(service.key()).contains(line_filter))
         .collect();
     services.sort_by_key(|service| service.order());
-    if services.is_empty() {
-        form.note("このタブに局はありません（番組表が集まると並びます）");
-    }
-    for (index, service) in services.into_iter().enumerate() {
-        let key = service.key();
-        let spelled = key::written(key);
-        let row = form.line(30.0);
-        let hidden = shown
-            .hide
-            .iter()
-            .filter_map(|text| KeyPattern::parse(text))
-            .any(|pattern| pattern.matches(key));
-        let chosen = *mark == Some(key);
-        if chosen {
-            form.ui
-                .painter()
-                .rect_filled(row, 4.0, form.look.chosen_fill);
-        } else {
-            form.ui.painter().hline(
-                row.x_range(),
-                row.top() - 3.0,
-                egui::Stroke::new(1.0, form.look.edge),
-            );
+    // タブと見出しは止めて局の行だけをスクロールし、選んだ局の詳しい情報は下に固定する。1 行目の上の線まで入れる。
+    *form.at = head.bottom() + 2.0;
+    let fill = Fill::begin(form, "channel.list", (form.body.left(), form.body.right()));
+    let span = (form.body.left(), head.right() + TRACK);
+    fill.scroll(form, span, 4.0, |form| {
+        if services.is_empty() {
+            form.note("このタブに局はありません（番組表が集まると並びます）");
         }
-        let hit = form.ui.interact(
-            Rect::from_min_max(
-                pos2(columns[1], row.top()),
-                pos2(columns[2] - 4.0, row.bottom()),
-            ),
-            form.ui.scope_id().with(("channel.mark", index)),
-            Sense::click(),
-        );
-        if hit.clicked() {
-            *mark = if chosen { None } else { Some(key) };
-        }
-        let cell = |x: f32| Rect::from_min_size(pos2(x, row.center().y - 12.0), vec2(0.0, 24.0));
-        let mut number = shown
-            .key
-            .get(&spelled)
-            .map_or(String::new(), |n| n.to_string());
-        let before = number.clone();
-        form.field(
-            Rect::from_min_size(cell(columns[0]).min, vec2(NUMBER - 4.0, 24.0)),
-            ("channel.key", index),
-            &mut number,
-            &service
-                .remote_key
-                .map_or(String::from("—"), |n| n.to_string()),
-        );
-        if number != before {
-            let number = number
-                .trim()
-                .parse::<u32>()
-                .ok()
-                .filter(|n| (1..=99).contains(n));
-            set_key(edited, profile, &spelled, number);
-        }
-        let unconfirmed = service.name.ends_with("（未確認）");
-        let name_shown = service.name.trim_end_matches("（未確認）");
-        let colour = if hidden {
-            form.look.label
-        } else {
-            form.look.text
-        };
-        let name_cell = Rect::from_min_max(
-            pos2(columns[1], row.top()),
-            pos2(columns[2] - 8.0, row.bottom()),
-        );
-        form.ui.painter().with_clip_rect(name_cell).text(
-            pos2(name_cell.left(), name_cell.center().y),
-            egui::Align2::LEFT_CENTER,
-            name_shown,
-            FontId::proportional(skin::TEXT_SIZE),
-            colour,
-        );
-        let mut name = shown.name.get(&spelled).cloned().unwrap_or_default();
-        let before = name.clone();
-        form.field(
-            Rect::from_min_size(cell(columns[2]).min, vec2(NAME - 4.0, 24.0)),
-            ("channel.name", index),
-            &mut name,
-            "（そのまま）",
-        );
-        if name != before {
-            let name = (!name.trim().is_empty()).then_some(name);
-            set_name(edited, profile, &spelled, name);
-        }
-        if form.tick(
-            Rect::from_min_size(pos2(columns[3], row.top()), vec2(20.0, row.height())),
-            ("channel.hide", index),
-            hidden,
-        ) {
-            let mut hide = shown.hide.clone();
-            if hidden {
-                hide.retain(|text| {
-                    KeyPattern::parse(text).is_none_or(|pattern| !pattern.matches(key))
-                });
-            } else {
-                hide.push(spelled.clone());
-            }
-            set_hide(edited, profile, hide);
-        }
-        if unconfirmed {
-            form.ui.painter().text(
-                pos2(columns[4], row.center().y),
-                egui::Align2::LEFT_CENTER,
-                "未確認（NITから検出）",
-                FontId::proportional(skin::TEXT_SIZE - 0.5),
-                form.look.typed,
-            );
-        }
-    }
-
-    let mut pressed = None;
-    if let Some(key) = *mark
-        && let Some(service) = all.iter().find(|service| service.key() == key)
-    {
-        *form.at += 8.0;
-        let top = *form.at;
-        let spelled = key::written(key);
-        let left = form.label_left() - skin::DOT;
-        let row = form.line(24.0);
-        form.ui.painter().text(
-            pos2(left + 6.0, row.center().y),
-            egui::Align2::LEFT_CENTER,
-            service.name.trim_end_matches("（未確認）"),
-            FontId::proportional(skin::TEXT_SIZE + 0.5),
-            form.look.text,
-        );
-        let row = form.line(24.0);
-        form.ui.painter().text(
-            pos2(left + 6.0, row.center().y),
-            egui::Align2::LEFT_CENTER,
-            "ID",
-            FontId::proportional(skin::TEXT_SIZE),
-            form.look.label,
-        );
-        let mut id = format!(
-            "NID {}・SID {}・TSID {}",
-            zwcore::si::hex_id(key.network, 4),
-            zwcore::si::hex_id(key.service, 4),
-            zwcore::si::hex_id(service.transport, 4)
-        );
-        if let Some(slot) = slot_of(channels, key.network, service.transport) {
-            let split = split_of(channels, key.network, service.transport);
-            id.push_str(&format!("（TSMF {slot}"));
-            if split > 1 {
-                id.push_str(&format!("・搬送波 {split} 本"));
-            }
-            id.push('）');
-        }
-        let galley = form.ui.painter().layout_no_wrap(
-            id,
-            FontId::proportional(skin::TEXT_SIZE),
-            form.look.text,
-        );
-        let id_width = galley.size().x;
-        let value_left = left + 6.0 + 100.0;
-        form.ui.painter().galley(
-            pos2(value_left, row.center().y - galley.size().y / 2.0),
-            galley,
-            form.look.text,
-        );
-        let key_rect = Rect::from_min_size(
-            pos2(value_left + id_width + 8.0, row.top()),
-            vec2(spelled.len() as f32 * 7.0 + 8.0, row.height()),
-        );
-        let copy = form.ui.interact(
-            key_rect,
-            form.ui.scope_id().with(("channel.copy", 0)),
-            Sense::click(),
-        );
-        form.ui.painter().text(
-            pos2(key_rect.left(), key_rect.center().y),
-            egui::Align2::LEFT_CENTER,
-            &spelled,
-            FontId::monospace(skin::TEXT_SIZE - 1.0),
-            if copy.hovered() {
-                form.look.chosen_text
-            } else {
-                form.look.group
-            },
-        );
-        if copy.clicked() {
-            pressed = Some(Pressed::CopyKey(spelled.clone()));
-        }
-        let copy = copy.on_hover_text("クリックでコピー");
-        let _ = copy;
-        let lines = lines_of(key);
-        let mut rows: Vec<(String, String, String)> = Vec::new();
-        for line in &lines {
-            let using: Vec<String> = boards
+        for (index, service) in services.into_iter().enumerate() {
+            let key = service.key();
+            let spelled = key::written(key);
+            let row = form.line(30.0);
+            let hidden = shown
+                .hide
                 .iter()
-                .flat_map(|board| &board.tuners)
-                .map(|held| &held.tuner)
-                .filter(|tuner| {
-                    let (_, system) = super::offered(line);
-                    super::scan::systems_of(edited, tuner)
-                        .iter()
-                        .any(|one| zwcore::input::source::coaxd::same_system(one, system))
-                })
-                .map(|tuner| tuner.label())
-                .collect();
-            let carrier = channels
-                .lines
-                .get(line)
-                .and_then(|table| {
-                    table.streams.get(&crate::config::key::Stream {
-                        network: key.network,
-                        transport: service.transport,
-                    })
-                })
-                .and_then(|carriers| carriers.first())
-                .map(carrier_text)
-                .unwrap_or_default();
-            let tuners = if using.is_empty() {
-                String::from("使えるチューナーがありません")
+                .filter_map(|text| KeyPattern::parse(text))
+                .any(|pattern| pattern.matches(key));
+            let chosen = *mark == Some(key);
+            if chosen {
+                form.ui
+                    .painter()
+                    .rect_filled(row, 4.0, form.look.chosen_fill);
             } else {
-                using.join("・")
-            };
-            let (shown, _) = super::offered(line);
-            rows.push((
-                coaxd_kind.clone(),
-                shown.to_owned(),
-                format!("{tuners}　{carrier}"),
-            ));
-        }
-        for label in &mirakurun {
-            rows.push((
-                String::from("mirakurun"),
-                label.clone(),
-                format!(
-                    "NID {} / SID {}",
-                    zwcore::si::hex_id(key.network, 4),
-                    zwcore::si::hex_id(key.service, 4)
+                form.ui.painter().hline(
+                    row.x_range(),
+                    row.top() - 3.0,
+                    egui::Stroke::new(1.0, form.look.edge),
+                );
+            }
+            let hit = form.ui.interact(
+                Rect::from_min_max(
+                    pos2(columns[1], row.top()),
+                    pos2(columns[2] - 4.0, row.bottom()),
                 ),
-            ));
+                form.ui.scope_id().with(("channel.mark", index)),
+                Sense::click(),
+            );
+            if hit.clicked() {
+                *mark = if chosen { None } else { Some(key) };
+            }
+            let cell =
+                |x: f32| Rect::from_min_size(pos2(x, row.center().y - 12.0), vec2(0.0, 24.0));
+            let mut number = shown
+                .key
+                .get(&spelled)
+                .map_or(String::new(), |n| n.to_string());
+            let before = number.clone();
+            form.field(
+                Rect::from_min_size(cell(columns[0]).min, vec2(NUMBER - 4.0, 24.0)),
+                ("channel.key", index),
+                &mut number,
+                &service
+                    .remote_key
+                    .map_or(String::from("—"), |n| n.to_string()),
+            );
+            if number != before {
+                let number = number
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|n| (1..=99).contains(n));
+                set_key(edited, profile, &spelled, number);
+            }
+            let unconfirmed = service.name.ends_with("（未確認）");
+            let name_shown = service.name.trim_end_matches("（未確認）");
+            let colour = if hidden {
+                form.look.label
+            } else {
+                form.look.text
+            };
+            let name_cell = Rect::from_min_max(
+                pos2(columns[1], row.top()),
+                pos2(columns[2] - 8.0, row.bottom()),
+            );
+            form.ui.painter().with_clip_rect(name_cell).text(
+                pos2(name_cell.left(), name_cell.center().y),
+                egui::Align2::LEFT_CENTER,
+                name_shown,
+                FontId::proportional(skin::TEXT_SIZE),
+                colour,
+            );
+            let mut name = shown.name.get(&spelled).cloned().unwrap_or_default();
+            let before = name.clone();
+            form.field(
+                Rect::from_min_size(cell(columns[2]).min, vec2(NAME - 4.0, 24.0)),
+                ("channel.name", index),
+                &mut name,
+                "（そのまま）",
+            );
+            if name != before {
+                let name = (!name.trim().is_empty()).then_some(name);
+                set_name(edited, profile, &spelled, name);
+            }
+            if form.tick(
+                Rect::from_min_size(pos2(columns[3], row.top()), vec2(20.0, row.height())),
+                ("channel.hide", index),
+                hidden,
+            ) {
+                let mut hide = shown.hide.clone();
+                if hidden {
+                    hide.retain(|text| {
+                        KeyPattern::parse(text).is_none_or(|pattern| !pattern.matches(key))
+                    });
+                } else {
+                    hide.push(spelled.clone());
+                }
+                set_hide(edited, profile, hide);
+            }
+            if unconfirmed {
+                form.ui.painter().text(
+                    pos2(columns[4], row.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "未確認（NITから検出）",
+                    FontId::proportional(skin::TEXT_SIZE - 0.5),
+                    form.look.typed,
+                );
+            }
         }
-        // 見出しは一行目の高さに（無いときの「スキャン結果にありません」の行も含めて）。
-        let first = *form.at;
-        if rows.is_empty() {
+    });
+    fill.foot(form, |form| {
+        let mut pressed = None;
+        if let Some(key) = *mark
+            && let Some(service) = all.iter().find(|service| service.key() == key)
+        {
+            *form.at += 8.0;
+            let top = *form.at;
+            let spelled = key::written(key);
+            let left = form.label_left() - skin::DOT;
             let row = form.line(24.0);
             form.ui.painter().text(
-                pos2(value_left, row.center().y),
+                pos2(left + 6.0, row.center().y),
                 egui::Align2::LEFT_CENTER,
-                "スキャン結果にありません",
+                service.name.trim_end_matches("（未確認）"),
+                FontId::proportional(skin::TEXT_SIZE + 0.5),
+                form.look.text,
+            );
+            let row = form.line(24.0);
+            form.ui.painter().text(
+                pos2(left + 6.0, row.center().y),
+                egui::Align2::LEFT_CENTER,
+                "ID",
                 FontId::proportional(skin::TEXT_SIZE),
                 form.look.label,
             );
-        }
-        for (at, (kind, route, detail)) in rows.iter().enumerate() {
-            let row = form.line(24.0);
-            let circle = pos2(value_left + 9.0, row.center().y);
-            form.ui.painter().circle_filled(
-                circle,
-                9.0,
-                if at == 0 {
-                    form.look.chosen_mark.gamma_multiply(0.35)
-                } else {
-                    form.look.select_edge
-                },
+            let mut id = format!(
+                "NID {}・SID {}・TSID {}",
+                zwcore::si::hex_id(key.network, 4),
+                zwcore::si::hex_id(key.service, 4),
+                zwcore::si::hex_id(service.transport, 4)
             );
-            form.ui.painter().text(
-                circle,
-                egui::Align2::CENTER_CENTER,
-                (at + 1).to_string(),
-                FontId::proportional(10.5),
-                if at == 0 {
-                    form.look.chosen_text
-                } else {
-                    form.look.label
-                },
-            );
-            let x = value_left + 26.0;
-            let width = form.kind_tag(pos2(x, row.center().y), kind);
-            form.ui.painter().text(
-                pos2(x + width + 6.0, row.center().y),
-                egui::Align2::LEFT_CENTER,
-                route,
+            if let Some(slot) = slot_of(channels, key.network, service.transport) {
+                let split = split_of(channels, key.network, service.transport);
+                id.push_str(&format!("（TSMF {slot}"));
+                if split > 1 {
+                    id.push_str(&format!("・搬送波 {split} 本"));
+                }
+                id.push('）');
+            }
+            let galley = form.ui.painter().layout_no_wrap(
+                id,
                 FontId::proportional(skin::TEXT_SIZE),
                 form.look.text,
             );
-            let cell = Rect::from_min_max(pos2(x + 176.0, row.top()), row.max);
-            form.ui.painter().with_clip_rect(cell).text(
-                pos2(cell.left(), cell.center().y),
+            let id_width = galley.size().x;
+            let value_left = left + 6.0 + 100.0;
+            form.ui.painter().galley(
+                pos2(value_left, row.center().y - galley.size().y / 2.0),
+                galley,
+                form.look.text,
+            );
+            let key_rect = Rect::from_min_size(
+                pos2(value_left + id_width + 8.0, row.top()),
+                vec2(spelled.len() as f32 * 7.0 + 8.0, row.height()),
+            );
+            let copy = form.ui.interact(
+                key_rect,
+                form.ui.scope_id().with(("channel.copy", 0)),
+                Sense::click(),
+            );
+            form.ui.painter().text(
+                pos2(key_rect.left(), key_rect.center().y),
                 egui::Align2::LEFT_CENTER,
-                detail,
+                &spelled,
+                FontId::monospace(skin::TEXT_SIZE - 1.0),
+                if copy.hovered() {
+                    form.look.chosen_text
+                } else {
+                    form.look.group
+                },
+            );
+            if copy.clicked() {
+                pressed = Some(Pressed::CopyKey(spelled.clone()));
+            }
+            let copy = copy.on_hover_text("クリックでコピー");
+            let _ = copy;
+            let lines = lines_of(key);
+            let mut rows: Vec<(String, String, String)> = Vec::new();
+            for line in &lines {
+                let using: Vec<String> = boards
+                    .iter()
+                    .flat_map(|board| &board.tuners)
+                    .map(|held| &held.tuner)
+                    .filter(|tuner| {
+                        let (_, system) = super::offered(line);
+                        super::scan::systems_of(edited, tuner)
+                            .iter()
+                            .any(|one| zwcore::input::source::coaxd::same_system(one, system))
+                    })
+                    .map(|tuner| tuner.label())
+                    .collect();
+                let carrier = channels
+                    .lines
+                    .get(line)
+                    .and_then(|table| {
+                        table.streams.get(&crate::config::key::Stream {
+                            network: key.network,
+                            transport: service.transport,
+                        })
+                    })
+                    .and_then(|carriers| carriers.first())
+                    .map(carrier_text)
+                    .unwrap_or_default();
+                let tuners = if using.is_empty() {
+                    String::from("使えるチューナーがありません")
+                } else {
+                    using.join("・")
+                };
+                let (shown, _) = super::offered(line);
+                rows.push((
+                    coaxd_kind.clone(),
+                    shown.to_owned(),
+                    format!("{tuners}　{carrier}"),
+                ));
+            }
+            for label in &mirakurun {
+                rows.push((
+                    String::from("mirakurun"),
+                    label.clone(),
+                    format!(
+                        "NID {} / SID {}",
+                        zwcore::si::hex_id(key.network, 4),
+                        zwcore::si::hex_id(key.service, 4)
+                    ),
+                ));
+            }
+            // 見出しは一行目の高さに（無いときの「スキャン結果にありません」の行も含めて）。
+            let first = *form.at;
+            if rows.is_empty() {
+                let row = form.line(24.0);
+                form.ui.painter().text(
+                    pos2(value_left, row.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    "スキャン結果にありません",
+                    FontId::proportional(skin::TEXT_SIZE),
+                    form.look.label,
+                );
+            }
+            for (at, (kind, route, detail)) in rows.iter().enumerate() {
+                let row = form.line(24.0);
+                let circle = pos2(value_left + 9.0, row.center().y);
+                form.ui.painter().circle_filled(
+                    circle,
+                    9.0,
+                    if at == 0 {
+                        form.look.chosen_mark.gamma_multiply(0.35)
+                    } else {
+                        form.look.select_edge
+                    },
+                );
+                form.ui.painter().text(
+                    circle,
+                    egui::Align2::CENTER_CENTER,
+                    (at + 1).to_string(),
+                    FontId::proportional(10.5),
+                    if at == 0 {
+                        form.look.chosen_text
+                    } else {
+                        form.look.label
+                    },
+                );
+                let x = value_left + 26.0;
+                let width = form.kind_tag(pos2(x, row.center().y), kind);
+                form.ui.painter().text(
+                    pos2(x + width + 6.0, row.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    route,
+                    FontId::proportional(skin::TEXT_SIZE),
+                    form.look.text,
+                );
+                let cell = Rect::from_min_max(pos2(x + 176.0, row.top()), row.max);
+                form.ui.painter().with_clip_rect(cell).text(
+                    pos2(cell.left(), cell.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    detail,
+                    FontId::proportional(skin::TEXT_SIZE),
+                    form.look.label,
+                );
+            }
+            form.ui.painter().text(
+                pos2(left + 6.0, first + 12.0),
+                egui::Align2::LEFT_CENTER,
+                "受信",
                 FontId::proportional(skin::TEXT_SIZE),
                 form.look.label,
             );
+            let row = form.line(20.0);
+            form.ui.painter().text(
+                pos2(left + 6.0, row.center().y),
+                egui::Align2::LEFT_CENTER,
+                "受信チューナーの優先順位は「ソース」のプロファイルから変更できます。",
+                FontId::proportional(skin::TEXT_SIZE - 1.0),
+                form.look.label,
+            );
+            let frame = Rect::from_min_max(
+                pos2(left - 6.0, top - 6.0),
+                pos2(form.body.right() - skin::PAD, *form.at + 2.0),
+            );
+            form.ui.painter().rect_stroke(
+                frame,
+                8.0,
+                egui::Stroke::new(1.0, form.look.button_edge),
+                egui::StrokeKind::Inside,
+            );
+            *form.at += 10.0;
         }
-        form.ui.painter().text(
-            pos2(left + 6.0, first + 12.0),
-            egui::Align2::LEFT_CENTER,
-            "受信",
-            FontId::proportional(skin::TEXT_SIZE),
-            form.look.label,
-        );
-        let row = form.line(20.0);
-        form.ui.painter().text(
-            pos2(left + 6.0, row.center().y),
-            egui::Align2::LEFT_CENTER,
-            "受信チューナーの優先順位は「ソース」のプロファイルから変更できます。",
-            FontId::proportional(skin::TEXT_SIZE - 1.0),
-            form.look.label,
-        );
-        let frame = Rect::from_min_max(
-            pos2(left - 6.0, top - 6.0),
-            pos2(form.body.right() - skin::PAD, *form.at + 2.0),
-        );
-        form.ui.painter().rect_stroke(
-            frame,
-            8.0,
-            egui::Stroke::new(1.0, form.look.button_edge),
-            egui::StrokeKind::Inside,
-        );
-        *form.at += 10.0;
-    }
-    pressed
+        pressed
+    })
 }
 
 fn carrier_text(carrier: &crate::config::channels::Carrier) -> String {
